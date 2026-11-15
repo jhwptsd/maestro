@@ -9,6 +9,11 @@
 # Because the transcriber is monophonic, chord notes that were not heard stay unmatched
 # (perf_idx None) and are skipped by assessment/.
 #
+# Partial performances: by default the alignment is open at both ends of the *score* (alignment/dtw.py
+# open_begin/open_end), so a recording that starts halfway down the page, stops early, or covers
+# only a middle section is matched to exactly that stretch of the score. Score notes outside it get
+# perf_idx None. Pass partial=False to force start-to-start and end-to-end matching.
+#
 # Alignment is note-level (not frame-level): robust to tempo changes and cheap, but a missed or
 # extra note shows up as a poor match rather than an explicit gap.
 import numpy as np
@@ -28,14 +33,16 @@ def score_events(score_notes, tol=1e-3):
 
 
 def align_audio_score(score_notes, perf_notes, position_weight=0.5, max_semitones=12.0,
-                      chord_tolerance=1.5):
+                      chord_tolerance=1.5, partial=True):
     """Match each score note to at most one performed note.
 
     score_notes: dicts with "midi_pitch", "onset" (score/symbolic_features.py output), sorted by onset
     perf_notes:  dicts with "midi"                (audio/transcription.py output)
     Event cost = distance (semitones, capped, scaled to [0, 1]) from the performed note to the
     *closest* pitch of the event + `position_weight` x difference in relative position in the piece
-    (disambiguates repeated pitches).
+    (disambiguates repeated pitches; only used when partial=False, since a partial performance does not
+    span the whole piece). With partial=True ties (e.g. a phrase that occurs twice) resolve to the first
+    occurrence and the longest stretch (see dtw.py).
     Returns one entry per score note: {"score_idx", "perf_idx", "cost"}; "perf_idx" is None if the
     performance has no notes or, for a chord note, nothing within `chord_tolerance` semitones was
     heard. Single notes always get the cheapest performed note DTW mapped to them (so wrong notes
@@ -53,9 +60,10 @@ def align_audio_score(score_notes, perf_notes, position_weight=0.5, max_semitone
                             - pp[None, :]).min(axis=0) for ev in events])
     pos_e = np.arange(len(events)) / max(len(events) - 1, 1)
     pos_p = np.arange(m) / max(m - 1, 1)
-    cost = (np.minimum(dist, max_semitones) / max_semitones
-            + position_weight * np.abs(pos_e[:, None] - pos_p[None, :]))
-    path, _ = dtw(cost)
+    cost = np.minimum(dist, max_semitones) / max_semitones
+    if not partial:
+        cost = cost + position_weight * np.abs(pos_e[:, None] - pos_p[None, :])
+    path, _ = dtw(cost, open_begin=partial, open_end=partial)
 
     candidates = {}                      # event -> performed notes DTW mapped to it
     for e, j in path:
@@ -63,6 +71,8 @@ def align_audio_score(score_notes, perf_notes, position_weight=0.5, max_semitone
 
     out = [none(i) for i in range(n)]
     for e, ev in enumerate(events):
+        if e not in candidates:          # outside the stretch of the score that was played
+            continue
         cands = candidates[e]
         if len(ev) == 1:                 # single note: cheapest candidate
             j = min(cands, key=lambda j: cost[e, j])

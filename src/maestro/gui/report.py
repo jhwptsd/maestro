@@ -54,6 +54,13 @@ def _summary(perf):
         cards.append(_card("Timing unevenness", f"{r['std_error'] * 1000:.0f} ms",
                            charts.grade_color(r["std_error"] * 1000, charts.MS_GOOD, charts.MS_OK),
                            "Spread of the timing errors; low = steady pulse."))
+    sec = perf.assessment.get("section")
+    if sec and sec["first_measure"] is not None:
+        where = (f"bar {sec['first_measure']}" if sec["first_measure"] == sec["last_measure"]
+                 else f"bars {sec['first_measure']}–{sec['last_measure']}")
+        cards.append(_card("Section played", where, charts.BLUE,
+                           f"The part of the score your recording covers ({sec['coverage']:.0%} of the piece). "
+                           "Only this part is assessed."))
     m = min(c["score_match"], c["perf_match"])
     cards.append(_card("Score match", f"{m:.0%}", charts.GOOD if m >= 0.6 else charts.BAD,
                        f"How well the recording fits the score ({n_notes} written notes)."))
@@ -68,7 +75,8 @@ def build_report(perf):
     parts.append(_section(
         "Does the recording match the score?",
         "Before judging anything we check that you uploaded the right score. Your recording is aligned to "
-        "the score note by note and we count the matches.",
+        "the score note by note and we count the matches. You do not have to play the whole piece: we find the "
+        "part of the score you played (see <i>Section played</i>), wherever it starts.",
         charts.match_chart(c),
         "Both bars should pass the dashed line. Mistakes lower the bars a little; a different piece "
         "lowers them a lot. (A recording that stops early lowers the first bar.)"))

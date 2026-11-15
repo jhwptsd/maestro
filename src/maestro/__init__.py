@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 from maestro.alignment.align_audio_score import align_audio_score
-from maestro.alignment.correspondence import check_correspondence
+from maestro.alignment.correspondence import check_correspondence, played_section
 from maestro.assessment.intonation import assess_intonation
 from maestro.assessment.rhythm import assess_rhythm
 from maestro.audio.features import extract_features
@@ -44,7 +44,8 @@ def analyze(video_path, score_path, out_dir=None):
 
     perf.alignment = align_audio_score(perf.score_features, notes)
     corr = check_correspondence(perf.score_features, notes, perf.alignment)  # wrong score -> MismatchError
-    perf.assessment = {"correspondence": corr, "intonation": assess_intonation(perf.score_features, notes, perf.alignment),
+    perf.assessment = {"correspondence": corr, "section": played_section(perf.score_features, perf.alignment),
+                       "intonation": assess_intonation(perf.score_features, notes, perf.alignment),
                        "rhythm": assess_rhythm(perf.score_features, notes, perf.alignment)}
     if out_dir:
         Path(out_dir).mkdir(parents=True, exist_ok=True)
