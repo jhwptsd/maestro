@@ -57,5 +57,5 @@ def score_to_svg(score, intonation=None, path=None, px_per_sec=80, row_h=12):
     out.append("</svg>")
     svg = "\n".join(out)
     if path:
-    Path(path).write_text(svg)
+        Path(path).write_text(svg)
     return svg
