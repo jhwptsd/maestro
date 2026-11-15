@@ -1,4 +1,8 @@
 # Audio feature extraction and analysis
+#
+# Aggregates the outputs of pitch.py, onset_detection.py, vibrato.py, and tone_quality.py into
+# the common per-frame JSON below, stored in Performance.audio_features. Consumed by alignment/*,
+# assessment/*, and fusion/audio_encoder.py.
 
 # Should format into a common JSON
 # ex. {
