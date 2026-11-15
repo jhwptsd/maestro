@@ -10,4 +10,12 @@ if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
     Write-Host "ffmpeg already installed."
 }
 
+if (-not (Get-Command audiveris -ErrorAction SilentlyContinue) -and
+    -not (Test-Path "$env:ProgramFiles\Audiveris\Audiveris.exe")) {
+    Write-Host "Audiveris not found; installing via winget (needed for PDF/image scores)..."
+    winget install --id audiveris.org.Audiveris -e --accept-source-agreements --accept-package-agreements
+} else {
+    Write-Host "Audiveris already installed."
+}
+
 python -m pip install -e ".[dev]"

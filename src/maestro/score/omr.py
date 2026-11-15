@@ -8,9 +8,23 @@
 # OMR is delegated to the external Audiveris program (https://github.com/Audiveris/audiveris),
 # which must be installed and on PATH as `audiveris`. Audiveris reads multi-page PDFs directly. Quality
 # depends on scan quality; always eyeball the result (see score/visualize.py).
+import os
 import shutil
 import subprocess
 from pathlib import Path
+
+
+def _find_audiveris():
+    """`audiveris` on PATH, else the default Windows install location (the MSI doesn't add it to PATH)."""
+    exe = shutil.which("audiveris")
+    if exe:
+        return exe
+    for root in (os.environ.get("ProgramFiles"), os.environ.get("LOCALAPPDATA")):
+        if root:
+            candidate = Path(root) / "Audiveris" / "Audiveris.exe"
+            if candidate.exists():
+                return str(candidate)
+    return None
 
 from maestro.utils.errors import InputError, OMRUnavailableError
 
@@ -24,7 +38,7 @@ def run_omr(path, out_dir, timeout=OMR_TIMEOUT):
     no music (blank page, not a score). If the PDF holds several movements Audiveris writes one .mxl
     each; the largest (most music) is returned.
     """
-    exe = shutil.which("audiveris")
+    exe = _find_audiveris()
     if exe is None:
         raise OMRUnavailableError(
             "Reading PDF/image scores requires Audiveris (https://github.com/Audiveris/audiveris) on PATH. "

@@ -14,7 +14,7 @@ from maestro.alignment.align_audio_score import score_events
 from maestro.utils.errors import InputError, MismatchError
 
 
-def check_correspondence(score_notes, perf_notes, alignment, min_match=0.6, tol=1.0):
+def check_correspondence(score_notes, perf_notes, alignment, min_match=0.4, tol=1.0):
     """Raise MismatchError / InputError if the recording does not match the score.
 
     Returns {"score_match", "perf_match"} (fractions in [0, 1]) when it does.
