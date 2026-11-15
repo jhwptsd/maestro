@@ -128,6 +128,14 @@ class RepeatsAndEdgeCases(unittest.TestCase):
         self.assertEqual([n.midi_pitch for n in s.notes], [60, 62, 60, 62, 64])
         self.assertEqual(s.notes[-1].beat, 1.0)
 
+    def test_multi_measure_repeat_sign(self):
+        sign = lambda t: f'<attributes><measure-style><measure-repeat type="{t}">2</measure-repeat></measure-style></attributes>'
+        s = self.played(measure(1, [60]), measure(2, [62]), measure(3, [], attributes=sign("start")),
+                        measure(4, [], attributes=sign("stop")), measure(5, [64]))
+        self.assertEqual([n.midi_pitch for n in s.notes], [60, 62, 60, 62, 64])
+        self.assertEqual([n.measure for n in s.notes], [1, 2, 3, 4, 5])   # copies keep their own numbers
+        self.assertEqual(s.notes[-1].onset, 2.0)   # 4 one-quarter measures at 120 bpm = 2 s
+
     def test_pickup_measure_numbering(self):
         s = self.played(measure(0, [60]).replace("<measure number=\"0\">", '<measure number="0" implicit="yes">'),
                         measure(1, [62]))

@@ -7,8 +7,8 @@
 # Handles: multiple stops (chords -> several Notes with the same onset), rests, ties (merged, also
 # across repeats), backup/forward (multi-voice), accidentals, first articulation mark, repeats,
 # voltas, D.C./D.S./Coda/Fine, tempo changes, pickup measures, changing time signatures/divisions,
-# single-measure repeat signs, and picking the violin part of a multi-part score.
-# Not handled: grace notes/ornaments (skipped), multi-measure repeats, transposing parts.
+# measure-repeat signs (1 or more measures), and picking the violin part of a multi-part score.
+# Not handled: grace notes/ornaments (skipped), transposing parts.
 import re
 import xml.etree.ElementTree as ET
 
@@ -53,6 +53,7 @@ def _read_measures(part):
     measures = []
     divisions, beats, beat_type = 1, 4, 4
     current_ending = ()
+    repeat_n = repeat_left = 0     # measure-repeat sign: group size / measures of the group still to fill
     for idx, mel in enumerate(part.findall("measure"), start=1):
         try:
             number = int(mel.get("number", idx))
@@ -60,7 +61,6 @@ def _read_measures(part):
             number = idx
         m = Measure(number=number, length=0.0)
         cursor = last_onset = end = 0.0         # quarters from the start of this measure
-        copy_previous = False
 
         # Barlines: left ones open repeats/endings, right ones close them. Handle left first.
         for bar in mel.findall("barline"):
@@ -83,7 +83,8 @@ def _read_measures(part):
                 beats = int(el.findtext("time/beats", str(beats)).split("+")[0])
                 beat_type = int(el.findtext("time/beat-type", beat_type))
                 rep = el.find("measure-style/measure-repeat")
-                copy_previous = rep is not None and rep.get("type") == "start"
+                if rep is not None and rep.get("type") == "start":
+                    repeat_n = repeat_left = int((rep.text or "1").strip() or 1)
             elif el.tag in ("direction", "sound"):
                 for s in ([el] if el.tag == "sound" else el.iter("sound")):
                     a = s.attrib
@@ -122,8 +123,10 @@ def _read_measures(part):
                                 "beat_type": beat_type, "tie_start": "start" in ties, "tie_stop": "stop" in ties})
 
         m.length = end if end else beats * 4.0 / beat_type   # empty measure: use the time signature
-        if copy_previous and measures:                          # "repeat previous measure" sign
-            m.notes, m.length = [dict(n) for n in measures[-1].notes], measures[-1].length
+        if repeat_left > 0 and len(measures) >= repeat_n:       # measure-repeat sign: copy the
+            src = measures[len(measures) - repeat_n]            # measure `repeat_n` back (so a
+            m.notes, m.length = [dict(n) for n in src.notes], src.length   # 2-measure sign copies 2)
+            repeat_left -= 1
         measures.append(m)
     return measures
 
