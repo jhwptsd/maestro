@@ -43,8 +43,8 @@ def analyze(video_path, score_path, out_dir=None):
     perf.audio_features = {"frames": extract_features(y, sr), "notes": notes}
 
     perf.alignment = align_audio_score(perf.score_features, notes)
-    check_correspondence(perf.score_features, notes, perf.alignment)  # wrong score -> MismatchError
-    perf.assessment = {"intonation": assess_intonation(perf.score_features, notes, perf.alignment),
+    corr = check_correspondence(perf.score_features, notes, perf.alignment)  # wrong score -> MismatchError
+    perf.assessment = {"correspondence": corr, "intonation": assess_intonation(perf.score_features, notes, perf.alignment),
                        "rhythm": assess_rhythm(perf.score_features, notes, perf.alignment)}
     if out_dir:
         Path(out_dir).mkdir(parents=True, exist_ok=True)
