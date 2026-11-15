@@ -1,7 +1,7 @@
 # Detect the onset of a note
 #
 # Called by audio/features.py. Onset times feed audio/transcription.py and
-# assessment/rhythym.py (via features).
+# assessment/rhythm.py (via features).
 #
 # Method: spectral flux (positive change of log-magnitude STFT) + local-maximum peak picking.
 # Frames use the same grid as audio/pitch.py (utils/audio_math.frame_signal), so indices match.

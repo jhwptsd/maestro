@@ -2,7 +2,7 @@
 #
 # Uses dtw.py to match the transcribed performance notes (audio/transcription.py) to the score
 # notes (score/symbolic_features.py); the mapping is written into Performance.alignment.
-# Required by assessment/intonation.py, rhythym.py (and later tone.py, expression.py).
+# Required by assessment/intonation.py, rhythm.py (and later tone.py, expression.py).
 #
 # Alignment is note-level (not frame-level): robust to tempo changes and cheap, but a missed or
 # extra note shows up as a poor match rather than an explicit gap.
