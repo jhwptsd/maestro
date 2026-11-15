@@ -37,6 +37,18 @@ class Alignment(unittest.TestCase):
         a = align_audio_score(score_notes(midis), perf_notes(midis, np.arange(5)))
         self.assertEqual([x["perf_idx"] for x in a], [0, 1, 2, 3, 4])
 
+    def test_double_stop_matches_heard_note_and_leaves_the_other_unmatched(self):
+        # events: A4 | (G3+D4 chord) | B4 ; transcriber only heard the upper chord note
+        s = score_notes([69, 55, 71], spacing=0.5)
+        s.insert(2, {"midi_pitch": 62, "hz": 0.0, "onset": 0.5})   # D4 shares G3's onset
+        a = align_audio_score(s, perf_notes([69, 62, 71], [0, 0.5, 1.0]))
+        self.assertEqual([x["perf_idx"] for x in a], [0, None, 1, 2])   # G3 unheard, D4 matched
+
+    def test_double_stop_rolled_into_two_performed_notes(self):
+        s = [{"midi_pitch": 55, "hz": 0.0, "onset": 0.0}, {"midi_pitch": 62, "hz": 0.0, "onset": 0.0}]
+        a = align_audio_score(s, perf_notes([55, 62], [0.0, 0.1]))
+        self.assertEqual([x["perf_idx"] for x in a], [0, 1])
+
     def test_extra_performed_note_is_skipped(self):
         s = score_notes([69, 71, 72, 74])
         p = perf_notes([69, 71, 60, 72, 74], [0, 1, 2, 3, 4])   # stray note 60

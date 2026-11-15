@@ -50,3 +50,25 @@ def make_video(path, wav_path, seconds):
     """Mux a black test video with `wav_path` using ffmpeg."""
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=black:s=64x64:d={seconds}",
                     "-i", str(wav_path), "-shortest", "-c:v", "mpeg4", "-c:a", "aac", str(path)], check=True)
+
+
+def measure(number, midis, left="", right="", direction="", attributes=""):
+    """One 4/4 MusicXML measure of quarter notes. A tuple in `midis` is a chord (multiple stop);
+    `left`/`right` are barline contents (repeat/ending), `direction` e.g. a <sound .../> element."""
+    body = ""
+    for item in midis:
+        for k, m in enumerate(item if isinstance(item, tuple) else (item,)):
+            step, alter = _NAMES[m % 12]
+            body += (f"<note>{'<chord/>' if k else ''}<pitch><step>{step}</step>"
+                     f"{f'<alter>{alter}</alter>' if alter else ''}<octave>{m // 12 - 1}</octave></pitch>"
+                     "<duration>1</duration></note>")
+    bar = lambda loc, c: f'<barline location="{loc}">{c}</barline>' if c else ""
+    first = '<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>' if number == 1 else ""
+    return (f'<measure number="{number}">{first}{attributes}{bar("left", left)}'
+            f'{f"<direction><direction-type/>{direction}</direction>" if direction else ""}{body}{bar("right", right)}</measure>')
+
+
+def score_xml(*measures, part_list='<score-part id="P1"/>'):
+    """Wrap measure strings (from `measure`) into a one-part score."""
+    return ('<?xml version="1.0"?><score-partwise version="3.1"><part-list>' + part_list +
+            '</part-list><part id="P1">' + "".join(measures) + "</part></score-partwise>")
