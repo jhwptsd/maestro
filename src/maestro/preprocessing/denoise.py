@@ -172,4 +172,4 @@ def denoise_score(score, min_midi=SCORE_DEFAULTS["min_midi"], max_midi=SCORE_DEF
             continue
         kept.append(n)
         last_by_pitch[n.midi_pitch] = n
-    return Score(kept, score.tempo), report
+    return dataclasses.replace(score, notes=kept), report            # keeps tempo, key and time signature

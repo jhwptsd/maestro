@@ -52,6 +52,7 @@ def _read_measures(part):
     """Raw per-measure data (notes with onsets relative to the measure, repeat/jump markings)."""
     measures = []
     divisions, beats, beat_type = 1, 4, 4
+    meta = {"key_fifths": None, "time_signature": None}   # first key/time signature (for notation display)
     current_ending = ()
     repeat_n = repeat_left = 0     # measure-repeat sign: group size / measures of the group still to fill
     for idx, mel in enumerate(part.findall("measure"), start=1):
@@ -82,6 +83,10 @@ def _read_measures(part):
                 divisions = int(el.findtext("divisions", divisions))
                 beats = int(el.findtext("time/beats", str(beats)).split("+")[0])
                 beat_type = int(el.findtext("time/beat-type", beat_type))
+                if meta["key_fifths"] is None and el.findtext("key/fifths") is not None:
+                    meta["key_fifths"] = int(el.findtext("key/fifths"))
+                if meta["time_signature"] is None and el.find("time") is not None:
+                    meta["time_signature"] = (beats, beat_type)
                 rep = el.find("measure-style/measure-repeat")
                 if rep is not None and rep.get("type") == "start":
                     repeat_n = repeat_left = int((rep.text or "1").strip() or 1)
@@ -128,7 +133,7 @@ def _read_measures(part):
             m.notes, m.length = [dict(n) for n in src.notes], src.length   # 2-measure sign copies 2)
             repeat_left -= 1
         measures.append(m)
-    return measures
+    return measures, meta
 
 
 def parse_musicxml(path, part=None, expand_repeats=True):
@@ -137,7 +142,7 @@ def parse_musicxml(path, part=None, expand_repeats=True):
     part: part id to read (default: the violin part, else the first part).
     expand_repeats: unroll repeats/voltas/D.C./D.S. (False = notes in written order, once).
     """
-    measures = _read_measures(_pick_part(ET.parse(path).getroot(), part))
+    measures, meta = _read_measures(_pick_part(ET.parse(path).getroot(), part))
     order = playback_order(measures) if expand_repeats else range(len(measures))
 
     tempo_map = [(0.0, DEFAULT_TEMPO)]       # (absolute quarter position, bpm)
@@ -179,4 +184,4 @@ def parse_musicxml(path, part=None, expand_repeats=True):
     notes = [Note(r["measure"], r["beat"], midi_to_name(r["midi"]), r["midi"], r["dur"], r["art"],
                   seconds(r["onset"]), seconds(r["onset"] + r["dur"])) for r in recs]
     notes.sort(key=lambda n: (n.onset, n.midi_pitch))
-    return Score(notes, tempo_map[0][1])
+    return Score(notes, tempo_map[0][1], meta["key_fifths"], meta["time_signature"])

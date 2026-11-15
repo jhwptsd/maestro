@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from maestro.alignment.align_audio_score import align_audio_score
+from maestro.alignment.align_audio_score import _pair_leftovers, align_audio_score
 from maestro.alignment.correspondence import check_correspondence, played_section
 from maestro.alignment.dtw import dtw
 from maestro.assessment.intonation import assess_intonation
@@ -142,8 +142,30 @@ class PartialPerformance(unittest.TestCase):
                 self.assertEqual(matched, {i: i - first for i in range(first, last)})   # only that stretch, one-to-one
 
     def test_forced_full_alignment_is_still_available(self):
-        a = self.align(8, 16, partial=False)                       # start-to-start: second half squeezed onto the whole piece
-        self.assertEqual([x["score_idx"] for x in a if x["perf_idx"] is not None], list(range(16)))
+        a = self.align(8, 16, partial=False)                       # start-to-start: second half stretched over the whole piece
+        matched = [x["score_idx"] for x in a if x["perf_idx"] is not None]
+        self.assertEqual((matched[0], matched[-1]), (0, 15))       # spans the whole score ...
+        self.assertEqual(len(matched), 8)                          # ... but 8 played notes can explain only 8 written ones
+
+    def test_missed_note_and_unexplained_note_in_one_gap_become_a_wrong_note(self):
+        s = score_notes([74, 72, 74], spacing=0.5)                    # written D5 C5 D5
+        p = perf_notes([74, 76, 74], [0.0, 0.5, 1.0])                 # played D5 E5 D5 (E5 for C5)
+        out = [{"score_idx": 0, "perf_idx": 0, "cost": 0}, {"score_idx": 1, "perf_idx": None, "cost": None},
+               {"score_idx": 2, "perf_idx": 2, "cost": 0}]            # what release-shared leaves behind
+        _pair_leftovers(s, p, out)
+        self.assertEqual([e["perf_idx"] for e in out], [0, 1, 2])
+        self.assertAlmostEqual(out[1]["cost"], 4 / 12)
+        # a chord note that simply was not heard (same onset as a matched note) is left alone
+        s2 = score_notes([74, 67], spacing=0.0)
+        out2 = [{"score_idx": 0, "perf_idx": 0, "cost": 0}, {"score_idx": 1, "perf_idx": None, "cost": None}]
+        _pair_leftovers(s2, perf_notes([74, 76], [0.0, 0.01]), out2)
+        self.assertIsNone(out2[1]["perf_idx"])
+
+    def test_a_played_note_is_never_shared_between_written_notes(self):
+        # written G4 G4 (repeated pitch) but only one G4 was played: exactly one of them is "missed"
+        s = score_notes([74, 67, 67, 69], spacing=0.5)
+        a = align_audio_score(s, perf_notes([74, 67, 69], [0.0, 0.5, 1.5]))
+        self.assertEqual([x["perf_idx"] for x in a], [0, 1, None, 2])    # the G4 that fits the timing keeps it
 
     def test_played_section_reports_measures_and_coverage(self):
         s = self.score()

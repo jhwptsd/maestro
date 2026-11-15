@@ -52,8 +52,8 @@ class Report(unittest.TestCase):
         for text in ("Average pitch error", "Overall tuning", "Wrong notes", "Tempo", "Average timing error",
                      "Timing unevenness", "Score match", "How to read it"):
             self.assertIn(text, self.html)
-        self.assertEqual(len(svgs(self.html)), 6)      # match, score, pitch trace, intonation, tempo, timing
-        self.assertEqual(self.html.count('class="how"'), 6)
+        self.assertEqual(len(svgs(self.html)), 8)      # match, 2 engraved panels, piano roll, pitch trace, intonation, tempo, timing
+        self.assertEqual(self.html.count('class="how"'), 7)    # one explanation per section
 
     def test_all_charts_are_valid_xml(self):
         for s in svgs(self.html):

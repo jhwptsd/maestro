@@ -8,6 +8,7 @@
 from html import escape
 
 from maestro.gui import charts
+from maestro.gui.viewer import build_viewer
 from maestro.score.visualize import score_to_svg
 
 CSS = """
@@ -18,6 +19,24 @@ h2{margin-top:2em;border-bottom:2px solid #eee;padding-bottom:.2em}
 .card b{font-size:1.5em;display:block}.card small{color:#555}
 .sec{margin:1em 0 2em}.how{background:#f6f8fa;border-radius:6px;padding:.6em 1em;font-size:.95em}
 .scroll{overflow-x:auto;border:1px solid #eee}
+.wide .viewer,.wide .vlegend,.wide .vsummary{width:min(1250px,calc(100vw - 2em));position:relative;left:50%;transform:translateX(-50%)}
+.viewer{display:grid;grid-template-columns:1fr 1fr;gap:10px}.vcol{min-width:0;border:1px solid #e4e4e4;background:white}
+.vlegend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:.85em;color:#444;margin:.6em 0}
+.vlegend i{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+.vsummary{font-size:.9em;color:#444}
+.note.hl{filter:drop-shadow(0 0 3px #0a64ff)}
+"""
+
+# Hover a note in either panel of the side-by-side viewer to highlight its partner in the other. Scripts
+# inside HTML injected with innerHTML do not run, so the page (index.html / standalone_page) loads this once
+# and it listens on the document.
+VIEWER_JS = """
+document.addEventListener("mouseover", function (e) {
+  document.querySelectorAll(".note.hl").forEach(function (n) { n.classList.remove("hl"); });
+  var t = e.target.closest && e.target.closest(".note[data-pair]");
+  if (!t || !t.dataset.pair) return;
+  document.querySelectorAll('.note[data-pair="' + t.dataset.pair + '"]').forEach(function (n) { n.classList.add("hl"); });
+});
 """
 
 
@@ -80,6 +99,15 @@ def build_report(perf):
         charts.match_chart(c),
         "Both bars should pass the dashed line. Mistakes lower the bars a little; a different piece "
         "lowers them a lot. (A recording that stops early lowers the first bar.)"))
+    parts.append('<div class="wide">' + _section(
+        "Score vs what was played",
+        "Left: the score as the app read it from your file. Right: the same score engraved from what was "
+        "detected in your recording, note for note on the same layout.",
+        build_viewer(perf),
+        "Notes are green when in tune, orange or red as they drift, and show the cents sharp (+) or flat (−) "
+        "above the staff. A <b>wrong note</b> is drawn on the line you actually played; a dashed outline "
+        "with <b>?</b> was written but not heard; purple notes were heard but are not in the score. "
+        "Hover a note to find its partner.") + "</div>")
     parts.append(_section(
         "Your performance on the score",
         "Each blue bar is a written note (left to right = time, up = higher pitch). The coloured line on it "
@@ -122,4 +150,4 @@ def build_report(perf):
 def standalone_page(fragment, title="Maestro report"):
     """Wrap a report fragment into a complete HTML document."""
     return (f'<!doctype html><meta charset="utf-8"><title>{escape(title)}</title>'
-            f"<style>{CSS}</style><h1>{escape(title)}</h1>{fragment}")
+            f"<style>{CSS}</style><h1>{escape(title)}</h1>{fragment}<script>{VIEWER_JS}</script>")

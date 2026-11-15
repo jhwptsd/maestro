@@ -32,6 +32,49 @@ def score_events(score_notes, tol=1e-3):
     return groups
 
 
+def _release_shared(score_notes, perf_notes, out):
+    """A performed note can account for only one written note. When DTW gave one to several (a written note
+    was skipped next to a repeated pitch, or two written notes were played as one), keep it with the
+    claimant whose timing fits the rest of the performance best and mark the others unmatched (missed)."""
+    claims = {}
+    for e in out:
+        if e["perf_idx"] is not None:
+            claims.setdefault(e["perf_idx"], []).append(e["score_idx"])
+    shared = {j: ids for j, ids in claims.items() if len(ids) > 1}
+    if not shared:
+        return
+    firm = [(score_notes[ids[0]]["onset"], perf_notes[j]["onset"]) for j, ids in claims.items() if len(ids) == 1]
+    if len(firm) >= 2:                                   # overall tempo/offset from the unambiguous matches
+        a, b = np.polyfit(*zip(*firm), 1)
+    else:
+        a, b = 1.0, 0.0
+    for j, ids in shared.items():
+        keep = min(ids, key=lambda i: abs(a * score_notes[i]["onset"] + b - perf_notes[j]["onset"]))
+        for i in ids:
+            if i != keep:
+                out[i] = {"score_idx": i, "perf_idx": None, "cost": None}
+
+
+def _pair_leftovers(score_notes, perf_notes, out):
+    """A written note nobody played next to a played note nobody explains, inside the same gap between two
+    firm matches, is one wrong note (not one missed plus one extra): pair them, in order. Whole events
+    only: chord notes that were simply not heard stay unmatched."""
+    matched = [e for e in out if e["perf_idx"] is not None]
+    if len(matched) < 2:
+        return
+    used = {e["perf_idx"] for e in matched}
+    heard_onsets = {round(score_notes[e["score_idx"]]["onset"], 6) for e in matched}
+    for a, b in zip(matched[:-1], matched[1:]):
+        gap_notes = [i for i in range(a["score_idx"] + 1, b["score_idx"])
+                     if out[i]["perf_idx"] is None and round(score_notes[i]["onset"], 6) not in heard_onsets]
+        t0, t1 = perf_notes[a["perf_idx"]]["onset"], perf_notes[b["perf_idx"]]["onset"]
+        gap_perf = [j for j, p in enumerate(perf_notes) if j not in used and t0 < p["onset"] < t1]
+        for i, j in zip(gap_notes, gap_perf):
+            dist = abs(score_notes[i]["midi_pitch"] - perf_notes[j]["midi"])
+            out[i] = {"score_idx": i, "perf_idx": j, "cost": min(dist, 12.0) / 12.0}
+            used.add(j)
+
+
 def align_audio_score(score_notes, perf_notes, position_weight=0.5, max_semitones=12.0,
                       chord_tolerance=1.5, partial=True):
     """Match each score note to at most one performed note.
@@ -75,7 +118,7 @@ def align_audio_score(score_notes, perf_notes, position_weight=0.5, max_semitone
             continue
         cands = candidates[e]
         if len(ev) == 1:                 # single note: cheapest candidate
-            j = min(cands, key=lambda j: cost[e, j])
+            j = min(cands, key=lambda j: (round(cost[e, j], 2), j))   # near-equal cost: the earlier played note
             out[ev[0]] = {"score_idx": ev[0], "perf_idx": int(j), "cost": float(cost[e, j])}
             continue
         # chord: greedily pair closest (pitch, performed note) first, one-to-one, within tolerance
@@ -85,4 +128,6 @@ def align_audio_score(score_notes, perf_notes, position_weight=0.5, max_semitone
             if d <= chord_tolerance and i not in used_i and j not in used_j:
                 used_i.add(i), used_j.add(j)
                 out[i] = {"score_idx": i, "perf_idx": int(j), "cost": float(cost[e, j])}
+    _release_shared(score_notes, perf_notes, out)
+    _pair_leftovers(score_notes, perf_notes, out)
     return out

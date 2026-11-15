@@ -59,7 +59,9 @@ class RealisticPlaying(unittest.TestCase):
     def test_minuet_pitch_is_accurate(self):
         notes = transcribe(play_minuet(), SR)
         match = align_audio_score(self.SCORE, notes)
-        cents = [1200 * np.log2(notes[a["perf_idx"]]["hz"] / s["hz"]) for a, s in zip(match, self.SCORE)]
+        cents = [1200 * np.log2(notes[a["perf_idx"]]["hz"] / s["hz"]) for a, s in zip(match, self.SCORE)
+                 if a["perf_idx"] is not None]                              # (a repeated note may be heard as one)
+        self.assertGreaterEqual(len(cents), len(MIDIS) - 3)
         self.assertLess(np.mean(np.abs(cents)), 12)                         # vibrato centre, not peaks
 
 

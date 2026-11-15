@@ -15,11 +15,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from maestro import analyze
-from maestro.gui.report import CSS, build_report
+from maestro.gui.report import CSS, VIEWER_JS, build_report
 from maestro.utils.errors import InputError, OMRUnavailableError
 
 MAX_UPLOAD = 1 << 30  # 1 GiB
-INDEX = (Path(__file__).parent / "index.html").read_text(encoding="utf-8").replace("/*CSS*/", CSS)
+INDEX = (Path(__file__).parent / "index.html").read_text(encoding="utf-8").replace("/*CSS*/", CSS).replace("/*VIEWER_JS*/", VIEWER_JS)
 
 
 def parse_multipart(content_type, body):
