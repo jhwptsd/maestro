@@ -1,9 +1,14 @@
 # Shared container class to represent a performance. Data types are intentionally left ambiguous
+#
+# Passed through every stage: preprocessing fills video/audio/score; audio/, vision/, score/ fill
+# the *_features/pose fields; alignment/ fills `alignment`; assessment/ and fusion/ fill `assessment`;
+# feedback/ fills `feedback`. `reference` holds a processed pro recording (see reference/).
 
 class Performance:
     
     def __init__(self):
-        self.video  = None
+        self.video  = None          # path of the common-format video (preprocessing/video.py), or None
+        self.audio_source = None    # path of the original upload that audio is extracted from
         self.audio  = None
         self.score  = None
         self.reference = None
