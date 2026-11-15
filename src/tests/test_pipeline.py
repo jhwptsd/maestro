@@ -5,6 +5,7 @@ from pathlib import Path
 
 from helpers import make_video, musicxml, synth, write_wav
 from maestro import analyze
+from maestro.utils.errors import InputError, MismatchError
 
 
 class Pipeline(unittest.TestCase):
@@ -28,6 +29,35 @@ class Pipeline(unittest.TestCase):
         timing = {n["score_idx"]: n["error"] for n in p.assessment["rhythm"]["notes"]}
         self.assertEqual(max(timing, key=lambda k: abs(timing[k])), 5)
         self.assertAlmostEqual(p.assessment["rhythm"]["tempo_ratio"], 1.0, delta=0.1)
+
+    def test_wrong_score_for_recording_raises_mismatch(self):
+        played = [69, 71, 72, 74, 76, 74, 72, 71]
+        score = [60, 62, 64, 65, 55, 57, 59, 60]          # a different piece entirely
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "s.musicxml").write_text(musicxml(score))
+            write_wav(d / "a.wav", synth([(m, 0.3 + 0.5 * i, 0.4) for i, m in enumerate(played)]))
+            make_video(d / "v.mp4", d / "a.wav", 5)
+            with self.assertRaises(MismatchError):
+                analyze(d / "v.mp4", d / "s.musicxml")
+
+    def test_midi_score_and_audio_only_upload(self):
+        from helpers import write_midi
+        midis = [69, 71, 72, 74, 76, 74, 72, 71]
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            write_midi(d / "s.mid", [(i, i + 1, m) for i, m in enumerate(midis)])
+            write_wav(d / "a.wav", synth([(m, 0.3 + 0.5 * i, 0.4) for i, m in enumerate(midis)]))
+            p = analyze(d / "a.wav", d / "s.mid")
+        self.assertEqual(len(p.assessment["intonation"]["notes"]), len(midis))
+        self.assertLess(p.assessment["intonation"]["mean_abs_cents"], 10)
+
+    def test_bad_inputs_raise_input_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "s.musicxml").write_text(musicxml([69]))
+            with self.assertRaises(InputError):
+                analyze(d / "nope.mp4", d / "s.musicxml")
 
 
 if __name__ == "__main__":

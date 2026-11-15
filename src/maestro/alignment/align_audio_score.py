@@ -16,7 +16,7 @@ import numpy as np
 from maestro.alignment.dtw import dtw
 
 
-def _events(score_notes, tol=1e-3):
+def score_events(score_notes, tol=1e-3):
     """Group score notes with (nearly) equal onset -> list of index lists (chords = len > 1)."""
     groups = []
     for i, n in enumerate(score_notes):
@@ -46,7 +46,7 @@ def align_audio_score(score_notes, perf_notes, position_weight=0.5, max_semitone
     none = lambda i: {"score_idx": i, "perf_idx": None, "cost": None}
     if n == 0 or m == 0:
         return [none(i) for i in range(n)]
-    events = _events(score_notes)
+    events = score_events(score_notes)
     pp = np.array([p["midi"] for p in perf_notes], dtype=float)
     # distance from every performed note to every pitch of every event, per (event, note)
     dist = np.stack([np.abs(np.array([score_notes[i]["midi_pitch"] for i in ev], dtype=float)[:, None]

@@ -1,12 +1,29 @@
 # Process score into MusicXML file
 #
-# Uses utils/convert_file_type.py (and score/omr.py when needed) to yield MusicXML, stored in
-# Performance.score. Consumed by score/musicxml.py.
-from maestro.utils.convert_file_type import convert_to_musicxml
+# Validates a user-submitted score, uses utils/convert_file_type.py (and score/omr.py when needed) to
+# yield MusicXML, and stores the parsed Score in Performance.score. Consumed by score/musicxml.py.
+# Rejects files that are not partwise MusicXML after conversion or that contain no notes.
+import xml.etree.ElementTree as ET
+
 from maestro.score.musicxml import parse_musicxml
+from maestro.utils.convert_file_type import convert_to_musicxml
+from maestro.utils.errors import InputError
 
 
 def preprocess_score(perf, score_path, out_dir=None):
-    """Convert `score_path` to MusicXML and store the parsed Score in `perf.score`."""
-    perf.score = parse_musicxml(convert_to_musicxml(score_path, out_dir))
+    """Convert `score_path` to MusicXML and store the parsed Score in `perf.score`.
+
+    Raises InputError for missing/unsupported/corrupt files, timewise MusicXML, or empty scores.
+    """
+    xml_path = convert_to_musicxml(score_path, out_dir)
+    try:
+        root = ET.parse(xml_path).getroot()
+    except ET.ParseError:
+        raise InputError("The score is not valid MusicXML.")
+    if root.tag != "score-partwise":
+        raise InputError(f"Unsupported MusicXML flavour <{root.tag}>; export a partwise score.")
+    score = parse_musicxml(xml_path)
+    if not score.notes:
+        raise InputError("The score contains no notes.")
+    perf.score = score
     return perf

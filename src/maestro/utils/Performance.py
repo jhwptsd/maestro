@@ -7,7 +7,8 @@
 class Performance:
     
     def __init__(self):
-        self.video  = None
+        self.video  = None          # path of the common-format video (preprocessing/video.py), or None
+        self.audio_source = None    # path of the original upload that audio is extracted from
         self.audio  = None
         self.score  = None
         self.reference = None

@@ -1,6 +1,7 @@
 """Shared test fixtures: synthetic violin-like audio, matching MusicXML, and a tiny muxed video."""
 import subprocess
 import wave
+from pathlib import Path
 
 import numpy as np
 
@@ -46,9 +47,9 @@ def musicxml(midis, tempo=120, beats_per_measure=4):
             f'<part id="P1">{"".join(measures)}</part></score-partwise>')
 
 
-def make_video(path, wav_path, seconds):
-    """Mux a black test video with `wav_path` using ffmpeg."""
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=black:s=64x64:d={seconds}",
+def make_video(path, wav_path, seconds, size="64x64"):
+    """Mux a black test video of the given size with `wav_path` using ffmpeg."""
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=black:s={size}:d={seconds}",
                     "-i", str(wav_path), "-shortest", "-c:v", "mpeg4", "-c:a", "aac", str(path)], check=True)
 
 
@@ -72,3 +73,20 @@ def score_xml(*measures, part_list='<score-part id="P1"/>'):
     """Wrap measure strings (from `measure`) into a one-part score."""
     return ('<?xml version="1.0"?><score-partwise version="3.1"><part-list>' + part_list +
             '</part-list><part id="P1">' + "".join(measures) + "</part></score-partwise>")
+
+
+def write_midi(path, notes, ppq=480, bpm=120):
+    """Minimal format-0 MIDI writer. notes: [(start_beats, end_beats, pitch)] on channel 0."""
+    events = []
+    for s, e, p in notes:
+        events += [(round(s * ppq), 1, p), (round(e * ppq), 0, p)]   # off (0) sorts before on (1)
+    events.sort()
+    vlq = lambda v: bytes([(v >> 21) & 0x7F | 0x80, (v >> 14) & 0x7F | 0x80, (v >> 7) & 0x7F | 0x80, v & 0x7F])
+    track = b"\x00\xff\x51\x03" + int(60e6 / bpm).to_bytes(3, "big")
+    now = 0
+    for t, on, p in events:
+        track += vlq(t - now) + bytes([0x90 if on else 0x80, p, 90 if on else 0])
+        now = t
+    track += b"\x00\xff\x2f\x00"
+    Path(path).write_bytes(b"MThd" + (6).to_bytes(4, "big") + (0).to_bytes(2, "big") + (1).to_bytes(2, "big")
+                           + ppq.to_bytes(2, "big") + b"MTrk" + len(track).to_bytes(4, "big") + track)
