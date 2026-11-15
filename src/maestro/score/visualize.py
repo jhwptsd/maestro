@@ -4,6 +4,8 @@
 # Reads the Score from score/musicxml.py and optionally the "intonation" result from
 # assessment/intonation.py. Dependency-free (writes SVG text); useful to sanity-check OMR output
 # and to show feedback to the user.
+from pathlib import Path
+
 from maestro.score.score_representation import NOTE_NAMES
 
 
@@ -55,5 +57,5 @@ def score_to_svg(score, intonation=None, path=None, px_per_sec=80, row_h=12):
     out.append("</svg>")
     svg = "\n".join(out)
     if path:
-        open(path, "w").write(svg)
+    Path(path).write_text(svg)
     return svg
