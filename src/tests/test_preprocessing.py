@@ -1,6 +1,10 @@
+import os
+import stat
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 from pathlib import Path
 
@@ -9,9 +13,9 @@ from maestro.preprocessing.audio import extract_audio, preprocess_audio
 from maestro.preprocessing.score import preprocess_score
 from maestro.preprocessing.video import preprocess_video
 from maestro.score.musicxml import parse_musicxml
-from maestro.utils.convert_file_type import convert_to_musicxml, detect_score_type
+from maestro.utils.convert_file_type import MAX_PDF_PAGES, convert_to_musicxml, detect_score_type
 from maestro.utils.convert_video_type import probe
-from maestro.utils.errors import InputError
+from maestro.utils.errors import InputError, OMRUnavailableError
 from maestro.utils.Performance import Performance
 
 
@@ -97,6 +101,77 @@ class ScoreConversion(unittest.TestCase):
             ok = Path(d) / "ok.musicxml"
             ok.write_text(musicxml([69, 71]))
             self.assertEqual(len(preprocess_score(Performance(), ok).score.notes), 2)
+
+
+PDF = b"%PDF-1.4\n1 0 obj<</Type/Page>>endobj\ntrailer<<>>\n%%EOF\n"
+# stands in for Audiveris: finds the -output dir and input file in argv, writes <out>/<stem>/<stem>.mxl
+FAKE_AUDIVERIS = """#!{python}
+import os, sys, zipfile
+a = sys.argv; out = a[a.index("-output") + 1]; stem = os.path.splitext(os.path.basename(a[-1]))[0]
+if os.environ.get("FAKE_OMR_FAIL"):
+    sys.exit("Sheet is blank")
+os.makedirs(os.path.join(out, stem), exist_ok=True)
+with zipfile.ZipFile(os.path.join(out, stem, stem + ".mxl"), "w") as z:
+    z.writestr("META-INF/container.xml", '<container><rootfiles><rootfile full-path="s.xml"/></rootfiles></container>')
+    z.writestr("s.xml", open(os.environ["FAKE_OMR_XML"]).read())
+"""
+
+
+class PdfScores(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        (self.d / "s.pdf").write_bytes(PDF)
+        (self.d / "truth.musicxml").write_text(musicxml([69, 71, 72]))
+
+    def fake_audiveris(self, **env):
+        """Put a fake `audiveris` first on PATH for the duration of the test."""
+        bin_dir = self.d / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        exe = bin_dir / "audiveris"
+        exe.write_text(FAKE_AUDIVERIS.format(python=sys.executable))
+        exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+        patcher = mock.patch.dict(os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+                                               "FAKE_OMR_XML": str(self.d / "truth.musicxml"), **env})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_pdf_goes_through_omr_to_a_parsed_score(self):
+        self.fake_audiveris()
+        perf = preprocess_score(Performance(), self.d / "s.pdf", self.d / "out")
+        self.assertEqual([n.midi_pitch for n in perf.score.notes], [69, 71, 72])
+
+    def test_image_and_misnamed_pdf_use_the_same_route(self):
+        self.fake_audiveris()
+        (self.d / "scan.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 20)
+        (self.d / "really_a_pdf.png").write_bytes(PDF)
+        for name in ("scan.png", "really_a_pdf.png"):
+            with self.subTest(name):
+                self.assertEqual(len(preprocess_score(Performance(), self.d / name, self.d / "out").score.notes), 3)
+
+    def test_missing_audiveris_gives_actionable_error(self):
+        with mock.patch.dict(os.environ, {"PATH": str(self.d)}):
+            with self.assertRaisesRegex(OMRUnavailableError, "MusicXML"):
+                convert_to_musicxml(self.d / "s.pdf", self.d / "out")
+
+    def test_omr_failure_is_reported_as_input_error(self):
+        self.fake_audiveris(FAKE_OMR_FAIL="1")
+        with self.assertRaisesRegex(InputError, "blank"):
+            convert_to_musicxml(self.d / "s.pdf", self.d / "out")
+
+    def test_bad_pdfs_are_rejected_before_omr(self):
+        pages = b"%PDF-1.4\n" + b"<</Type/Page>>\n" * (MAX_PDF_PAGES + 1) + b"%%EOF"
+        cases = {"truncated": PDF[:-12], "encrypted": PDF.replace(b"trailer<<>>", b"trailer<</Encrypt 5 0 R>>"),
+                 "too many pages": pages}
+        for name, data in cases.items():
+            (self.d / f"{name}.pdf".replace(" ", "_")).write_bytes(data)
+            with self.subTest(name), self.assertRaises(InputError):   # no Audiveris needed to get here
+                convert_to_musicxml(self.d / f"{name}.pdf".replace(" ", "_"), self.d / "out")
+        # "/Type /Pages" (the page tree node) must not be counted as a page
+        (self.d / "tree.pdf").write_bytes(b"%PDF-1.4\n<</Type/Pages>>\n" * 100 + b"%%EOF")
+        with mock.patch.dict(os.environ, {"PATH": str(self.d)}), self.assertRaises(OMRUnavailableError):
+            convert_to_musicxml(self.d / "tree.pdf", self.d / "out")
 
 
 class VideoSubmission(unittest.TestCase):

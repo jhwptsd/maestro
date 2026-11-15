@@ -5,13 +5,13 @@ Prints the intonation and timing summaries; writes the annotated score SVG into 
 import sys
 
 from maestro import analyze
-from maestro.utils.errors import InputError
+from maestro.utils.errors import InputError, OMRUnavailableError
 
 if __name__ == "__main__":
     video, score = sys.argv[1:3]
     try:
         perf = analyze(video, score, sys.argv[3] if len(sys.argv) > 3 else "out")
-    except InputError as e:  # bad file, or the score does not match the recording
+    except (InputError, OMRUnavailableError) as e:  # bad file, score/recording mismatch, or no Audiveris for PDFs
         sys.exit(f"error: {e}")
     i, r = perf.assessment["intonation"], perf.assessment["rhythm"]
     print(f"intonation: mean |dev| {i['mean_abs_cents']} cents, tuning offset {i['tuning_offset_cents']}, "

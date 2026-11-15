@@ -11,3 +11,7 @@ class InputError(ValueError):
 
 class MismatchError(InputError):
     """The submitted score and recording do not appear to be the same piece."""
+
+
+class OMRUnavailableError(RuntimeError):
+    """PDF/image scores need Audiveris, which is not installed (an environment problem, not bad input)."""

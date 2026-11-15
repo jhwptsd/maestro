@@ -6,6 +6,7 @@
 # The type is detected from the file's *content* (magic bytes), not its extension, because user
 # uploads are often misnamed. Supported: MusicXML (.musicxml/.xml), compressed MusicXML (.mxl,
 # unzipped here), MIDI (.mid/.midi), PDF and PNG/JPEG/TIFF images (OMR via score/omr.py).
+import re
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -15,6 +16,26 @@ from maestro.utils.midi import midi_to_musicxml
 
 _MAGIC = [(b"%PDF", "pdf"), (b"\x89PNG", "image"), (b"\xff\xd8\xff", "image"), (b"II*\x00", "image"),
           (b"MM\x00*", "image"), (b"MThd", "midi"), (b"PK\x03\x04", "mxl")]
+
+
+MAX_PDF_PAGES = 40   # a violin piece rarely exceeds this; bounds OMR time
+
+
+def check_pdf(path):
+    """Cheap sanity checks on a PDF upload (no PDF library needed); raises InputError if unusable.
+
+    Catches truncated downloads, password-protected files (OMR cannot open them) and huge documents
+    (e.g. a whole book). The page count is read from the page objects; PDFs that pack objects into
+    compressed streams report 0 and are not limited.
+    """
+    data = Path(path).read_bytes()
+    if b"%%EOF" not in data[-2048:]:
+        raise InputError(f"{Path(path).name} looks truncated or corrupt (incomplete PDF).")
+    if b"/Encrypt" in data:
+        raise InputError(f"{Path(path).name} is password-protected; upload an unprotected copy.")
+    pages = len(re.findall(rb"/Type\s*/Page(?![a-zA-Z])", data))
+    if pages > MAX_PDF_PAGES:
+        raise InputError(f"{Path(path).name} has {pages} pages (max {MAX_PDF_PAGES}); upload just the piece.")
 
 
 def detect_score_type(path):
@@ -46,6 +67,8 @@ def convert_to_musicxml(path, out_dir=None):
         return _unzip_mxl(path, out_dir)
     if kind == "midi":
         return midi_to_musicxml(path, out_dir / (path.stem + ".musicxml"))
+    if kind == "pdf":
+        check_pdf(path)
     from maestro.score.omr import run_omr  # lazy: only needs Audiveris for pdf/image
     return _unzip_mxl(Path(run_omr(path, out_dir)), out_dir)  # OMR emits .mxl
 
