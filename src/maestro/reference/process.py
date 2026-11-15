@@ -1,0 +1,1 @@
+# Use already-exising processing pipeline with reference video, but leave blank spaces where pose or audio cannot properly be estimated as empty

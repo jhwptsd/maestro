@@ -1,0 +1,1 @@
+# Detect vibrato from audio - rate and amplitude

@@ -1,0 +1,1 @@
+# Take in processed video and processed score and align them

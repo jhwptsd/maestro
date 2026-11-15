@@ -1,0 +1,1 @@
+# Return a comparison function between a fully-processed reference and a fully-processed student video.

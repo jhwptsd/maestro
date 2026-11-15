@@ -1,0 +1,1 @@
+# Optical Music Recognition (OMR) module for processing and analyzing sheet music images.

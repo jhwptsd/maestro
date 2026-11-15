@@ -1,0 +1,1 @@
+# A cross-attention fusion model for music assessment that bridges the audio, visual, score, and temporal encoding models

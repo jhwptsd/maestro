@@ -1,0 +1,1 @@
+# Score encoder for music analysis and processing
