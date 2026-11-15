@@ -43,17 +43,19 @@ def _video_encoder():
     return "libx264" if " libx264 " in out else "mpeg4"
 
 
-def to_common_video(path, out_dir=None, fps=30, max_height=720):
+def to_common_video(path, out_dir=None, fps=30, max_height=720, filters=()):
     """Re-encode any video ffmpeg can read to the common format -> path of the new .mp4.
 
-    The output is `<stem>_common.mp4` in `out_dir` (default: next to the input).
+    The output is `<stem>_common.mp4` in `out_dir` (default: next to the input). `filters` are extra
+    ffmpeg video filters applied after scaling (e.g. preprocessing/denoise.video_filters()), so
+    conversion and denoising share one encode.
     """
     path = Path(path)
     out_dir = Path(out_dir) if out_dir else path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{path.stem}_common.mp4"
     # -2 keeps the aspect ratio with an even width; min() never upscales small videos
-    vf = f"fps={fps},scale=-2:'min({max_height},ih)',format=yuv420p"
+    vf = ",".join([f"fps={fps}", f"scale=-2:'min({max_height},ih)'", *filters, "format=yuv420p"])
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(path), "-vf", vf,
            "-c:v", _video_encoder(), "-c:a", "aac", "-movflags", "+faststart", str(out)]
     r = subprocess.run(cmd, capture_output=True, text=True)

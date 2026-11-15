@@ -76,9 +76,28 @@ def read_midi(path):
     return sorted(notes), division, sorted(tempos), timesig or (4, 4)
 
 
+def snap_onsets(notes, ppq, bpm, tolerance=0.015):
+    """Set note starts that are within `tolerance` seconds of an earlier start to that start.
+
+    Hand-played/recorded MIDI has a few ms of jitter between the notes of a double stop; without this the
+    first note would be cut short by the next "onset" a few ticks later (the converter ends a note where
+    the next onset begins) and the chord would fall apart.
+    """
+    limit = tolerance * ppq * bpm / 60
+    out, anchor = [], None
+    for s, e, p in sorted(notes):
+        if anchor is not None and 0 < s - anchor <= limit:
+            s = anchor
+        elif anchor is None or s - anchor > limit:
+            anchor = s
+        out.append((s, max(e, s + 1), p))
+    return sorted(out)
+
+
 def midi_to_musicxml(path, out_path):
     """Write a MusicXML approximation of the MIDI file at `path` to `out_path`."""
     notes, ppq, tempos, (beats, beat_type) = read_midi(path)
+    notes = snap_onsets(notes, ppq, tempos[0][1] if tempos else 120.0)
     bar = beats * ppq * 4 // beat_type
     n_bars = (max(e for _, e, _ in notes) - 1) // bar + 1
     # split notes at barlines: (bar, start_in_bar, end_in_bar, pitch, continues_from_prev, continues_to_next)

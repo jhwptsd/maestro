@@ -13,6 +13,7 @@ class Performance:
         self.score  = None
         self.reference = None
         
+        self.preprocessing_report = {}  # denoising summaries: {"audio": {...}, "score": {...}, "video": bool}
         self.pose  = None
         self.audio_features = None
         self.score_features = None

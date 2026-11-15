@@ -23,19 +23,20 @@ from maestro.score.visualize import score_to_svg
 from maestro.utils.Performance import Performance
 
 
-def analyze(video_path, score_path, out_dir=None):
+def analyze(video_path, score_path, out_dir=None, denoise=True):
     """Run the implemented pipeline on a video + score; returns the filled Performance.
 
     `video_path` may be any video or audio file ffmpeg reads; `score_path` MusicXML/.mxl/MIDI/PDF/image.
+    denoise: clean noise from the audio, video and score first (preprocessing/denoise.py).
     Intermediate files and (if `out_dir` is given) the score SVG go to `out_dir` (default: a temp dir).
     Raises utils.errors.InputError for unusable files, and MismatchError (a subclass) if the recording
     does not appear to be the given score.
     """
     work = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="maestro_"))
     perf = Performance()
-    preprocess_video(perf, video_path, work)
-    preprocess_audio(perf)
-    preprocess_score(perf, score_path, work)
+    preprocess_video(perf, video_path, work, denoise)
+    preprocess_audio(perf, denoise=denoise)
+    preprocess_score(perf, score_path, work, denoise)
 
     y, sr = perf.audio["samples"], perf.audio["sr"]
     perf.score_features = extract_symbolic_features(perf.score)

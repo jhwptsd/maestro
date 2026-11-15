@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from maestro.preprocessing.denoise import denoise_audio
 from maestro.utils.errors import InputError
 
 DEFAULT_SR = 22050  # sample rate used throughout the audio pipeline
@@ -38,10 +39,16 @@ def read_wav(path):
     return pcm.astype(np.float32) / 32768.0, sr
 
 
-def preprocess_audio(perf, sr=DEFAULT_SR):
-    """Fill `perf.audio` = {"samples": ndarray, "sr": int} from the submitted recording."""
+def preprocess_audio(perf, sr=DEFAULT_SR, denoise=True):
+    """Fill `perf.audio` = {"samples": ndarray, "sr": int} from the submitted recording.
+
+    denoise: remove stationary background noise first (preprocessing/denoise.py); vibrato, bow noise and
+    tonal content are preserved. The noise estimate is kept in perf.preprocessing_report["audio"].
+    """
     samples, sr = extract_audio(perf.audio_source or perf.video, sr)
     if not np.any(np.abs(samples) > 1e-3):
         raise InputError("The recording is silent.")
+    if denoise:
+        samples, perf.preprocessing_report["audio"] = denoise_audio(samples, sr)
     perf.audio = {"samples": samples, "sr": sr}
     return perf
