@@ -18,4 +18,4 @@ include = ["maestro*"]
 
 [tool.pytest.ini_options]
 testpaths = ["src/tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "src/tests"]
