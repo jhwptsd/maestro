@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from helpers import make_video, musicxml, synth, write_wav
+from minuet import minuet_musicxml, play_minuet
 from maestro import analyze
 from maestro.utils.errors import InputError, MismatchError
 
@@ -29,6 +30,17 @@ class Pipeline(unittest.TestCase):
         timing = {n["score_idx"]: n["error"] for n in p.assessment["rhythm"]["notes"]}
         self.assertEqual(max(timing, key=lambda k: abs(timing[k])), 5)
         self.assertAlmostEqual(p.assessment["rhythm"]["tempo_ratio"], 1.0, delta=0.1)
+
+    def test_realistic_minuet_through_video_is_accepted(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "minuet.musicxml").write_text(minuet_musicxml())
+            write_wav(d / "a.wav", play_minuet())
+            make_video(d / "v.mp4", d / "a.wav", 18)          # AAC-compressed, like a real upload
+            p = analyze(d / "v.mp4", d / "minuet.musicxml")
+        self.assertGreater(min(p.assessment["correspondence"].values()), 0.8)
+        self.assertLess(p.assessment["intonation"]["mean_abs_cents"], 15)
+        self.assertEqual(p.assessment["intonation"]["n_wrong_notes"], 0)
 
     def test_wrong_score_for_recording_raises_mismatch(self):
         played = [69, 71, 72, 74, 76, 74, 72, 71]

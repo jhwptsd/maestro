@@ -3,10 +3,14 @@ import unittest
 import numpy as np
 
 from helpers import SR, synth
+from minuet import MIDIS, play_minuet
+from maestro.alignment.align_audio_score import align_audio_score
+from maestro.alignment.correspondence import check_correspondence
 from maestro.audio.features import extract_features
 from maestro.audio.onset_detection import detect_onsets
 from maestro.audio.pitch import estimate_f0
 from maestro.audio.transcription import transcribe
+from maestro.utils.audio_math import midi_to_hz
 
 
 class Pitch(unittest.TestCase):
@@ -29,6 +33,34 @@ class Onsets(unittest.TestCase):
         onsets, _ = detect_onsets(y, SR)
         self.assertEqual(len(onsets), 3)
         np.testing.assert_allclose(onsets, [0.2, 0.6, 1.0], atol=0.04)
+
+
+class RealisticPlaying(unittest.TestCase):
+    """Regression: a perfectly played Minuet in G was rejected as 'not matching' because vibrato, bow
+    noise and reverb made the onset detector fire inside held notes, shattering them into extra notes."""
+    SCORE = [{"midi_pitch": m, "hz": float(midi_to_hz(m)), "onset": i * 0.5} for i, m in enumerate(MIDIS)]
+
+    def test_vibrato_does_not_create_onsets(self):
+        t = np.arange(int(2.3 * SR)) / SR                # one 2.3 s note with +-40 cent vibrato: 1 onset only
+        vib = 69 + 0.4 * np.sin(2 * np.pi * 5.5 * t)
+        y = (np.sin(np.cumsum(440 * 2 ** ((vib - 69) / 12)) / SR * 2 * np.pi) * np.minimum(1, t / 0.03) * 0.5).astype(np.float32)
+        self.assertEqual(len(detect_onsets(y, SR)[0]), 1)
+
+    def test_minuet_is_recognised_under_realistic_conditions(self):
+        conditions = {"vibrato+noise+reverb": {}, "fast": dict(bpm=130, seed=1), "slow, wide vibrato": dict(bpm=70, vibrato_cents=45, seed=2),
+                      "40 cents flat": dict(tuning_cents=-40, seed=3), "noisy": dict(noise=0.04, seed=4)}
+        for name, kw in conditions.items():
+            with self.subTest(name):
+                notes = transcribe(play_minuet(**kw), SR)
+                self.assertLessEqual(abs(len(notes) - len(MIDIS)), 4)       # was ~90 notes before
+                match = check_correspondence(self.SCORE, notes, align_audio_score(self.SCORE, notes))
+                self.assertGreater(min(match.values()), 0.8)
+
+    def test_minuet_pitch_is_accurate(self):
+        notes = transcribe(play_minuet(), SR)
+        match = align_audio_score(self.SCORE, notes)
+        cents = [1200 * np.log2(notes[a["perf_idx"]]["hz"] / s["hz"]) for a, s in zip(match, self.SCORE)]
+        self.assertLess(np.mean(np.abs(cents)), 12)                         # vibrato centre, not peaks
 
 
 class Transcription(unittest.TestCase):
