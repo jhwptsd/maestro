@@ -3,6 +3,7 @@
 # Frame-based trackers (CREPE, YIN and pYIN) use Maestro's vibrato-aware segmentation
 # and loudness-based bow-attack detection. Basic Pitch supplies note events directly and
 # can retain simultaneous pitches (e.g. violin double stops).
+import bisect
 import warnings
 
 import numpy as np
@@ -24,18 +25,27 @@ def _rolling_median(x, win):
 
 
 def _cut_by_pitch(sm, max_dev, persist):
-    """Split NaN-free pitch runs into stable-pitch frame ranges."""
-    segs, n, i = [], len(sm), 0
+    """Split NaN-free pitch runs into stable-pitch frame ranges.
+
+    A run is cut where the smoothed pitch has stayed more than `max_dev` semitones from the running
+    median of the current note for `persist` frames. The running median is kept in a sorted list
+    (insertion is a cheap memmove), so each step is O(1) instead of re-sorting the whole note.
+    """
+    vals = sm.tolist()
+    segs, n, i = [], len(vals), 0
     while i < n:
-        if np.isnan(sm[i]):
+        if vals[i] != vals[i]:                      # NaN: unvoiced
             i += 1
             continue
         start, j = i, i + 1
-        while j < n and not np.isnan(sm[j]):
-            centre = np.median(sm[start:j])
-            ahead = sm[j:j + persist]
-            if len(ahead) == persist and not np.isnan(ahead).any() and np.all(np.abs(ahead - centre) > max_dev):
+        buf = [vals[i]]                             # sorted values of the current note so far
+        while j < n and vals[j] == vals[j]:
+            half = len(buf) // 2
+            centre = buf[half] if len(buf) % 2 else (buf[half - 1] + buf[half]) / 2
+            ahead = vals[j:j + persist]
+            if len(ahead) == persist and all(v == v and abs(v - centre) > max_dev for v in ahead):
                 break
+            bisect.insort(buf, vals[j])
             j += 1
         segs.append((start, j))
         i = j

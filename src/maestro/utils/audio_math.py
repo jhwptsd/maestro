@@ -2,6 +2,7 @@
 # Keeping them here ensures every module uses the same pitch convention (A4 = 440 Hz, equal temperament)
 # and the same framing grid, so frame indices line up between pitch, onset and feature extraction.
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 
 def hz_to_midi(hz):
@@ -24,8 +25,11 @@ def frame_signal(y, frame_length, hop_length):
 
     Frame i is centred on sample i*hop_length (zero padded at the edges), so n_frames = 1 + len(y)//hop
     and frame time = i*hop/sr. audio/pitch.py and audio/onset_detection.py both use this grid.
+
+    The result is a read-only *view* of one padded copy of the signal, not an (n_frames x frame_length)
+    copy: with 75% overlap that is 4x less memory and avoids building a huge index array. Do arithmetic
+    on it (squares, windowing, FFTs all return new arrays) but do not write into it.
     """
     y = np.pad(np.asarray(y, dtype=float), frame_length // 2)
     n = 1 + (len(y) - frame_length) // hop_length
-    idx = np.arange(frame_length)[None, :] + hop_length * np.arange(n)[:, None]
-    return y[idx]
+    return sliding_window_view(y, frame_length)[::hop_length][:n]
