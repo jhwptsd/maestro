@@ -19,13 +19,20 @@ from maestro.utils.Performance import Performance
 
 def analyze(video_path, score_path, out_dir=None, denoise=True,
             pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None):
-    """Analyze a performance against a score.
+    """Analyze a performance against a score and return the filled Performance.
 
+    video_path: any video or audio file ffmpeg reads; score_path: MusicXML, .mxl, MIDI, PDF or image.
+    Intermediate files (and, if out_dir is given, score.svg) go to out_dir, default a temp dir.
+    denoise: clean noise from the audio, video and score first (preprocessing/denoise.py).
     pitch_backend selects ``crepe`` (default), ``yin``, ``pyin`` or ``basic_pitch``.
     pitch_options is a dict of backend-specific settings, e.g. ``{"device": "cpu"}``
     for CREPE. Optional backends are loaded only when selected.
+
+    Raises utils.errors.InputError for unusable files, and its subclass MismatchError if the recording
+    does not appear to be the given score.
     """
     work = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="maestro_"))
+    work.mkdir(parents=True, exist_ok=True)
     perf = Performance()
     preprocess_video(perf, video_path, work, denoise)
     preprocess_audio(perf, denoise=denoise)
@@ -53,8 +60,7 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
         "rhythm": assess_rhythm(perf.score_features, notes, perf.alignment),
     }
     if out_dir:
-        Path(out_dir).mkdir(parents=True, exist_ok=True)
-        score_to_svg(perf.score, perf.assessment["intonation"], Path(out_dir) / "score.svg")
+        score_to_svg(perf.score, perf.assessment["intonation"], work / "score.svg")
     return perf
 
 

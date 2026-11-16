@@ -114,7 +114,7 @@ def build_report(perf):
         "marks the pitch you actually played.",
         f'<div class="scroll">{score_to_svg(perf.score, i)}</div>',
         "A line above its bar means sharp, below means flat (one row = one semitone). "
-        "Green = within 15 cents, orange = within 30, red = further off."))
+        f"Green = within {charts.CENTS_GOOD} cents, orange = within {charts.CENTS_OK}, red = further off."))
     parts.append(_section(
         "Pitch over time",
         "The grey line is the pitch tracked from your audio. The blue bars show what the score asks for, placed "

@@ -5,6 +5,8 @@
 # Performance.assessment["rhythm"].
 import numpy as np
 
+MS_GOOD, MS_OK = 40, 100            # |timing error| in milliseconds: on time / a bit off / off (shared by every chart)
+
 
 def assess_rhythm(score_notes, perf_notes, alignment, wrong_note_semitones=1.0):
     """Per-note timing error in seconds (+ late / - early) and a summary.

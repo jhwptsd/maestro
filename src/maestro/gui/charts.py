@@ -7,18 +7,18 @@
 #   timing_chart        <- assessment["rhythm"]["notes"]  (ms early/late per note)
 #   match_chart         <- assessment["correspondence"]  (does the score fit the recording)
 # The annotated score itself comes from score/visualize.py. gui/report.py arranges all of these with
-# explanations; gui/server.py serves that report. Thresholds below are shared with report.py so the
-# colours on the charts and the grades on the summary cards always agree.
+# explanations; gui/server.py serves that report. The pitch/timing thresholds come from the assessment
+# modules, so the colours on every chart and the grades on the summary cards always agree.
 from html import escape
 
 import numpy as np
 
+from maestro.assessment.intonation import CENTS_GOOD, CENTS_OK
+from maestro.assessment.rhythm import MS_GOOD, MS_OK
 from maestro.score.score_representation import NOTE_NAMES
 from maestro.utils.audio_math import hz_to_midi
 
 GOOD, OK, BAD, GREY, BLUE, ORANGE = "#2a9d3f", "#f08c00", "#d62828", "#999", "#4a6fa5", "#e76f00"
-CENTS_GOOD, CENTS_OK = 10, 25     # |pitch error| in cents: green / orange / red beyond
-MS_GOOD, MS_OK = 40, 100          # |timing error| in milliseconds
 
 
 def grade_color(value, good, ok):

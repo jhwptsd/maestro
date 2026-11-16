@@ -6,7 +6,6 @@
 # Also reused for reference videos (reference/process.py).
 #
 # Audio-only uploads (wav/mp3/m4a/...) are accepted: video stays None and vision/ is skipped.
-from pathlib import Path
 
 from maestro.preprocessing.denoise import video_filters
 from maestro.utils.convert_video_type import probe, to_common_video

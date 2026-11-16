@@ -7,6 +7,8 @@ import numpy as np
 
 from maestro.utils.audio_math import cents_between
 
+CENTS_GOOD, CENTS_OK = 10, 25      # |pitch error| in cents: in tune / a bit off / out of tune (shared by every chart)
+
 
 def assess_intonation(score_notes, perf_notes, alignment, wrong_note_semitones=1.0):
     """Per-note pitch deviation in cents (+ sharp / - flat) and a summary.

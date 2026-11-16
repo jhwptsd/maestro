@@ -6,13 +6,14 @@
 # and to show feedback to the user.
 from pathlib import Path
 
+from maestro.assessment.intonation import CENTS_GOOD, CENTS_OK
 from maestro.score.score_representation import NOTE_NAMES
 
 
 def _color(cents):
-    """Green = in tune (<15 cents), orange = <30, red = worse."""
+    """Green = in tune, orange = a bit off, red = out of tune (thresholds shared with the GUI charts)."""
     c = abs(cents)
-    return "#2a9d3f" if c < 15 else "#f08c00" if c < 30 else "#d62828"
+    return "#2a9d3f" if c <= CENTS_GOOD else "#f08c00" if c <= CENTS_OK else "#d62828"
 
 
 def score_to_svg(score, intonation=None, path=None, px_per_sec=80, row_h=12):
