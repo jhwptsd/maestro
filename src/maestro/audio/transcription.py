@@ -1,42 +1,30 @@
-# Perform pitch integration
+# Convert frame-wise pitch or model note-events into note events.
 #
-# Combines pitch.py and onset_detection.py outputs into note events (pitch + onset + duration),
-# comparable to score notes in alignment/align_audio_score.py.
-#
-# Assumes a monophonic line (double stops are not transcribed correctly).
-#
-# Method (designed for real violin playing, not clean synthetic tones):
-#   1. Track f0 (pitch.py); keep confident frames.
-#   2. Smooth the pitch with a median filter slightly shorter than a vibrato cycle, so vibrato
-#      (+-30-50 cents) does not look like note changes, then cut where the smoothed pitch moves more
-#      than `max_dev` semitones from the current note's centre for a few frames (legato changes).
-#   3. Re-join pieces of the same pitch separated by short pitch-tracker dropouts, unless a loudness
-#      onset (onset_detection.py) lies between them (a re-bowed repeated pitch).
-#   4. Split pieces that contain an onset in the middle (repeated pitch with a bow change).
-#   5. Drop pieces shorter than `min_dur` (glides between notes, noise).
-# A note's pitch is the median f0 of its middle part, which skips the glide into and out of it.
+# Frame-based trackers (CREPE, YIN and pYIN) use Maestro's vibrato-aware segmentation
+# and loudness-based bow-attack detection. Basic Pitch supplies note events directly and
+# can retain simultaneous pitches (e.g. violin double stops).
 import warnings
 
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
 from maestro.audio.onset_detection import detect_onsets
-from maestro.audio.pitch import estimate_f0
+from maestro.audio.pitch import DEFAULT_PITCH_BACKEND, PitchTrack, estimate_pitch
 from maestro.utils.audio_math import hz_to_midi
 
 
 def _rolling_median(x, win):
-    """NaN-aware rolling median (odd `win`); NaNs in the input stay NaN."""
+    """NaN-aware rolling median (odd win); NaNs in the input stay NaN."""
     pad = np.pad(x, win // 2, constant_values=np.nan)
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)   # all-NaN windows
+        warnings.simplefilter("ignore", RuntimeWarning)
         out = np.nanmedian(sliding_window_view(pad, win), axis=1)
     out[np.isnan(x)] = np.nan
     return out
 
 
 def _cut_by_pitch(sm, max_dev, persist):
-    """Split NaN-free runs of the smoothed pitch `sm` into (start, end) frame ranges of steady pitch."""
+    """Split NaN-free pitch runs into stable-pitch frame ranges."""
     segs, n, i = [], len(sm), 0
     while i < n:
         if np.isnan(sm[i]):
@@ -47,67 +35,81 @@ def _cut_by_pitch(sm, max_dev, persist):
             centre = np.median(sm[start:j])
             ahead = sm[j:j + persist]
             if len(ahead) == persist and not np.isnan(ahead).any() and np.all(np.abs(ahead - centre) > max_dev):
-                break                                      # pitch really moved: new note starts at j
+                break
             j += 1
         segs.append((start, j))
         i = j
     return segs
 
 
-def transcribe(y, sr, hop_length=256, min_conf=0.8, min_dur=0.07, max_dev=0.6, vibrato_win=0.12,
-               dropout=0.06, snap=0.08):
-    """Audio -> list of notes {"onset", "offset", "hz", "midi"} (seconds / Hz / fractional MIDI).
+def transcribe(y, sr, hop_length=256, min_conf=0.5, min_dur=0.07, max_dev=0.6,
+               vibrato_win=0.12, dropout=0.06, snap=0.08,
+               backend=DEFAULT_PITCH_BACKEND, pitch_track=None, pitch_options=None):
+    """Audio -> note dictionaries with onset, offset, hz and fractional MIDI pitch.
 
-    min_dur: shortest note kept (s); max_dev: semitones of (vibrato-smoothed) pitch change that start a
-    new note; vibrato_win: median-filter length (s); dropout: longest pitch-tracking gap (s) bridged
-    inside one note; snap: how close (s) a detected onset must be to a note start to set its time.
+    Select the pitch implementation with backend: ``crepe`` (default), ``yin``,
+    ``pyin`` or ``basic_pitch``. Pass a previously computed PitchTrack to avoid running
+    inference twice in a pipeline. pitch_options is forwarded to the selected backend.
+
+    Basic Pitch is event-based and can return overlapping notes. Its MIDI-note estimates
+    are semitone-quantized, so it should not be used as the sole source for cents-level
+    intonation assessment.
     """
-    t, f0, conf = estimate_f0(y, sr, hop_length=hop_length)
+    track = pitch_track or estimate_pitch(
+        y, sr, backend=backend, hop_length=hop_length, **(pitch_options or {})
+    )
+    if track.notes is not None:
+        return [dict(note) for note in track.notes]
+
     onsets, _ = detect_onsets(y, sr, hop_length=hop_length)
+    t, f0, conf = track.times, track.f0, track.confidence
     dt = hop_length / sr
     n = len(t)
     voiced = (conf >= min_conf) & (f0 > 0)
     midi = np.full(n, np.nan)
     midi[voiced] = hz_to_midi(f0[voiced])
-    win = int(vibrato_win / dt) | 1                        # odd number of frames
+    win = max(1, int(vibrato_win / dt)) | 1
     sm = _rolling_median(midi, win)
-    onset_frames = np.round(onsets / dt).astype(int)
+    onset_frames = np.clip(np.round(onsets / dt).astype(int), 0, max(n - 1, 0))
 
     def onset_between(a, b):
-        """True if a loudness onset lies strictly inside frames (a, b)."""
         return bool(np.any((onset_frames > a) & (onset_frames < b)))
 
-    # 2. cut by pitch, 3. re-join same-pitch pieces split by tracker dropouts
     segs = _cut_by_pitch(sm, max_dev, persist=3)
     merged = []
-    for s, e in segs:
+    for start, end in segs:
         if merged:
-            ps, pe = merged[-1]
-            same = abs(np.nanmedian(sm[ps:pe]) - np.nanmedian(sm[s:e])) < max_dev
-            if same and (s - pe) * dt <= dropout and not onset_between(pe - 2, s + 2):
-                merged[-1] = (ps, e)
+            previous_start, previous_end = merged[-1]
+            same = abs(np.nanmedian(sm[previous_start:previous_end]) - np.nanmedian(sm[start:end])) < max_dev
+            if same and (start - previous_end) * dt <= dropout and not onset_between(previous_end - 2, start + 2):
+                merged[-1] = (previous_start, end)
                 continue
-        merged.append((s, e))
+        merged.append((start, end))
 
-    # 4. split at onsets inside a piece (needs `min_dur` of note on both sides)
     pieces = []
-    for s, e in merged:
-        cuts = [s] + [f for f in onset_frames if s + min_dur / dt <= f <= e - min_dur / dt] + [e]
+    for start, end in merged:
+        cuts = [start] + [frame for frame in onset_frames
+                          if start + min_dur / dt <= frame <= end - min_dur / dt] + [end]
         pieces += list(zip(cuts[:-1], cuts[1:]))
 
-    # 5. build notes
     notes = []
-    for s, e in pieces:
-        if (e - s) * dt < min_dur:
+    for start, end in pieces:
+        if (end - start) * dt < min_dur:
             continue
-        core = slice(s + (e - s) // 5, e - (e - s) // 5) if e - s >= 8 else slice(s, e)
-        ok = voiced[core]
-        if not ok.any():
+        core = slice(start + (end - start) // 5, end - (end - start) // 5) if end - start >= 8 else slice(start, end)
+        valid = voiced[core]
+        if not valid.any():
             continue
-        hz = float(np.median(f0[core][ok]))
-        on = t[s]
+        hz = float(np.median(f0[core][valid]))
+        onset = float(t[start])
         if len(onsets):
-            near = onsets[np.argmin(np.abs(onsets - on))]
-            on = near if abs(near - on) <= snap else on
-        notes.append({"onset": float(on), "offset": float(t[e - 1]), "hz": hz, "midi": float(hz_to_midi(hz))})
+            nearest = onsets[np.argmin(np.abs(onsets - onset))]
+            if abs(nearest - onset) <= snap:
+                onset = float(nearest)
+        notes.append({
+            "onset": onset,
+            "offset": float(t[end - 1]),
+            "hz": hz,
+            "midi": float(hz_to_midi(hz)),
+        })
     return notes

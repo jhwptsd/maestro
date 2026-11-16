@@ -1,5 +1,6 @@
-# Project setup for Windows: installs ffmpeg (if missing) and the maestro package.
+# Project setup for Windows: installs ffmpeg (if missing) and Maestro with default CREPE backend.
 # Usage: .\setup.ps1
+# Install the CUDA-specific PyTorch build first if GPU acceleration is desired.
 $ErrorActionPreference = "Stop"
 
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
@@ -18,4 +19,4 @@ if (-not (Get-Command audiveris -ErrorAction SilentlyContinue) -and
     Write-Host "Audiveris already installed."
 }
 
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[crepe,dev]"

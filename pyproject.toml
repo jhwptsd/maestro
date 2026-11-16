@@ -14,6 +14,10 @@ maestro-gui = "maestro.gui.server:main"
 
 [project.optional-dependencies]
 dev = ["pytest"]
+crepe = ["torch>=2.0", "torchcrepe>=0.0.23"]
+pyin = ["librosa>=0.10.2"]
+basic-pitch = ["basic-pitch>=0.3.0"]
+audio = ["torch>=2.0", "torchcrepe>=0.0.23", "librosa>=0.10.2", "basic-pitch>=0.3.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
