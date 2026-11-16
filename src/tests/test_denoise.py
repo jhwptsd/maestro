@@ -45,7 +45,8 @@ class AudioDenoising(unittest.TestCase):
         self.assertAlmostEqual(self.info["snr_db"], snr_db(self.clean, self.noisy), delta=3)
 
     def test_tonal_content_and_pitch_are_preserved(self):
-        ref, got = transcribe(self.clean, SR), transcribe(self.out, SR)
+        # YIN on purpose: this checks the denoiser, so it needs a precise tracker that is independent of any neural model
+        ref, got = transcribe(self.clean, SR, backend="yin"), transcribe(self.out, SR, backend="yin")
         self.assertEqual(len(got), len(ref))
         cents = [abs(1200 * np.log2(a["hz"] / b["hz"])) for a, b in zip(got, ref)]
         self.assertLess(max(cents), 5)
