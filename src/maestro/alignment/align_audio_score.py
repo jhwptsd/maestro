@@ -21,6 +21,11 @@ import numpy as np
 from maestro.alignment.dtw import dtw
 
 
+def _entry(score_idx, perf_idx=None, cost=None):
+    """One alignment result: written note `score_idx` matched to performed note `perf_idx` (None = missed)."""
+    return {"score_idx": score_idx, "perf_idx": perf_idx, "cost": cost}
+
+
 def score_events(score_notes, tol=1e-3):
     """Group score notes with (nearly) equal onset -> list of index lists (chords = len > 1)."""
     groups = []
@@ -52,7 +57,7 @@ def _release_shared(score_notes, perf_notes, out):
         keep = min(ids, key=lambda i: abs(a * score_notes[i]["onset"] + b - perf_notes[j]["onset"]))
         for i in ids:
             if i != keep:
-                out[i] = {"score_idx": i, "perf_idx": None, "cost": None}
+                out[i] = _entry(i)
 
 
 def _pair_leftovers(score_notes, perf_notes, out):
@@ -71,7 +76,7 @@ def _pair_leftovers(score_notes, perf_notes, out):
         gap_perf = [j for j, p in enumerate(perf_notes) if j not in used and t0 < p["onset"] < t1]
         for i, j in zip(gap_notes, gap_perf):
             dist = abs(score_notes[i]["midi_pitch"] - perf_notes[j]["midi"])
-            out[i] = {"score_idx": i, "perf_idx": j, "cost": min(dist, 12.0) / 12.0}
+            out[i] = _entry(i, j, min(dist, 12.0) / 12.0)
             used.add(j)
 
 
@@ -80,54 +85,56 @@ def align_audio_score(score_notes, perf_notes, position_weight=0.5, max_semitone
     """Match each score note to at most one performed note.
 
     score_notes: dicts with "midi_pitch", "onset" (score/symbolic_features.py output), sorted by onset
-    perf_notes:  dicts with "midi"                (audio/transcription.py output)
-    Event cost = distance (semitones, capped, scaled to [0, 1]) from the performed note to the
-    *closest* pitch of the event + `position_weight` x difference in relative position in the piece
-    (disambiguates repeated pitches; only used when partial=False, since a partial performance does not
-    span the whole piece). With partial=True ties (e.g. a phrase that occurs twice) resolve to the first
-    occurrence and the longest stretch (see dtw.py).
-    Returns one entry per score note: {"score_idx", "perf_idx", "cost"}; "perf_idx" is None if the
-    performance has no notes or, for a chord note, nothing within `chord_tolerance` semitones was
-    heard. Single notes always get the cheapest performed note DTW mapped to them (so wrong notes
-    surface in assessment/ as large deviations); a performed note can be shared by successive
-    score notes only if DTW stretched it over them.
+    perf_notes:  dicts with "midi", "onset"       (audio/transcription.py output)
+    Returns one {"score_idx", "perf_idx", "cost"} per score note ("perf_idx" None = not matched).
+
+    Event cost = distance (semitones, capped, scaled to [0, 1]) from the performed note to the *closest*
+    pitch of the event. With partial=False the cost also gets `position_weight` x the difference in relative
+    position in the piece, which helps tell repeated pitches apart when the whole piece was played; with
+    partial=True the performance may cover only part of the score, so ties (e.g. a phrase that occurs twice)
+    resolve to the first occurrence and the longest stretch instead (see dtw.py).
+
+    After DTW:
+    - a single note takes the cheapest performed note mapped to its event (so a wrong note shows up in
+      assessment/ as a large deviation); a chord pairs the heard notes to its pitches within `chord_tolerance`
+      semitones, and chord notes nobody heard stay unmatched;
+    - a performed note serves one written note only (`_release_shared`), and a missed note next to an
+      unexplained performed note becomes one wrong note (`_pair_leftovers`).
     """
     n, m = len(score_notes), len(perf_notes)
-    none = lambda i: {"score_idx": i, "perf_idx": None, "cost": None}
+    out = [_entry(i) for i in range(n)]
     if n == 0 or m == 0:
-        return [none(i) for i in range(n)]
+        return out
     events = score_events(score_notes)
-    pp = np.array([p["midi"] for p in perf_notes], dtype=float)
-    # distance from every performed note to every pitch of every event, per (event, note)
+    perf_pitch = np.array([p["midi"] for p in perf_notes], dtype=float)
+    # distance from every performed note to the closest pitch of every event: (events, performed notes)
     dist = np.stack([np.abs(np.array([score_notes[i]["midi_pitch"] for i in ev], dtype=float)[:, None]
-                            - pp[None, :]).min(axis=0) for ev in events])
-    pos_e = np.arange(len(events)) / max(len(events) - 1, 1)
-    pos_p = np.arange(m) / max(m - 1, 1)
+                            - perf_pitch[None, :]).min(axis=0) for ev in events])
     cost = np.minimum(dist, max_semitones) / max_semitones
     if not partial:
+        pos_e = np.arange(len(events)) / max(len(events) - 1, 1)
+        pos_p = np.arange(m) / max(m - 1, 1)
         cost = cost + position_weight * np.abs(pos_e[:, None] - pos_p[None, :])
     path, _ = dtw(cost, open_begin=partial, open_end=partial)
 
-    candidates = {}                      # event -> performed notes DTW mapped to it
+    candidates = {}                                   # event -> performed notes DTW mapped to it
     for e, j in path:
         candidates.setdefault(e, []).append(j)
-
-    out = [none(i) for i in range(n)]
     for e, ev in enumerate(events):
-        if e not in candidates:          # outside the stretch of the score that was played
+        cands = candidates.get(e)
+        if cands is None:                             # outside the stretch of the score that was played
             continue
-        cands = candidates[e]
-        if len(ev) == 1:                 # single note: cheapest candidate
-            j = min(cands, key=lambda j: (round(cost[e, j], 2), j))   # near-equal cost: the earlier played note
-            out[ev[0]] = {"score_idx": ev[0], "perf_idx": int(j), "cost": float(cost[e, j])}
+        if len(ev) == 1:                              # near-equal cost: prefer the earlier played note
+            j = min(cands, key=lambda j: (round(cost[e, j], 2), j))
+            out[ev[0]] = _entry(ev[0], int(j), float(cost[e, j]))
             continue
-        # chord: greedily pair closest (pitch, performed note) first, one-to-one, within tolerance
-        pairs = sorted((abs(score_notes[i]["midi_pitch"] - pp[j]), i, j) for i in ev for j in cands)
+        # chord: pair the closest (pitch, performed note) first, one-to-one, within tolerance
+        pairs = sorted((abs(score_notes[i]["midi_pitch"] - perf_pitch[j]), i, j) for i in ev for j in cands)
         used_i, used_j = set(), set()
         for d, i, j in pairs:
             if d <= chord_tolerance and i not in used_i and j not in used_j:
                 used_i.add(i), used_j.add(j)
-                out[i] = {"score_idx": i, "perf_idx": int(j), "cost": float(cost[e, j])}
+                out[i] = _entry(i, int(j), float(cost[e, j]))
     _release_shared(score_notes, perf_notes, out)
     _pair_leftovers(score_notes, perf_notes, out)
     return out

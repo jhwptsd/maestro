@@ -104,12 +104,12 @@ class Backend(unittest.TestCase):
             self.track(model="huge")
 
     def test_resampling_keeps_pitch_and_timeline_for_any_sample_rate(self):
-        from maestro.audio.backends.crepe import _resample_16k
+        from maestro.audio.backends.crepe import _resample
         t = np.arange(SR) / SR
         tone = np.sin(2 * np.pi * 440 * t).astype(np.float32)
         for sr in (22050, 44100, 48000):
             x = np.sin(2 * np.pi * 440 * np.arange(sr) / sr).astype(np.float32)
-            y16 = _resample_16k(x, sr, 16000)
+            y16 = _resample(x, sr, 16000)
             self.assertAlmostEqual(len(y16), 16000, delta=2)
             freqs = np.fft.rfftfreq(len(y16), 1 / 16000)
             self.assertAlmostEqual(freqs[np.argmax(np.abs(np.fft.rfft(y16)))], 440, delta=1.5)

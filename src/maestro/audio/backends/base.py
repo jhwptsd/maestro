@@ -3,6 +3,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from maestro.utils.audio_math import frame_rms  # noqa: F401  (re-exported for the backends)
+
 
 @dataclass
 class PitchTrack:
@@ -41,19 +43,3 @@ def frame_times(length, sr, hop_length):
     """Centered frame timestamps matching Maestro's existing framing convention."""
     n_frames = 1 + int(length) // int(hop_length)
     return np.arange(n_frames, dtype=float) * hop_length / sr
-
-
-def frame_rms(y, frame_length, hop_length, chunk=512):
-    """RMS per centered frame, with the same zero-padding convention as frame_signal.
-
-    Sums squares chunk by chunk over the strided frame view (einsum), so no frame-sized temporary
-    (frames ** 2) is ever allocated; used by every backend that gates silence by loudness.
-    """
-    from maestro.utils.audio_math import frame_signal
-
-    frames = frame_signal(y, frame_length, hop_length)
-    out = np.empty(len(frames))
-    for start in range(0, len(frames), chunk):
-        block = frames[start:start + chunk]
-        out[start:start + chunk] = np.einsum("ij,ij->i", block, block)
-    return np.sqrt(out / frame_length)

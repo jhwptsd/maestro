@@ -67,20 +67,36 @@ def _decode(probabilities):
         return bins, torchcrepe.convert.cents_to_frequency(cents)
 
 
-def _resample_16k(y, sr, target):
-    """Polyphonic resample to torchcrepe's 16 kHz (exact rational ratio); falls back to None without scipy."""
-    try:
-        from scipy.signal import resample_poly
-    except ImportError:
-        return None
+def _resample(y, sr, target):
+    """Polyphase resample to `target` Hz (exact rational ratio)."""
+    from scipy.signal import resample_poly      # a hard dependency of torchcrepe
+
     g = math.gcd(int(target), int(sr))
     return resample_poly(y, int(target) // g, int(sr) // g).astype(np.float32)
+
+
+def _run_network(y, sr, hop_length, fmin, fmax, model, batch_size, device):
+    """Resample to 16 kHz and run torchcrepe -> (f0 Hz, periodicity) per CREPE frame, plus the CREPE hop in samples."""
+    import torch
+    import torchcrepe
+
+    if device is None or device == "auto":
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    if model == "auto":                         # full CREPE is only cheap on an accelerator
+        model = "full" if str(device).startswith(("cuda", "mps")) else "tiny"
+    rate = torchcrepe.SAMPLE_RATE
+    crepe_hop = int(hop_length * rate / sr)     # torchcrepe truncates the hop to whole 16 kHz samples
+    audio = torch.from_numpy(np.clip(_resample(y, sr, rate) if sr != rate else y, -1.0, 1.0)).unsqueeze(0)
+    with torch.inference_mode():
+        pitch, periodicity = torchcrepe.predict(
+            audio, rate, hop_length=crepe_hop, fmin=fmin, fmax=fmax, model=model, decoder=_decode,
+            batch_size=batch_size, device=device, return_periodicity=True)
+    return pitch[0].cpu().numpy().astype(float), periodicity[0].cpu().numpy().astype(float), crepe_hop
 
 
 def estimate(y, sr, frame_length=1024, hop_length=256, fmin=None, fmax=None,
              model="auto", batch_size=1024, device=None, rms_floor_db=60.0, **_):
     try:
-        import torch
         import torchcrepe
     except ImportError as exc:
         raise ImportError(
@@ -89,8 +105,6 @@ def estimate(y, sr, frame_length=1024, hop_length=256, fmin=None, fmax=None,
         ) from exc
 
     y = np.asarray(y, dtype=np.float32).reshape(-1)
-    if sr <= 0:
-        raise ValueError("Sample rate must be positive.")
     if model not in ("auto", "tiny", "full"):
         raise ValueError("CREPE model must be 'auto', 'tiny' or 'full'.")
     fmin = 175.0 if fmin is None else float(fmin)
@@ -100,59 +114,22 @@ def estimate(y, sr, frame_length=1024, hop_length=256, fmin=None, fmax=None,
             f"CREPE requires 0 < fmin < fmax <= {torchcrepe.MAX_FMAX:g} Hz. "
             "Use pYIN or YIN for violin fundamentals above the CREPE model's upper limit."
         )
-
     if not y.size:
-        empty = np.zeros(0, dtype=float)
+        empty = np.zeros(0)
         return PitchTrack(empty, empty, empty, "crepe")
 
-    if device is None or device == "auto":
-        device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    if model == "auto":                       # full CREPE is only cheap on an accelerator
-        model = "full" if str(device).startswith(("cuda", "mps")) else "tiny"
+    f0, confidence, crepe_hop = _run_network(y, sr, hop_length, fmin, fmax, model, batch_size, device)
 
-    crepe_sr = torchcrepe.SAMPLE_RATE
-    crepe_hop = int(hop_length * crepe_sr / sr) if sr != crepe_sr else hop_length
-    audio_16k = _resample_16k(y, sr, crepe_sr) if sr != crepe_sr else y
-    if audio_16k is None:                     # no scipy: let torchcrepe resample (slower)
-        predict_audio, predict_sr = y, sr
-    else:
-        predict_audio, predict_sr = audio_16k, crepe_sr
-    audio = torch.from_numpy(np.clip(predict_audio, -1.0, 1.0)).unsqueeze(0)
-    with torch.inference_mode():
-        pitch, periodicity = torchcrepe.predict(
-            audio,
-            predict_sr,
-            hop_length=crepe_hop if predict_sr == crepe_sr else hop_length,
-            fmin=fmin,
-            fmax=fmax,
-            model=model,
-            decoder=_decode,
-            batch_size=batch_size,
-            device=device,
-            return_periodicity=True,
-        )
-
-    f0 = pitch[0].detach().cpu().numpy().astype(float)
-    confidence = periodicity[0].detach().cpu().numpy().astype(float)
-    n = min(len(f0), len(confidence))
-    f0, confidence = f0[:n], np.clip(confidence[:n], 0.0, 1.0)
-
-    # torchcrepe resamples to 16 kHz and truncates the hop to whole samples, so its frame
-    # spacing (and count) differs slightly from Maestro's `hop_length / sr` timeline. Map each
-    # Maestro frame to the nearest CREPE frame in time so every backend shares one timeline.
+    # CREPE's frame spacing (and count) differs slightly from Maestro's `hop_length / sr` timeline, so map
+    # each Maestro frame to the nearest CREPE frame in time: every backend then shares one timeline.
     times = frame_times(len(y), sr, hop_length)
-    idx = np.clip(np.rint(times * torchcrepe.SAMPLE_RATE / crepe_hop).astype(int), 0, n - 1)
-    f0, confidence = f0[idx], confidence[idx]
-    n = len(times)
+    nearest = np.clip(np.rint(times * torchcrepe.SAMPLE_RATE / crepe_hop).astype(int), 0, len(f0) - 1)
+    f0, confidence = f0[nearest], confidence[nearest]
 
-    # CREPE can produce a pitch in quiet frames; explicitly mark the recording's
-    # noise floor unvoiced instead of interpreting those values as notes.
-    rms = frame_rms(y, frame_length, hop_length)
-    n_active = min(len(rms), n)
-    if n_active and rms.max() > 0:
-        floor = rms.max() * (10.0 ** (-float(rms_floor_db) / 20.0))
-        silent = rms[:n_active] <= floor
-        confidence[:n_active] = np.where(silent, 0.0, confidence[:n_active])
-        f0[:n_active] = np.where(silent, 0.0, f0[:n_active])
-
+    # CREPE reports a pitch even in the noise floor; mark quiet frames unvoiced instead of letting them become notes.
+    rms = frame_rms(y, frame_length, hop_length)[:len(times)]
+    if rms.max() > 0:
+        silent = rms <= rms.max() * 10.0 ** (-float(rms_floor_db) / 20.0)
+        confidence[:len(rms)][silent] = 0.0
+        f0[:len(rms)][silent] = 0.0
     return PitchTrack(times, f0, confidence, "crepe")

@@ -3,7 +3,7 @@ import numpy as np
 
 from maestro.audio.onset_detection import onset_strength
 from maestro.audio.pitch import DEFAULT_PITCH_BACKEND, estimate_pitch
-from maestro.utils.audio_math import frame_signal
+from maestro.utils.audio_math import frame_rms, frame_signal
 
 
 def estimate_tempo(strength, sr, hop_length, bpm_range=(40, 220)):
@@ -30,20 +30,24 @@ def extract_features(y, sr, hop_length=256, frame_length=1024,
         **(pitch_options or {}),
     )
     strength = onset_strength(y, sr, n_fft=frame_length, hop_length=hop_length)
-    frames = frame_signal(y, frame_length, hop_length)
-    rms = np.sqrt((frames ** 2).mean(axis=1))
-    mag = np.abs(np.fft.rfft(frames * np.hanning(frame_length), axis=1))
-    freqs = np.fft.rfftfreq(frame_length, 1 / sr)
-    centroid = (mag * freqs).sum(axis=1) / (mag.sum(axis=1) + 1e-12)
+    rms = frame_rms(y, frame_length, hop_length)
+    centroid = _spectral_centroid(frame_signal(y, frame_length, hop_length), sr)
     tempo = estimate_tempo(strength, sr, hop_length)
 
-    n = min(len(track.times), len(track.f0), len(track.confidence), len(rms), len(centroid), len(strength))
-    return [{
-        "time": float(track.times[i]),
-        "pitch_confidence": float(track.confidence[i]),
-        "rms_energy": float(rms[i]),
-        "spectral_centroid": float(centroid[i]),
-        "onset_probability": float(strength[i]),
-        "estimated_pitch": float(track.f0[i]) if track.confidence[i] > 0 else 0.0,
-        "estimated_tempo": tempo,
-    } for i in range(n)]
+    n = min(len(track.times), len(rms), len(strength))
+    voiced = track.confidence[:n] > 0
+    columns = zip(track.times[:n].tolist(), track.confidence[:n].tolist(), rms[:n].tolist(), centroid[:n].tolist(),
+                  strength[:n].tolist(), np.where(voiced, track.f0[:n], 0.0).tolist())
+    return [{"time": t, "pitch_confidence": c, "rms_energy": r, "spectral_centroid": sc, "onset_probability": o,
+             "estimated_pitch": f, "estimated_tempo": tempo} for t, c, r, sc, o, f in columns]
+
+
+def _spectral_centroid(frames, sr, chunk=512):
+    """Spectral centroid (Hz) of every frame, computed in chunks so the full spectrogram never sits in memory."""
+    window = np.hanning(frames.shape[1])
+    freqs = np.fft.rfftfreq(frames.shape[1], 1 / sr)
+    out = np.empty(len(frames))
+    for start in range(0, len(frames), chunk):
+        mag = np.abs(np.fft.rfft(frames[start:start + chunk] * window, axis=1))
+        out[start:start + chunk] = (mag * freqs).sum(axis=1) / (mag.sum(axis=1) + 1e-12)
+    return out

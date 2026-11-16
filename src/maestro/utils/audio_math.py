@@ -33,3 +33,17 @@ def frame_signal(y, frame_length, hop_length):
     y = np.pad(np.asarray(y, dtype=float), frame_length // 2)
     n = 1 + (len(y) - frame_length) // hop_length
     return sliding_window_view(y, frame_length)[::hop_length][:n]
+
+
+def frame_rms(y, frame_length, hop_length, chunk=512):
+    """RMS of every frame of `frame_signal(y, ...)`, without ever materialising frame-sized temporaries.
+
+    Sums squares chunk by chunk over the strided frame view (einsum); shared by onset detection, feature
+    extraction and the pitch backends, which all need loudness on the same frame grid.
+    """
+    frames = frame_signal(y, frame_length, hop_length)
+    out = np.empty(len(frames))
+    for start in range(0, len(frames), chunk):
+        block = frames[start:start + chunk]
+        out[start:start + chunk] = np.einsum("ij,ij->i", block, block)
+    return np.sqrt(out / frame_length)

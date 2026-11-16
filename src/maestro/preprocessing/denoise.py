@@ -28,8 +28,7 @@
 import dataclasses
 
 import numpy as np
-
-from maestro.score.score_representation import Score
+from numpy.lib.stride_tricks import sliding_window_view
 
 # ------------------------------------------------------------------ audio
 
@@ -39,29 +38,28 @@ GUARD_BINS = 2         # keep this many bins around every loud cell (vibrato sid
 
 
 def _stft(y, n_fft, hop):
+    """Hann-windowed STFT (frames x bins) of `y` padded by n_fft on both sides, plus the window."""
     win = np.hanning(n_fft + 1)[:-1]                       # periodic Hann: perfect reconstruction at 75% overlap
-    padded = np.pad(y, (n_fft, n_fft))
-    n = 1 + (len(padded) - n_fft) // hop
-    idx = np.arange(n_fft)[None, :] + hop * np.arange(n)[:, None]
-    return np.fft.rfft(padded[idx] * win, axis=1), win
+    frames = sliding_window_view(np.pad(y, (n_fft, n_fft)), n_fft)[::hop]
+    return np.fft.rfft(frames * win, axis=1), win
 
 
 def _istft(spec, win, hop, length):
-    n_fft = len(win)
-    frames = np.fft.irfft(spec, n_fft, axis=1) * win
-    out = np.zeros(hop * (len(frames) - 1) + n_fft)
-    norm = np.zeros_like(out)
-    for k, f in enumerate(frames):
-        out[k * hop:k * hop + n_fft] += f
-        norm[k * hop:k * hop + n_fft] += win ** 2
-    return (out / np.maximum(norm, 1e-8))[n_fft:n_fft + length]
+    """Inverse of _stft: windowed overlap-add normalised by the summed squared window."""
+    n_fft, n = len(win), len(spec)
+    parts = n_fft // hop                                   # frames overlapping any sample (4 at 75% overlap)
+    frames = (np.fft.irfft(spec, n_fft, axis=1) * win).reshape(n, parts, hop)
+    squares = np.broadcast_to((win ** 2).reshape(parts, hop), (n, parts, hop))
+    out, norm = np.zeros((n + parts - 1, hop)), np.zeros((n + parts - 1, hop))
+    for q in range(parts):                                 # frame i, part q lands in hop-block i + q
+        out[q:q + n] += frames[:, q]
+        norm[q:q + n] += squares[:, q]
+    return (out.ravel() / np.maximum(norm.ravel(), 1e-8))[n_fft:n_fft + length]
 
 
 def _smooth(x, width):
-    """Moving average along the last axis (edge-padded)."""
-    k = np.ones(width) / width
-    pad = np.pad(x, [(0, 0)] * (x.ndim - 1) + [(width // 2, width // 2)], mode="edge")
-    return np.apply_along_axis(lambda r: np.convolve(r, k, mode="valid"), -1, pad)
+    """Moving average of a 1-D array (edge-padded, same length)."""
+    return np.convolve(np.pad(x, width // 2, mode="edge"), np.ones(width) / width, mode="valid")
 
 
 def denoise_audio(y, sr, reduction_db=AUDIO_DEFAULTS["reduction_db"], alpha=AUDIO_DEFAULTS["alpha"],
@@ -89,7 +87,7 @@ def denoise_audio(y, sr, reduction_db=AUDIO_DEFAULTS["reduction_db"], alpha=AUDI
     else:
         quiet = energy <= np.quantile(energy, quiet_frac)
         noise = np.median(power[quiet], axis=0) / np.log(2)
-    noise = np.maximum(_smooth(noise[None], 5)[0], 1e-12)
+    noise = np.maximum(_smooth(noise, 5), 1e-12)
     loud = energy >= np.median(energy)
     sig = max(energy[loud].mean() - noise.sum(), 1e-12)
     info = {"snr_db": float(10 * np.log10(sig / noise.sum())),
