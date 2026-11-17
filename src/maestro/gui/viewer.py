@@ -33,6 +33,28 @@ def _score_time_of(perf_t, pairs):
     return float(np.interp(perf_t, pt, np.maximum.accumulate(st)))
 
 
+def _extra_notes(notes, played, match):
+    """Performed notes that no written note explains -> notes for notation.render_panel(extras=...), placed by
+    mapping recording time to score time through the matched notes."""
+    used = {j for j in match.values() if j is not None}
+    pairs = [(played[j]["onset"], notes[i].onset) for i, j in match.items() if j is not None]
+    if not pairs:
+        return []
+    return [(_score_time_of(p["onset"], pairs), int(round(p["midi"])),
+             {"color": EXTRA, "pair": f"p{j}",
+              "title": f"extra note {charts.note_name(p['midi'])} at {p['onset']:.1f}s (not in the score)"})
+            for j, p in enumerate(played) if j not in used]
+
+
+def _legend_html():
+    swatch = lambda color, text, style="": f'<span><i style="background:{color};{style}"></i>{text}</span>'
+    return "".join([swatch(charts.GOOD, f"in tune (within {charts.CENTS_GOOD} cents)"),
+                    swatch(charts.OK, f"a bit off (within {charts.CENTS_OK})"), swatch(charts.BAD, "out of tune"),
+                    swatch(BAD_NOTE, "wrong note (shown where it was played)"),
+                    swatch("white", "not detected", f"border:1.5px dashed {BAD_NOTE}"), swatch(EXTRA, "extra note"),
+                    swatch("#ccc", "not played")])
+
+
 def build_viewer(perf):
     """Perf (analyze() result) -> HTML: the two engraved panels, a legend and a one-line summary."""
     score, played = perf.score, perf.audio_features["notes"]
@@ -60,10 +82,9 @@ def build_viewer(perf):
             return Glyph(n.midi_pitch, color="#999", opacity=0.25, status="unplayed",
                          title=f"{n.pitch} (bar {n.measure}): outside the part you played", **base)
         d = inton[i]
-        heard = int(round(played[j]["midi"]))
         if d["wrong_note"]:
             counts["wrong"] += 1
-            return Glyph(heard, color=BAD_NOTE, status="wrong", label="wrong", label_color=BAD_NOTE,
+            return Glyph(int(round(played[j]["midi"])), color=BAD_NOTE, status="wrong", label="wrong", label_color=BAD_NOTE,
                          title=f"written {n.pitch}, played {charts.note_name(played[j]['midi'])} (bar {n.measure})", **base)
         st = _status(d["cents"])
         counts[st] += 1
@@ -71,27 +92,11 @@ def build_viewer(perf):
         return Glyph(n.midi_pitch, color=color, status=st, label=("" if st == "ok" else f"{d['cents']:+.0f}c"),
                      label_color=color, title=f"{n.pitch}: {d['cents']:+.0f} cents (bar {n.measure})", **base)
 
-    # notes that were heard but are not in the score, placed by mapping recording time -> score time
-    pairs = [(played[j]["onset"], notes[i].onset) for i, j in match.items() if j is not None]
-    used = {j for j in match.values() if j is not None}
-    extras = []
-    if len(pairs) >= 1:
-        for j, p in enumerate(played):
-            if j not in used:
-                extras.append((_score_time_of(p["onset"], pairs), int(round(p["midi"])),
-                               {"color": EXTRA, "pair": f"p{j}",
-                                "title": f"extra note {charts.note_name(p['midi'])} at {p['onset']:.1f}s (not in the score)"}))
+    extras = _extra_notes(notes, played, match)
     left = render_panel(layout, written, WRITTEN)
-    right = render_panel(layout, detected, PLAYED, extras)
-
-    swatch = lambda color, text, style="": f'<span><i style="background:{color};{style}"></i>{text}</span>'
-    legend = "".join([swatch(charts.GOOD, f"in tune (within {charts.CENTS_GOOD} cents)"),
-                      swatch(charts.OK, f"a bit off (within {charts.CENTS_OK})"), swatch(charts.BAD, "out of tune"),
-                      swatch(BAD_NOTE, "wrong note (shown where it was played)"),
-                      swatch("white", "not detected", f"border:1.5px dashed {BAD_NOTE}"), swatch(EXTRA, "extra note"),
-                      swatch("#ccc", "not played")])
+    right = render_panel(layout, detected, PLAYED, extras)          # fills `counts` as a side effect
     summary = (f"{len(notes)} written notes: {counts['ok'] + counts['warn'] + counts['bad']} matched "
                f"({counts['ok']} in tune), {counts['wrong']} wrong, {counts['missed']} not detected, "
                f"{counts['unplayed']} outside the part you played; {len(extras)} extra note{'s' if len(extras) != 1 else ''} detected.")
     return (f'<div class="viewer"><div class="vcol">{left}</div><div class="vcol">{right}</div></div>'
-            f'<div class="vlegend">{legend}</div><p class="vsummary">{summary}</p>')
+            f'<div class="vlegend">{_legend_html()}</div><p class="vsummary">{summary}</p>')

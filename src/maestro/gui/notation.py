@@ -24,15 +24,21 @@ VALUES = [(4.0, "whole", 0), (3.0, "half", 1), (2.0, "half", 0), (1.5, "quarter"
 REST_VALUES = [4.0, 2.0, 1.0, 0.5, 0.25, 0.125]
 INK = "#222"
 CLEF_W = 38                                # width reserved for the clef (px)
+HEAD_RX, HEAD_RY = SP * 0.62, SP * 0.46    # notehead radii (the head is drawn tilted by -20 degrees)
+STEM_LEN = 3.5 * SP                        # standard stem length from the note at the stem's free end
+
+
+def _y(top, pos):
+    """y of diatonic staff position `pos` on a staff whose top line is at `top`."""
+    return top + (TOP_LINE_POS - pos) * SP / 2
 
 
 # ----------------------------------------------------------------------------- pitch spelling
 
 def infer_key(midis):
-    """Key signature (fifths, -7..7) that needs the fewest accidentals for these pitches."""
-    best = min(range(-7, 8), key=lambda f: (sum((m - (f * 7) % 12) % 12 not in (0, 2, 4, 5, 7, 9, 11) for m in midis),
-                                            abs(f)))
-    return best
+    """Key signature (fifths, -7..7) whose major scale needs the fewest accidentals for these pitches."""
+    major = (0, 2, 4, 5, 7, 9, 11)
+    return min(range(-7, 8), key=lambda f: (sum((m - f * 7) % 12 not in major for m in midis), abs(f)))
 
 
 def key_alters(fifths):
@@ -44,20 +50,20 @@ def key_alters(fifths):
 
 
 def spell(midi, fifths):
-    """MIDI -> (staff position, alteration) spelled the way `fifths` would: in-key spellings first,
-    sharps in sharp keys and flats in flat keys otherwise. Position: 7*octave + letter (C4 = 28)."""
-    ks = key_alters(fifths)
+    """MIDI -> (staff position, alteration) spelled the way `fifths` would: spellings that match the key
+    signature first, then natural, then sharps in sharp keys / flats in flat keys.
+    Position = 7 * octave + letter index (C4 = 28)."""
+    in_key = key_alters(fifths)
     pc, octave = midi % 12, midi // 12 - 1
     best = None
     for letter, base in enumerate(LETTER_PC):
         for alt in (0, 1, -1):
             if (base + alt) % 12 != pc:
                 continue
-            cost = (0 if alt == ks[letter] else 1, 0 if alt == 0 else (0.1 if (alt > 0) == (fifths >= 0) else 0.5))
-            o = octave + (1 if base + alt >= 12 else -1 if base + alt < 0 else 0)
+            cost = (alt != in_key[letter], 0 if alt == 0 else 0.1 if (alt > 0) == (fifths >= 0) else 0.5)
+            spelled_octave = octave + (base + alt >= 12) - (base + alt < 0)       # B# is in the next octave, Cb in the previous
             if best is None or cost < best[0]:
-                best = (cost, 7 * (o) + letter, alt)
-    # octave correction for B#/Cb style spellings is handled by `o` above
+                best = (cost, 7 * spelled_octave + letter, alt)
     return best[1], best[2]
 
 
@@ -137,7 +143,7 @@ def _measure_slots(notes, group, beat_type):
         by_onset.setdefault(round(pos(i), 6), []).append(i)
     onsets = sorted(by_onset)
     slots, cursor = [], 0.0
-    for k, on in enumerate(onsets):
+    for on in onsets:
         if on > cursor + 1e-6 and slots:                                # silence before this onset
             slots += _rest_slots(on - cursor, cursor)
         members = sorted(by_onset[on], key=lambda i: notes[i].midi_pitch)
@@ -185,8 +191,8 @@ def layout_score(notes, fifths=None, time_sig=None, width=560.0):
         header = first_header if si == 0 else key_w
         avail = width - 8 - header
         natural = sum(m.w for m in row)
-        scale = avail / natural if (si < len(rows) - 1 or natural > 0.7 * avail) else 1.0
-        scale = min(scale, 1.6)
+        # stretch the line to the full width, except a short last line, and never by more than 60%
+        scale = min(avail / natural if (si < len(rows) - 1 or natural > 0.7 * avail) else 1.0, 1.6)
         sys_ = System(row, y=y + above, height=above + 4 * SP + below, header_w=header)
         x = header
         for m in row:
@@ -317,7 +323,7 @@ def _draw_header(out, layout, si, sys_):
     f, kx = layout.fifths, x0 + CLEF_W
     # key-signature accidentals sit on fixed lines of the treble staff (F C G D A E B / B E A D G C F)
     for j, pos in enumerate(([38, 35, 39, 36, 33, 37, 34] if f > 0 else [34, 37, 33, 36, 32, 35, 31])[:abs(f)]):
-        out.append(_accidental(1 if f > 0 else -1, kx + j * 7, top + (TOP_LINE_POS - pos) * SP / 2))
+        out.append(_accidental(1 if f > 0 else -1, kx + j * 7, _y(top, pos)))
     if si == 0 and layout.time_sig:
         tx = kx + 7 * abs(f) + 10
         out.append(f'<g font-family="serif" font-weight="bold" font-size="{2.1 * SP:.0f}" text-anchor="middle" fill="{INK}">'
@@ -327,18 +333,17 @@ def _draw_header(out, layout, si, sys_):
 
 def _draw_beam(out, layout, m, group, glyphs, top, up):
     """One beam over `group` (slot indices): stems end on a (gently sloped) beam line; extra beams for 16ths."""
-    fifths = layout.fifths
-    rx = SP * 0.62
-    xs = [layout.head_x[m.slots[k].notes[0]] + (rx - 0.6 if up else -rx + 0.6) for k in group]
-    ys = [top + (TOP_LINE_POS - spell(glyphs[m.slots[k].notes[0]].midi, fifths)[0]) * SP / 2 for k in group]
-    ends = [y - 3.5 * SP if up else y + 3.5 * SP for y in ys]
+    first_notes = [m.slots[k].notes[0] for k in group]                        # beamed slots hold single notes
+    xs = [layout.head_x[i] + (HEAD_RX - 0.6 if up else -HEAD_RX + 0.6) for i in first_notes]
+    ys = [_y(top, spell(glyphs[i].midi, layout.fifths)[0]) for i in first_notes]
+    ends = [y - STEM_LEN if up else y + STEM_LEN for y in ys]
     slope = max(-0.5 * SP, min(0.5 * SP, ends[-1] - ends[0])) / max(xs[-1] - xs[0], 1)
     line = lambda x: ends[0] + slope * (x - xs[0])
     # no stem shorter than 2.5 spaces: push the whole beam away from the heads if needed
     need = max((line(x) - (y - 2.5 * SP)) if up else ((y + 2.5 * SP) - line(x)) for x, y in zip(xs, ys))
     shift = (-need if up else need) if need > 0 else 0
     by = lambda x: line(x) + shift
-    g0 = glyphs[m.slots[group[0]].notes[0]]
+    g0 = glyphs[first_notes[0]]
     for x, y in zip(xs, ys):
         out.append(f'<line x1="{x:.1f}" x2="{x:.1f}" y1="{y:.1f}" y2="{by(x):.1f}" stroke="{g0.color}" stroke-width="1" opacity="{g0.opacity}"/>')
     thick = 0.5 * SP
@@ -362,64 +367,75 @@ def _draw_beam(out, layout, m, group, glyphs, top, up):
             j += 1
 
 
-def _draw_slot(out, layout, m, k, glyphs, top, state, beamed, drawn):
-    """Heads, accidentals, dots, ledger lines and stem/flags of the note slot m.slots[k]."""
-    notes, fifths, s = layout.notes, layout.fifths, m.slots[k]
-    ks = key_alters(fifths)
-    here = sorted(s.notes, key=lambda i: glyphs[i].midi)
-    spelled = {i: spell(glyphs[i].midi, fifths) for i in here}
-    _, name, dots = _note_value(max(notes[i].duration for i in here))
-    group = beamed.get(k)
-    if group:
-        centre = sum(sum(spell(glyphs[i].midi, fifths)[0] for i in m.slots[kk].notes) for kk in group) / len(group)
-    else:
-        centre = sum(p[0] for p in spelled.values()) / len(spelled)
-    up = centre < MIDDLE_POS
-    hx, rx, ry = layout.head_x[here[0]], SP * 0.62, SP * 0.46
-    ypos = lambda pos: top + (TOP_LINE_POS - pos) * SP / 2
+def _draw_heads(out, layout, here, glyphs, spelled, up, top, name, dots, state):
+    """Ledger lines, then noteheads (+ accidental, dot, label) of one slot -> {note index: head y}."""
+    key = key_alters(layout.fifths)
+    hx = layout.head_x[here[0]]
+    ys = {i: _y(top, spelled[i][0]) for i in here}
     lo, hi = min(p[0] for p in spelled.values()), max(p[0] for p in spelled.values())
-    for lp in _ledger_lines(lo, hi):
-        out.append(f'<line x1="{hx - rx - 3:.1f}" x2="{hx + rx + 3:.1f}" y1="{ypos(lp):.1f}" y2="{ypos(lp):.1f}" stroke="{INK}" stroke-width="0.9"/>')
-    flipped, prev = {}, None                                # seconds in a chord: second head goes to the other side
-    for i in (here if up else list(reversed(here))):
+    for pos in _ledger_lines(lo, hi):
+        out.append(f'<line x1="{hx - HEAD_RX - 3:.1f}" x2="{hx + HEAD_RX + 3:.1f}" y1="{_y(top, pos):.1f}" y2="{_y(top, pos):.1f}" '
+                   f'stroke="{INK}" stroke-width="0.9"/>')
+    flipped, prev = {}, None                                # a second in a chord: the upper/lower head sits beside the stem
+    for i in (here if up else here[::-1]):
         flipped[i] = prev is not None and abs(spelled[i][0] - prev[0]) == 1 and not flipped[prev[1]]
         prev = (spelled[i][0], i)
-    ys = {i: ypos(spelled[i][0]) for i in here}
     for i in here:
         g, (pos, acc) = glyphs[i], spelled[i]
-        cx = hx + ((2 * rx - 1.2) if up else -(2 * rx - 1.2)) * flipped[i]
+        cx = hx + ((2 * HEAD_RX - 1.2) if up else -(2 * HEAD_RX - 1.2)) * flipped[i]
         parts = []
-        if acc != state.get(pos, ks[pos % 7]):               # accidental only if it changes what is in force
-            parts.append(_accidental(acc, cx - rx - 7, ys[i], g.color))
+        if acc != state.get(pos, key[pos % 7]):             # accidental only if it changes what is in force
+            parts.append(_accidental(acc, cx - HEAD_RX - 7, ys[i], g.color))
             state[pos] = acc
         hollow = name in ("whole", "half") or g.dashed
         dash = ' stroke-dasharray="2 1.5"' if g.dashed else ""
-        parts.append(f'<ellipse cx="{cx:.1f}" cy="{ys[i]:.1f}" rx="{rx:.1f}" ry="{ry:.1f}" transform="rotate(-20 {cx:.1f} {ys[i]:.1f})" '
-                     f'fill="{"white" if hollow else g.color}" stroke="{g.color}" stroke-width="{1.6 if hollow else 0.8}"'
-                     f'{dash} class="head"/>')
-        if dots:
-            parts.append(f'<circle cx="{cx + rx + 4:.1f}" cy="{ys[i] - (SP / 2 if pos % 2 == 0 else 0):.1f}" r="1.3" fill="{g.color}"/>')
+        parts.append(f'<ellipse cx="{cx:.1f}" cy="{ys[i]:.1f}" rx="{HEAD_RX:.1f}" ry="{HEAD_RY:.1f}" '
+                     f'transform="rotate(-20 {cx:.1f} {ys[i]:.1f})" fill="{"white" if hollow else g.color}" '
+                     f'stroke="{g.color}" stroke-width="{1.6 if hollow else 0.8}"{dash} class="head"/>')
+        if dots:                                            # a dot on a line moves up into the space above
+            parts.append(f'<circle cx="{cx + HEAD_RX + 4:.1f}" cy="{ys[i] - (SP / 2 if pos % 2 == 0 else 0):.1f}" r="1.3" fill="{g.color}"/>')
         if g.label:
             parts.append(f'<text x="{cx:.1f}" y="{top - 13:.1f}" text-anchor="middle" font-size="8.5" font-weight="bold" '
                          f'fill="{g.label_color}">{escape(g.label)}</text>')
         out.append(f'<g class="note" data-pair="{escape(g.pair)}" data-status="{escape(g.status)}" opacity="{g.opacity}">'
                    f'<title>{escape(g.title)}</title>{"".join(parts)}</g>')
+    return ys
+
+
+def _draw_stem(out, layout, here, glyph, ys, up, top, name):
+    """Stem (standard length, reaching at least the middle line) and flags of an unbeamed slot."""
+    hx = layout.head_x[here[0]]
+    stem_x = hx + HEAD_RX - 0.6 if up else hx - HEAD_RX + 0.6
+    near, far = (max(ys.values()), min(ys.values())) if up else (min(ys.values()), max(ys.values()))
+    end = far - STEM_LEN if up else far + STEM_LEN
+    end = min(end, top + 2 * SP) if up else max(end, top + 2 * SP)
+    out.append(f'<line x1="{stem_x:.1f}" x2="{stem_x:.1f}" y1="{near:.1f}" y2="{end:.1f}" stroke="{glyph.color}" '
+               f'stroke-width="1" opacity="{glyph.opacity}"/>')
+    flags = {"eighth": 1, "16th": 2, "32nd": 3}.get(name, 0)
+    if flags:
+        out.append(_flags(stem_x, end, up, flags, glyph.color))
+
+
+def _draw_slot(out, layout, m, k, glyphs, top, state, beamed, drawn):
+    """Heads, accidentals, dots, ledger lines and stem/flags/beam of the note slot m.slots[k]."""
+    fifths = layout.fifths
+    here = sorted(m.slots[k].notes, key=lambda i: glyphs[i].midi)                 # lowest pitch first
+    spelled = {i: spell(glyphs[i].midi, fifths) for i in here}
+    _, name, dots = _note_value(max(layout.notes[i].duration for i in here))
+    group = beamed.get(k)
+    # stems point away from the middle line; a beamed group shares one direction (by its average pitch)
+    pitched = [spelled[i][0] for i in here] if not group else [
+        spell(glyphs[i].midi, fifths)[0] for kk in group for i in m.slots[kk].notes]
+    up = sum(pitched) / len(pitched) < MIDDLE_POS
+    ys = _draw_heads(out, layout, here, glyphs, spelled, up, top, name, dots, state)
     if name == "whole":
         return
-    g0 = glyphs[here[0]]
     if group:
-        if id(group) not in drawn:
+        if id(group) not in drawn:                          # draw each beam once, from its first slot
             drawn.add(id(group))
             _draw_beam(out, layout, m, group, glyphs, top, up)
-        return
-    stem_x = hx + rx - 0.6 if up else hx - rx + 0.6
-    near, far = (max(ys.values()), min(ys.values())) if up else (min(ys.values()), max(ys.values()))
-    end = far - 3.5 * SP if up else far + 3.5 * SP
-    end = min(end, top + 2 * SP) if up else max(end, top + 2 * SP)   # stems reach at least the middle line
-    out.append(f'<line x1="{stem_x:.1f}" x2="{stem_x:.1f}" y1="{near:.1f}" y2="{end:.1f}" stroke="{g0.color}" stroke-width="1" opacity="{g0.opacity}"/>')
-    n_flags = {"eighth": 1, "16th": 2, "32nd": 3}.get(name, 0)
-    if n_flags:
-        out.append(_flags(stem_x, end, up, n_flags, g0.color))
+    else:
+        _draw_stem(out, layout, here, glyphs[here[0]], ys, up, top, name)
 
 
 def render_panel(layout, glyph_for: Callable[[int], Glyph], title="", extras=()):
@@ -436,7 +452,6 @@ def render_panel(layout, glyph_for: Callable[[int], Glyph], title="", extras=())
         out.append(f'<text x="{layout.width / 2:.0f}" y="15" text-anchor="middle" font-size="13" font-weight="bold">{escape(title)}</text>')
     out.append(f'<g transform="translate(0 {oy})">')
     beat_type = layout.time_sig[1] if layout.time_sig else 4
-    slots = [(sys_, m, s) for sys_ in layout.systems for m in sys_.measures for s in m.slots if s.kind == "notes"]
 
     for si, sys_ in enumerate(layout.systems):
         top = sys_.y
@@ -458,13 +473,14 @@ def render_panel(layout, glyph_for: Callable[[int], Glyph], title="", extras=())
                 else:
                     _draw_slot(out, layout, m, k, glyphs, top, state, beamed, drawn)
 
+    slots = [(sys_, s) for sys_ in layout.systems for m in sys_.measures for s in m.slots if s.kind == "notes"]
     for sec, midi, kw in extras:                                # detected but not written
-        before = [t for t in slots if t[2].start_sec <= sec + 1e-6] or slots[:1]
+        before = [t for t in slots if t[1].start_sec <= sec + 1e-6] or slots[:1]
         if not before:
             continue
-        sys_, _, s = before[-1]
+        sys_, s = before[-1]
         pos, acc = spell(midi, layout.fifths)
-        x, y, col = s.x + s.w - 4, sys_.y + (TOP_LINE_POS - pos) * SP / 2, kw.get("color", "#8e44ad")
+        x, y, col = s.x + s.w - 4, _y(sys_.y, pos), kw.get("color", "#8e44ad")
         out.append(f'<g class="note extra" data-pair="{escape(kw.get("pair", ""))}" data-status="extra"><title>{escape(kw.get("title", ""))}</title>'
                    f'<ellipse cx="{x:.1f}" cy="{y:.1f}" rx="{SP * .62:.1f}" ry="{SP * .46:.1f}" transform="rotate(-20 {x:.1f} {y:.1f})" '
                    f'fill="{col}" stroke="{col}"/>{_accidental(acc, x - SP, y, col) if acc else ""}</g>')

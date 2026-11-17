@@ -183,7 +183,7 @@ def tempo_chart(score_features, perf_notes, rhythm):
              for n in rhythm["notes"]]
     if len(pairs) < 2:
         return _empty("Tempo", "Not enough matched notes to estimate tempo.")
-    so, po, err = (np.array(c) for c in zip(*pairs))
+    so, po, _ = (np.array(c) for c in zip(*pairs))
     hi = float(max(so.max(), po.max())) * 1.05
     p = _Plot("Tempo: written time vs played time", (0, hi), (0, hi), "time in the score at its written tempo (s)",
               "time when you played the note (s)")
