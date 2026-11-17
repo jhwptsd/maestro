@@ -6,10 +6,10 @@ import numpy as np
 
 from helpers import SR, synth
 from maestro.audio.backends import yin
-from maestro.audio.backends.base import frame_rms
+from maestro.alignment.dtw import dtw
 from maestro.audio.pitch import estimate_pitch
 from maestro.audio.transcription import _cut_by_pitch
-from maestro.utils.audio_math import frame_signal
+from maestro.utils.audio_math import frame_rms, frame_signal
 
 
 def pick_reference(row, tau_min, threshold):
@@ -49,6 +49,35 @@ def cut_reference(sm, max_dev, persist):
         segs.append((start, j))
         i = j
     return segs
+
+
+def dtw_reference(cost, open_begin, open_end):
+    """The textbook cell-by-cell DTW that the anti-diagonal version replaced."""
+    n, m = cost.shape
+    acc = np.full((n + 1, m + 1), np.inf)
+    acc[0, 0] = 0.0
+    if open_begin:
+        acc[:, 0] = 1e-6 * np.arange(n + 1)
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            acc[i, j] = cost[i - 1, j - 1] + min(acc[i - 1, j - 1], acc[i - 1, j], acc[i, j - 1])
+    i = int(np.flatnonzero(acc[1:, m] <= acc[1:, m].min() + 1e-9)[-1]) + 1 if open_end else n
+    j, path, total = m, [], float(acc[i, m])
+    while i > 0 and j > 0:
+        path.append((i - 1, j - 1))
+        step = int(np.argmin([acc[i - 1, j - 1], acc[i - 1, j], acc[i, j - 1]]))
+        i, j = (i - 1, j - 1) if step == 0 else (i - 1, j) if step == 1 else (i, j - 1)
+    return path[::-1], total
+
+
+class VectorisedDTW(unittest.TestCase):
+    def test_matches_the_cell_by_cell_reference_including_ties_and_open_ends(self):
+        rng = np.random.default_rng(0)
+        for shape in ((1, 1), (1, 7), (7, 1), (13, 40), (40, 13), (50, 50)):
+            for cost in (rng.random(shape), rng.integers(0, 3, shape).astype(float)):   # continuous, and full of ties
+                for open_begin in (False, True):
+                    for open_end in (False, True):
+                        self.assertEqual(dtw(cost, open_begin, open_end), dtw_reference(cost, open_begin, open_end))
 
 
 class VectorisedPick(unittest.TestCase):

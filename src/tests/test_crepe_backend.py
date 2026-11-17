@@ -7,6 +7,8 @@ from unittest import mock
 import numpy as np
 
 from helpers import synth
+from maestro.audio.backends.base import frame_times
+from maestro.audio.pitch import estimate_pitch
 
 HAVE_CREPE = all(importlib.util.find_spec(m) for m in ("torch", "torchcrepe", "librosa", "scipy"))
 SR = 22050
@@ -48,7 +50,7 @@ class Decoder(unittest.TestCase):
     def test_smooths_with_viterbi_and_survives_masking_and_edges(self):
         centres = np.full(40, 120.0)
         centres[17] = 300.0                                                   # a one-frame octave-error spike
-        bins, freq = self.crepe._decode(self.probs(centres))
+        bins, _ = self.crepe._decode(self.probs(centres))
         self.assertEqual(int(bins[0, 17]), 120)                               # the path ignores the spike
         masked = self.probs(100.0).clone()
         masked[:, :60] = -float("inf")                                        # fmin/fmax masking
@@ -67,7 +69,6 @@ class Backend(unittest.TestCase):
         cls.audio = synth(cls.notes)
 
     def track(self, **kw):
-        from maestro.audio.pitch import estimate_pitch
         return estimate_pitch(self.audio, SR, backend="crepe", **kw)
 
     def test_deterministic_and_accurate_per_note(self):
@@ -105,22 +106,17 @@ class Backend(unittest.TestCase):
 
     def test_resampling_keeps_pitch_and_timeline_for_any_sample_rate(self):
         from maestro.audio.backends.crepe import _resample
-        t = np.arange(SR) / SR
-        tone = np.sin(2 * np.pi * 440 * t).astype(np.float32)
         for sr in (22050, 44100, 48000):
             x = np.sin(2 * np.pi * 440 * np.arange(sr) / sr).astype(np.float32)
             y16 = _resample(x, sr, 16000)
             self.assertAlmostEqual(len(y16), 16000, delta=2)
             freqs = np.fft.rfftfreq(len(y16), 1 / 16000)
             self.assertAlmostEqual(freqs[np.argmax(np.abs(np.fft.rfft(y16)))], 440, delta=1.5)
-        from maestro.audio.backends.base import frame_times
         for sr in (16000, 44100):
             z = np.interp(np.arange(int(len(self.audio) * sr / SR)) * SR / sr, np.arange(len(self.audio)), self.audio).astype(np.float32)
-            from maestro.audio.pitch import estimate_pitch
             tr = estimate_pitch(z, sr, backend="crepe")
             np.testing.assert_allclose(tr.times, frame_times(len(z), sr, 256))   # shared timeline with every backend
             self.assertEqual(len(tr.f0), len(tr.times))
-        _ = tone
 
 
 if __name__ == "__main__":

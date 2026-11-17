@@ -70,14 +70,15 @@ class Engraving(unittest.TestCase):
         self.assertEqual(xs, sorted(xs))                              # left to right in time (single system here)
 
     def test_beams_flags_and_rests(self):
-        beamed = make_notes([(72, 0.5), (74, 0.5), (76, 1), (77, 2)])           # two eighths share a beam
+        beamed = make_notes([(72, 0.5), (74, 0.5), (76, 1), (77, 2)])           # two eighths share one beam, no flags
         _, svg, root = draw(beamed)
         self.assertEqual(count(root, "line", "beam"), 1)
-        lone = make_notes([(72, 0.5), (None, 0.5), (76, 1), (77, 2)])           # a lone eighth gets a flag, then a rest
+        self.assertNotIn('stroke-width="1.5"', svg)                            # (flag paths are the only 1.5-wide strokes)
+        lone = make_notes([(72, 0.5), (None, 0.5), (76, 1), (77, 2)])           # a lone eighth gets a flag, then an eighth rest
         _, svg, root = draw(lone)
         self.assertEqual(count(root, "line", "beam"), 0)
-        self.assertIn('stroke-linecap="round"/>', svg)                         # flag path
-        self.assertTrue(re.search(r"<(path|circle|rect)[^>]*stroke=\"#222\"", svg))   # rest glyph drawn
+        self.assertEqual(svg.count('stroke-width="1.5"'), 1)                   # the flag
+        self.assertEqual(count(root, "circle"), 1)                              # the eighth rest's dot (no dotted notes here)
 
     def test_ledger_lines_accidentals_and_carry_over(self):
         low = make_notes([(55, 1)])                                           # G3: two ledger lines below the staff
@@ -100,21 +101,20 @@ class Engraving(unittest.TestCase):
 
     def test_chords_and_dots(self):
         chord = [Note(1, 1.0, "X", m, 1.5, None, 0.0, 0.75) for m in (60, 64, 67, 69)]   # dotted quarter chord
-        _, svg, root = draw(chord)
-        heads = [e for e in root.iter(f"{{{NS['s']}}}ellipse")]
+        _, _, root = draw(chord)
+        heads = list(root.iter(f"{{{NS['s']}}}ellipse"))
         self.assertEqual(len(heads), 4)
         self.assertGreater(len({round(float(h.get("cx")), 1) for h in heads}), 1)       # G/A seconds are offset sideways
         self.assertEqual(count(root, "circle"), 4)                                       # one dot per head
 
     def test_long_pieces_wrap_into_systems_and_repeats_are_separate_measures(self):
         notes = make_notes([(60 + k % 12, 1) for k in range(64)])             # 16 bars
-        layout, _, root = draw(notes)
-        self.assertGreater(len(layout.systems), 3)
-        self.assertTrue(all(s.header_w > 0 for s in layout.systems))
+        self.assertGreater(len(layout_score(notes, 0, (4, 4)).systems), 3)
         rep = make_notes([(60, 1), (62, 1), (64, 1), (65, 1)])
         rep += [Note(1, n.beat, "X", n.midi_pitch, 1, None, n.onset + 2, n.offset + 2) for n in rep]   # measure 1 played again
-        self.assertEqual(sum(len(m.slots) for s in layout_score(rep, 0, (4, 4)).systems for m in s.measures), 8)
-        self.assertEqual(len([m for s in layout_score(rep, 0, (4, 4)).systems for m in s.measures]), 2)
+        measures = [m for s in layout_score(rep, 0, (4, 4)).systems for m in s.measures]
+        self.assertEqual(len(measures), 2)                                      # the repeat is its own measure
+        self.assertEqual(sum(len(m.slots) for m in measures), 8)
 
 
 def fake_perf(statuses):

@@ -60,7 +60,7 @@ def play_minuet(bars=slice(None), bpm=100, vibrato_cents=30, vibrato_hz=5.5, noi
             t += beats * spb
     n_samples = int((t + 1.0) * SR)
     target, amp = np.zeros(n_samples), np.zeros(n_samples)
-    for i, (m, start, dur, slur) in enumerate(notes):
+    for m, start, dur, slur in notes:
         s, e = int(start * SR), int((start + dur) * SR)
         k = np.arange(e - s)
         a = rng.uniform(0.6, 1.0) * np.minimum(1, k / (0.03 * SR))            # 30 ms bow attack

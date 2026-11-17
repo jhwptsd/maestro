@@ -1,6 +1,5 @@
 """Denoising (preprocessing/denoise.py): audio keeps vibrato, bow noise and tone while losing background
 noise; video noise drops while motion stays; score artefacts are removed but real notes are kept."""
-import dataclasses
 import subprocess
 import tempfile
 import unittest
@@ -150,8 +149,7 @@ class VideoDenoising(unittest.TestCase):
             off = preprocess_video(Performance(), d / "in.mp4", d / "off", denoise=False)
             f_on, f_off = self.frames(on.video), self.frames(off.video)
         n = min(len(f_on), len(f_off))
-        static = (slice(n // 2, n), slice(70, 90), slice(5, 40))              # lower-left corner: square never there
-        flicker = lambda f: np.diff(f[:n, 70:90, 5:40], axis=0).std()          # frame-to-frame noise
+        flicker = lambda f: np.diff(f[:n, 70:90, 5:40], axis=0).std()          # frame-to-frame noise in a static corner
         self.assertLess(flicker(f_on), 0.7 * flicker(f_off))
         # the moving square is still there, bright, and moves at the same speed
         def centre_x(f):

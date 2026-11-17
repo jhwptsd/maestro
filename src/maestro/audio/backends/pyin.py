@@ -1,7 +1,8 @@
 """Librosa pYIN backend (probabilistic YIN with temporal decoding)."""
 import numpy as np
 
-from maestro.audio.backends.base import PitchTrack, frame_times, frame_rms
+from maestro.utils.audio_math import frame_rms
+from maestro.audio.backends.base import PitchTrack, frame_times
 
 
 def estimate(y, sr, frame_length=2048, hop_length=256, fmin=None, fmax=None,

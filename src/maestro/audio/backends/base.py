@@ -3,8 +3,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from maestro.utils.audio_math import frame_rms  # noqa: F401  (re-exported for the backends)
-
 
 @dataclass
 class PitchTrack:

@@ -21,7 +21,8 @@ import math
 
 import numpy as np
 
-from maestro.audio.backends.base import PitchTrack, frame_times, frame_rms
+from maestro.utils.audio_math import frame_rms
+from maestro.audio.backends.base import PitchTrack, frame_times
 
 _CENTS_OFFSET = 1997.3794084376191   # cents of pitch bin 0 (torchcrepe.convert.bins_to_cents)
 _REFINE_BINS = 4                     # bins either side of the Viterbi path used for the weighted average
