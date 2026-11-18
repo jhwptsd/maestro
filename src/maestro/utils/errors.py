@@ -15,3 +15,8 @@ class MismatchError(InputError):
 
 class OMRUnavailableError(RuntimeError):
     """PDF/image scores need Audiveris, which is not installed (an environment problem, not bad input)."""
+
+
+class PoseUnavailableError(RuntimeError):
+    """No pose source is available (VioPose not configured or failed, audio-only upload, no pose file).
+    maestro.analyze() catches this and simply skips the visual analysis."""

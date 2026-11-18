@@ -14,7 +14,8 @@ class Performance:
         self.reference = None
         
         self.preprocessing_report = {}  # denoising summaries: {"audio": {...}, "score": {...}, "video": bool}
-        self.pose  = None
+        self.pose  = None            # vision/pose_io.Pose (3D joints per frame), or None when no pose source is available
+        self.motion_features = None  # vision/motion_features.extract_motion output (hands, bow strokes, angles)
         self.audio_features = None
         self.score_features = None
         

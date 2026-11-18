@@ -6,6 +6,12 @@
 #   tempo_chart         <- assessment["rhythm"] (+ score/perf onsets)  (overall tempo, "tempo_ratio")
 #   timing_chart        <- assessment["rhythm"]["notes"]  (ms early/late per note)
 #   match_chart         <- assessment["correspondence"]  (does the score fit the recording)
+# Visual analysis (vision/ + assessment/; none of it uses audio):
+#   bow_chart           <- motion_features["bow"]  (right-hand travel along the bow, one colour per direction)
+#   stroke_chart        <- assessment["bowing"]["strokes"]  (length of each bow stroke)
+#   arm_chart           <- motion_features["elbow_angle"]  (elbow angles over time)
+#   visual_pitch_chart  <- assessment["visual_pitch"]  (pitch implied by the left hand's position)
+#   mocap_chart         <- assessment["mocap"]  (visual estimate vs motion capture, per joint)
 # The annotated score itself comes from score/visualize.py. gui/report.py arranges all of these with
 # explanations; gui/server.py serves that report. The pitch/timing thresholds come from the assessment
 # modules, so the colours on every chart and the grades on the summary cards always agree.
@@ -208,4 +214,100 @@ def match_chart(corr, threshold=0.6):
         p.text(p.x(0) + 6, p.y(y0) + 4, f"{label}: {v:.0%}", "white" if v > 0.35 else "#333")
     p.line(threshold, 0.1, threshold, 2.95, "#333", 1.5, "4 3", "minimum to accept")
     p.text(p.x(threshold), p.h - p.B + 14, f"minimum {threshold:.0%}", "#333", "middle")
+    return p.svg()
+
+
+# ----------------------------------------------------------------------------- visual analysis
+
+def _polyline(p, xs, ys, color, width=1.5):
+    """Connect consecutive points, downsampled to at most ~1500 segments."""
+    step = max(1, len(xs) // 1500)
+    xs, ys = xs[::step], ys[::step]
+    for k in range(len(xs) - 1):
+        p.line(xs[k], ys[k], xs[k + 1], ys[k + 1], color, width)
+
+
+def bow_chart(motion):
+    """Bow travel over time: right-hand position along the bow axis, one colour per stroke direction."""
+    bow = motion.get("bow")
+    if not bow or not bow["strokes"]:
+        return _empty("Bow movement", "No bow strokes were found.")
+    t, s = motion["times"], bow["s"]
+    lo, hi = float(np.min(s)), float(np.max(s))
+    pad = 0.1 * (hi - lo or 1)
+    p = _Plot("Bow movement over time", (0, float(t[-1])), (lo - pad, hi + pad), "time in recording (s)",
+              "right-hand travel along the bow (shoulder widths)")
+    p.grid(_ticks(0, float(t[-1])), _ticks(lo - pad, hi + pad, 5))
+    for st in bow["strokes"]:
+        a, b = int(st["start"] * motion["fps"]), int(st["end"] * motion["fps"]) + 1
+        _polyline(p, t[a:b], s[a:b], BLUE if st["dir"] > 0 else ORANGE, 2)
+    markers = bow["axis_source"] == "markers"
+    p.legend([(BLUE, "down-bow" if markers else "stroke one way"), (ORANGE, "up-bow" if markers else "stroke the other way")])
+    return p.svg()
+
+
+def stroke_chart(bowing):
+    """Bar per bow stroke: how far the hand travelled. Colour = direction."""
+    strokes = bowing.get("strokes") or []
+    if not strokes:
+        return _empty("Bow stroke length", "No bow strokes were found.")
+    top = max(s["length"] for s in strokes) * 1.15
+    p = _Plot("Length of each bow stroke", (0, len(strokes) + 1), (0, top), "stroke number", "bow travel (shoulder widths)")
+    p.grid(_ticks(1, len(strokes), 8), _ticks(0, top, 5), xfmt=lambda v: f"{v:.0f}")
+    for k, st in enumerate(strokes, start=1):
+        p.rect(k - 0.35, k + 0.35, 0, st["length"], BLUE if st["dir"] > 0 else ORANGE,
+               f"stroke {k}: {st['length']:.2f}, {st['mean_speed']:.2f}/s")
+    m = bowing["mean_stroke_length"]
+    p.line(0, m, len(strokes) + 1, m, "#333", 1.5, "5 4", f"mean {m:.2f}")
+    p.legend([(BLUE, "one direction"), (ORANGE, "the other"), ("#333", "average length")])
+    return p.svg()
+
+
+def arm_chart(motion):
+    """Elbow angle (shoulder-elbow-wrist) of both arms over time."""
+    angles = motion.get("elbow_angle") or {}
+    if not angles:
+        return _empty("Elbow angles", "Shoulder, elbow and wrist joints were not tracked.")
+    t = motion["times"]
+    allv = np.concatenate([a[np.isfinite(a)] for a in angles.values()])
+    lo, hi = float(allv.min()) - 5, float(allv.max()) + 5
+    p = _Plot("Elbow angles over time", (0, float(t[-1])), (lo, hi), "time in recording (s)", "elbow angle (degrees)")
+    p.grid(_ticks(0, float(t[-1])), _ticks(lo, hi, 5))
+    items = []
+    for side, color in (("left", BLUE), ("right", ORANGE)):
+        if side in angles:
+            _polyline(p, t, angles[side], color, 1.8)
+            items.append((color, f"{side} elbow ({'fingering' if side == 'left' else 'bowing'} arm)"))
+    p.legend(items)
+    return p.svg()
+
+
+def visual_pitch_chart(vp):
+    """Pitch implied by the left hand's position, from video alone: semitones above the open string over time.
+    On the A string 0 = A4, +7 = E5, +12 = A5; the string itself cannot be seen."""
+    if not vp.get("available"):
+        return _empty("Left-hand position as pitch", vp.get("reason", "Not available."))
+    t, s = vp["times"], vp["semitones_above_open"]
+    lo, hi = float(np.floor(min(s.min(), 0))) - 1, float(np.ceil(s.max())) + 1
+    p = _Plot("Pitch implied by left-hand position (video only)", (0, float(t[-1])), (lo, hi), "time in recording (s)",
+              "semitones above the open string")
+    p.grid(_ticks(0, float(t[-1])), _ticks(lo, hi, 7))
+    p.line(0, 0, float(t[-1]), 0, GREY, 1.2, "4 3", "open string")
+    _polyline(p, t, s, BLUE, 2)
+    p.legend([(BLUE, "estimated from hand position"), (GREY, "open string (0)")])
+    return p.svg()
+
+
+def mocap_chart(mocap):
+    """Per-joint error of the visual estimate vs motion capture (after aligning time, scale and axes)."""
+    joints = mocap["per_joint"]
+    unit = "mm" if mocap["metric"] else "(unit-free)"
+    top = max(joints.values()) * 1.15 or 1
+    p = _Plot(f"Visual estimate vs motion capture, error per joint {unit}", (0, top), (0, len(joints) + 1),
+              f"mean position error {unit}", "", h=60 + 26 * len(joints))
+    p.grid(_ticks(0, top, 6))
+    for k, (name, err) in enumerate(sorted(joints.items(), key=lambda kv: kv[1]), start=1):
+        color = grade_color(err, 25, 50) if mocap["metric"] else BLUE
+        p.rect(0, err, len(joints) + 1 - k - 0.35, len(joints) + 1 - k + 0.35, color, f"{name}: {err:.1f}")
+        p.text(p.L - 6, p.y(len(joints) + 1 - k) + 4, name, "#333", "end")
     return p.svg()

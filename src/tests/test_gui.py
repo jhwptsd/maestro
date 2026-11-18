@@ -10,10 +10,13 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from helpers import make_video, musicxml, synth, write_wav
+from minuet import minuet_musicxml, play_minuet
+from pose_fixture import minuet_notes, mocap_version, synth_pose
 from maestro import analyze
 from maestro.gui import charts
 from maestro.gui.report import build_report, standalone_page
 from maestro.gui.server import make_server
+from maestro.vision.pose_io import save_pose
 
 MIDIS = [69, 71, 72, 74, 76, 74, 72, 71]
 
@@ -53,7 +56,8 @@ class Report(unittest.TestCase):
                      "Timing unevenness", "Score match", "How to read it"):
             self.assertIn(text, self.html)
         self.assertEqual(len(svgs(self.html)), 8)      # match, 2 engraved panels, piano roll, pitch trace, intonation, tempo, timing
-        self.assertEqual(self.html.count('class="how"'), 7)    # one explanation per section
+        self.assertEqual(self.html.count('class="how"'), 8)    # 7 explained charts + the "movement analysis not available" notice
+        self.assertIn("Movement analysis", self.html)
 
     def test_all_charts_are_valid_xml(self):
         for s in svgs(self.html):
@@ -79,6 +83,60 @@ class Report(unittest.TestCase):
                   charts.pitch_trace_chart([{"time": 0.0, "estimated_pitch": 0.0}], [], [], [])):
             ET.fromstring(s)                    # still valid SVG
             self.assertIn("<text", s)           # with an explanatory message
+
+
+class VisualReport(unittest.TestCase):
+    """The movement section of the report, from analyze() with a pose file (pose only: the audio side is independent)."""
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        d = cls.d = Path(cls._tmp.name)
+        (d / "m.musicxml").write_text(minuet_musicxml())
+        write_wav(d / "a.wav", play_minuet())
+        make_video(d / "v.mp4", d / "a.wav", 18)
+        save_pose(synth_pose(minuet_notes(), with_bow=True), d / "pose.json")
+        save_pose(mocap_version(minuet_notes(), time_shift=0.1), d / "mocap.json")
+        cls.perf = analyze(d / "v.mp4", d / "m.musicxml", pose_file=d / "pose.json", mocap_file=d / "mocap.json")
+        cls.html = build_report(cls.perf)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_movement_cards_and_sections(self):
+        for text in ("Movement summary", "Bow strokes", "Bow speed evenness", "Smoothness within strokes", "Down/up balance",
+                     "Torso sway", "Shoulder tilt", "Left-hand travel", "Pose accuracy vs mocap",
+                     "Bow movement", "Arm angles", "Left-hand position as pitch (video only)", "Pose accuracy vs motion capture"):
+            self.assertIn(text, self.html)
+        self.assertNotIn("Not available", self.html)
+
+    def test_visual_charts_are_valid_svg(self):
+        svgs_ = svgs(self.html)
+        self.assertEqual(len(svgs_), 8 + 5)                            # the 8 audio/score figures + bow, strokes, arms, visual pitch, mocap
+        for s in svgs_:
+            ET.fromstring(s)
+
+    def test_visual_pitch_chart_shows_the_hand_derived_pitch(self):
+        vp = self.perf.assessment["visual_pitch"]
+        chart = charts.visual_pitch_chart(vp)
+        ET.fromstring(chart)
+        self.assertIn("semitones above the open string", chart)
+        self.assertIn("estimated from hand position", chart)
+        self.assertGreater(vp["range_semitones"], 4)                   # the Minuet's hand travels well over a fourth
+        self.assertIn("string-length law", self.html)
+
+    def test_without_a_pose_source_the_section_explains_why(self):
+        perf = analyze(self.d / "v.mp4", self.d / "m.musicxml")        # no pose file, VioPose not configured
+        html = build_report(perf)
+        self.assertFalse(perf.assessment["visual_status"]["available"])
+        self.assertIn("VIOPOSE_DIR", html)
+        self.assertNotIn("Movement summary", html)
+        self.assertIn("Average pitch error", html)                      # the audio results are unaffected
+
+    def test_charts_degrade_gracefully(self):
+        for chart in (charts.bow_chart({"bow": None}), charts.stroke_chart({"strokes": []}), charts.arm_chart({"elbow_angle": {}}),
+                      charts.visual_pitch_chart({"available": False, "reason": "left hand not tracked"})):
+            ET.fromstring(chart)
 
 
 def multipart(files):
@@ -120,11 +178,41 @@ class Server(unittest.TestCase):
             return self.post({"video": ("take1.wav", wav.read_bytes()),
                               "score": ("piece.musicxml", musicxml(score_midis).encode())})
 
+    def test_pose_upload_adds_the_movement_report_and_odd_field_names_are_ignored(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            wav = d / "a.wav"
+            write_wav(wav, synth([(m, 0.3 + 0.5 * i, 0.4) for i, m in enumerate(MIDIS)]))
+            save_pose(synth_pose(minuet_notes(), with_bow=True), d / "pose.json")
+            escape = Path(tempfile.gettempdir()) / "escape.txt"
+            try:
+                status, data = self.post({"video": ("take.wav", wav.read_bytes()),
+                                          "score": ("piece.musicxml", musicxml(MIDIS).encode()),
+                                          "pose": ("pose.json", (d / "pose.json").read_bytes()),
+                                          "../escape": ("x.txt", b"must never be written outside the upload folder")})
+                self.assertFalse(escape.exists())                      # a crafted field name cannot choose the path
+            finally:
+                escape.unlink(missing_ok=True)
+        self.assertEqual(status, 200)
+        for text in ("Movement summary", "Bow movement", "Left-hand position as pitch"):
+            self.assertIn(text, data["html"])
+
+    def test_bad_pose_upload_is_a_readable_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            wav = Path(d) / "a.wav"
+            write_wav(wav, synth([(m, 0.3 + 0.5 * i, 0.4) for i, m in enumerate(MIDIS)]))
+            status, data = self.post({"video": ("take.wav", wav.read_bytes()), "score": ("p.musicxml", musicxml(MIDIS).encode()),
+                                      "pose": ("pose.json", b"{not json")})
+        self.assertEqual(status, 400)
+        self.assertIn("pose", data["error"].lower())
+
     def test_index_has_upload_form(self):
         with urllib.request.urlopen(self.url + "/") as r:
             page = r.read().decode()
         self.assertIn('name="video"', page)
         self.assertIn('name="score"', page)
+        self.assertIn('name="pose"', page)                          # optional movement-analysis inputs
+        self.assertIn('name="mocap"', page)
         self.assertNotIn("/*CSS*/", page)              # stylesheet was inlined
 
     def test_upload_returns_report(self):

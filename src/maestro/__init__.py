@@ -15,10 +15,44 @@ from maestro.preprocessing.video import preprocess_video
 from maestro.score.symbolic_features import extract_symbolic_features
 from maestro.score.visualize import score_to_svg
 from maestro.utils.Performance import Performance
+from maestro.utils.errors import InputError, PoseUnavailableError
+from maestro.assessment.bowing import assess_bowing
+from maestro.assessment.posture import assess_posture
+from maestro.vision.mocap_compare import compare_to_mocap
+from maestro.vision.motion_features import extract_motion
+from maestro.vision.pose_estimation import estimate_pose
+from maestro.vision.pose_io import load_pose
+from maestro.vision.visual_pitch import estimate_visual_pitch
+
+
+def analyze_visual(perf, pose_file=None, mocap_file=None):
+    """Visual stage: pose -> motion features -> bowing, posture and visual pitch (+ mocap comparison).
+
+    It uses the pose only, none of the audio results. Fills perf.pose, perf.motion_features and
+    assessment["visual_status"|"bowing"|"posture"|"visual_pitch"|"mocap"]. With no pose source (no pose file,
+    VioPose not set up, audio-only upload) the stage is skipped and visual_status says why.
+    """
+    result = perf.assessment
+    try:
+        perf.pose = estimate_pose(perf.video, perf.audio_source, pose_file)
+    except PoseUnavailableError as e:
+        result["visual_status"] = {"available": False, "reason": str(e)}
+        return perf
+    perf.motion_features = motion = extract_motion(perf.pose)
+    result["visual_status"] = {"available": True, "reason": ""}
+    result["bowing"] = assess_bowing(motion)
+    result["posture"] = assess_posture(motion, perf.pose)
+    result["visual_pitch"] = estimate_visual_pitch(perf.pose, motion["hands"])
+    if mocap_file:
+        try:
+            result["mocap"] = compare_to_mocap(perf.pose, load_pose(mocap_file))
+        except ValueError as e:                       # too few joints in common (InputError from load_pose passes through)
+            raise InputError(f"Cannot compare with the motion-capture file: {e}")
+    return perf
 
 
 def analyze(video_path, score_path, out_dir=None, denoise=True,
-            pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None):
+            pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None, pose_file=None, mocap_file=None):
     """Analyze a performance against a score and return the filled Performance.
 
     video_path: any video or audio file ffmpeg reads; score_path: MusicXML, .mxl, MIDI, PDF or image.
@@ -27,6 +61,8 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     pitch_backend selects ``crepe`` (default), ``yin``, ``pyin`` or ``basic_pitch``.
     pitch_options is a dict of backend-specific settings, e.g. ``{"device": "cpu"}``
     for CREPE. Optional backends are loaded only when selected.
+    pose_file: 3D pose to use instead of running VioPose (formats in vision/pose_io.py); mocap_file: motion-capture
+    annotations to compare the visual pose against. The visual stage is independent of the audio analysis.
 
     Raises utils.errors.InputError for unusable files, and its subclass MismatchError if the recording
     does not appear to be the given score.
@@ -59,6 +95,7 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
         "intonation": assess_intonation(perf.score_features, notes, perf.alignment),
         "rhythm": assess_rhythm(perf.score_features, notes, perf.alignment),
     }
+    analyze_visual(perf, pose_file, mocap_file)
     if out_dir:
         score_to_svg(perf.score, perf.assessment["intonation"], work / "score.svg")
     return perf

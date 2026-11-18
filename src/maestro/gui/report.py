@@ -86,11 +86,102 @@ def _summary(perf):
     return f'<h2>Summary</h2><div class="cards">{"".join(cards)}</div>'
 
 
+def _pct(value):
+    return "n/a" if value is None else f"{value:.0%}"
+
+
+def _movement_cards(a):
+    """Summary cards for the visual analysis (each only if its result exists)."""
+    G, BL = charts.GOOD, charts.BLUE
+    grade = lambda v, good, ok: charts.BAD if v is None else charts.grade_color(v, good, ok)
+    cards = []
+    bowing, posture, pitch, mocap = (a.get(k) for k in ("bowing", "posture", "visual_pitch", "mocap"))
+    if bowing and bowing["available"]:
+        cards += [
+            _card("Bow strokes", str(bowing["n_strokes"]), BL, f"About {bowing['strokes_per_second']:.1f} strokes per second."),
+            _card("Bow speed evenness", _pct(bowing["stroke_speed_cv"]), grade(bowing["stroke_speed_cv"], 0.2, 0.4),
+                  "How much bow speed varies from stroke to stroke (spread / average). Lower = more even."),
+            _card("Smoothness within strokes", _pct(bowing["speed_cv_within_stroke"]),
+                  grade(bowing["speed_cv_within_stroke"], 0.25, 0.45), "Speed variation inside a stroke. Lower = steadier bow.")]
+        if bowing["direction_balance"] is not None:
+            cards.append(_card("Down/up balance", f"{bowing['direction_balance']:.2f}",
+                               grade(1 - bowing["direction_balance"], 0.15, 0.35),
+                               "Shorter stroke direction / longer one; 1.00 = both directions use equal bow."))
+    if posture and posture["available"]:
+        if posture["shoulder_sway"] is not None:
+            cards.append(_card("Torso sway", f"{posture['shoulder_sway']:.2f}", grade(posture["shoulder_sway"], 0.1, 0.25),
+                               "How much the shoulders move while playing, in shoulder widths. Lower = steadier."))
+        if posture["shoulder_tilt_mean_deg"] is not None:
+            cards.append(_card("Shoulder tilt", f"{posture['shoulder_tilt_mean_deg']:+.1f}°",
+                               grade(posture["shoulder_tilt_mean_deg"], 5, 10), "Average slope of the shoulder line (0° = level)."))
+    if pitch and pitch["available"]:
+        cards.append(_card("Left-hand travel", f"{pitch['range_semitones']:.1f} semitones", BL,
+                           "How far the left hand moved along the fingerboard, from the video alone (approximate)."))
+    if mocap:
+        unit = "mm" if mocap["metric"] else ""
+        cards.append(_card("Pose accuracy vs mocap", f"{mocap['pa_mpjpe']:.1f} {unit}".strip(),
+                           grade(mocap["pa_mpjpe"], 25, 50) if mocap["metric"] else BL,
+                           f"Average joint position error against motion capture (time offset {mocap['lag_s']:+.2f} s)."))
+    return cards
+
+
+def _movement_sections(perf):
+    """Explained charts for the visual analysis, or a notice saying why it is missing."""
+    a = perf.assessment
+    status = a.get("visual_status", {"available": False, "reason": ""})
+    if not status["available"]:
+        return ['<div class="sec"><h2>Movement analysis</h2><p>Not available: ' + escape(status["reason"]) + '</p>'
+                '<div class="how">Upload a pose file (3D joints, e.g. converted VioPose output) with your video, or set '
+                "<code>VIOPOSE_DIR</code> on the server so VioPose can run. Pitch and timing results above do not depend on it.</div></div>"]
+    motion, parts = perf.motion_features, []
+    bowing, pitch, mocap = (a.get(k) for k in ("bowing", "visual_pitch", "mocap"))
+    if bowing and bowing["available"]:
+        parts.append(_section(
+            "Bow movement",
+            "The line is how far your right hand travelled along the bow over time. Every change of colour is a bow change.",
+            charts.bow_chart(motion),
+            "Smooth, regular zigzags mean a steady bow. Long flat stretches are pauses; sudden jumps are tracking glitches "
+            "or very fast bow changes."))
+        parts.append(_section(
+            "Bow strokes",
+            "One bar per stroke: how far the hand travelled. Colour shows the direction.",
+            charts.stroke_chart(bowing),
+            "Long notes use more bow, so lengths differ; judge consistency from the <i>speed evenness</i> card. "
+            "Without bow markers the two colours are simply the two directions."))
+    parts.append(_section(
+        "Arm angles",
+        "The angle at each elbow over time (180° = straight arm).",
+        charts.arm_chart(motion),
+        "The bowing (right) elbow opens and closes with each stroke; the fingering (left) elbow should stay fairly "
+        "steady and shifts when you change position. Large unexplained swings suggest tension or tracking noise."))
+    if pitch:
+        parts.append(_section(
+            "Left-hand position as pitch (video only)",
+            "The left hand slides toward your body as you play higher on the string. Using the violin's string-length law, "
+            "the hand's distance gives how many semitones above the open string the finger is.",
+            charts.visual_pitch_chart(pitch),
+            "Read it as <i>movement</i>: how far and how fast you shift. It cannot see which string you are on "
+            "(on the A string 0 = A4, +7 = E5), and the scale assumes a full-size violin and that your furthest reach is first "
+            "position, so absolute pitch can be off by a few semitones."))
+    if mocap:
+        parts.append(_section(
+            "Pose accuracy vs motion capture",
+            f"How close the video-based pose is to a motion-capture recording of the same performance, after matching their "
+            f"clocks (offset {mocap['lag_s']:+.2f} s) and coordinate systems.",
+            charts.mocap_chart(mocap),
+            f"Shorter bars are better. Bow-hand motion correlation with the mocap: {mocap['bow_motion_corr']:.2f} "
+            "(1.0 = identical movement)."))
+    return parts
+
+
 def build_report(perf):
     """HTML fragment (summary cards + explained charts) for a Performance returned by analyze()."""
     i, r, c = (perf.assessment[k] for k in ("intonation", "rhythm", "correspondence"))
     notes = perf.audio_features["notes"]
     parts = [_summary(perf)]
+    cards = _movement_cards(perf.assessment)
+    if cards:
+        parts.append(f'<h2>Movement summary</h2><div class="cards">{"".join(cards)}</div>')
     parts.append(_section(
         "Does the recording match the score?",
         "Before judging anything we check that you uploaded the right score. Your recording is aligned to "
@@ -144,7 +235,7 @@ def build_report(perf):
         charts.timing_chart(r),
         "Bars inside the green band (±%d ms) are on time. Runs of bars in one direction mean you rushed or "
         "dragged a passage; single tall bars are individual late or early entries." % charts.MS_GOOD))
-    return "".join(parts)
+    return "".join(parts + _movement_sections(perf))
 
 
 def standalone_page(fragment, title="Maestro report"):
