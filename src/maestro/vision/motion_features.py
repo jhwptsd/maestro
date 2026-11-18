@@ -59,7 +59,7 @@ def split_strokes(s, fps):
             bounds.append((a + b) // 2)                    # turnaround: middle of the gap
     bounds.append(moving[-1] + 1)
     strokes = []
-    for k, (a, b) in enumerate(zip(bounds[:-1], bounds[1:])):
+    for a, b in zip(bounds[:-1], bounds[1:]):
         seg = v[a:b]
         strokes.append({"start": a / fps, "end": b / fps, "dir": int(np.sign(seg.sum())) or 1,
                         "length": float(abs(s[min(b, len(s) - 1)] - s[a])),

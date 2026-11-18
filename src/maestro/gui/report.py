@@ -92,7 +92,7 @@ def _pct(value):
 
 def _movement_cards(a):
     """Summary cards for the visual analysis (each only if its result exists)."""
-    G, BL = charts.GOOD, charts.BLUE
+    BL = charts.BLUE
     grade = lambda v, good, ok: charts.BAD if v is None else charts.grade_color(v, good, ok)
     cards = []
     bowing, posture, pitch, mocap = (a.get(k) for k in ("bowing", "posture", "visual_pitch", "mocap"))
