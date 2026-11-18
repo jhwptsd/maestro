@@ -202,6 +202,19 @@ def check_imports(interpreter, imports, failed_pins, execute):
                          + ". See the output above; the environment's Python must be 3.9.")
 
 
+def repair_tensorflow(interpreter, text, execute, log):
+    """On Windows `tensorflow` is a stub whose real files come from `tensorflow-intel`; reinstalling or removing one
+    of them (e.g. in an earlier failed setup) leaves a TensorFlow with files missing ("No module named
+    tensorflow.compat"). Reinstall tensorflow-intel at the pinned version. -> True if that was attempted."""
+    pin = next((l.strip() for l in text.splitlines() if l.lower().startswith("tensorflow==")), None)
+    if sys.platform != "win32" or not pin:
+        return False
+    log("  TensorFlow looks damaged; reinstalling tensorflow-intel")
+    execute([str(interpreter), "-m", "pip", "install", "--force-reinstall", "--no-deps",
+             pin.replace("tensorflow==", "tensorflow-intel==")])
+    return True
+
+
 def setup_viopose(directory=None, python=None, skip_weights=False, dry_run=False, run=None, log=print):
     """Install VioPose (see the module comment) -> the config written. `python` uses an existing environment's
     interpreter instead of creating one; dry_run only reports the steps; `run(cmd, cwd=None)` runs a command
@@ -253,7 +266,12 @@ def setup_viopose(directory=None, python=None, skip_weights=False, dry_run=False
             filtered.write_text(wanted)
         failed = install_requirements(interpreter, filtered, wanted, execute, log)
         if not dry_run:
-            check_imports(interpreter, modules, failed, execute)
+            try:
+                check_imports(interpreter, modules, failed, execute)
+            except SetupError:
+                if not repair_tensorflow(interpreter, wanted, execute, log):
+                    raise
+                check_imports(interpreter, modules, failed, execute)
             marker("requirements").write_text(digest)
 
     log("[4/5] Model weights")

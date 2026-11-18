@@ -171,6 +171,14 @@ class Installer(unittest.TestCase):
         with self.assertRaisesRegex(vs.SetupError, "bad==1"):
             vs.check_imports("py", ["import cv2"], failed, run)
 
+    def test_damaged_windows_tensorflow_is_reinstalled_from_tensorflow_intel(self):
+        recorder = Recorder()
+        with mock.patch.object(sys, "platform", "win32"):
+            self.assertTrue(vs.repair_tensorflow("py", "tensorflow==2.13.1\n", recorder, self.log.append))
+        self.assertIn("tensorflow-intel==2.13.1", recorder.calls[0][0])
+        with mock.patch.object(sys, "platform", "linux"):
+            self.assertFalse(vs.repair_tensorflow("py", "tensorflow==2.13.1\n", recorder, self.log.append))
+
     def test_skip_weights_and_dry_run(self):
         recorder = Recorder()
         self.setup(recorder, skip_weights=True)
