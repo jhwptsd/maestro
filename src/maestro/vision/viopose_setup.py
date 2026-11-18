@@ -6,11 +6,11 @@
 #   2. a Python 3.9 environment for it (it pins TensorFlow 2.13, mediapipe, OpenCV: they cannot share Maestro's
 #      environment) via conda, else uv, else a python3.9 venv; if none of those exists, `pip install uv` (uv fetches
 #      Python 3.9 itself)                                     -> third_party/viopose-env
-#   3. pip install VioPose's requirements in that environment (several GB; skipped if already installed). Its
-#      requirements.txt is an exported environment: it pins jax, jaxlib, flax, chex, ... that no VioPose code imports and
-#      that cannot install everywhere (jaxlib 0.4.13 has no Windows wheel, tensorflow-decision-forests no Windows build,
-#      wurlitzer is POSIX-only), so UNUSED_PINS are left out; if pip still fails on some other pin it is retried one pin
-#      at a time, and the result is accepted only if inference.py's own imports then work (checked in the environment)
+#   3. pip install what inference.py really imports, at the versions VioPose's requirements.txt pins (several GB;
+#      skipped if already installed). requirements.txt is an exported environment of ~140 pins, many Linux/CUDA-only
+#      (tensorrt, triton, jaxlib 0.4.13, wurlitzer ...), so only the pins of the imported packages plus the few that
+#      keep TensorFlow consistent are installed (COMPAT_PINS) and pip resolves everything else for the platform. The
+#      result is accepted only if each of inference.py's imports works in the environment (checked one by one)
 #   4. the model weights, by carrying out VioPose's own download.sh in Python (cd / mkdir / gdown / unzip / rm), so it
 #      works on Windows too and follows upstream if the file ids change; the demo data it also fetches is skipped
 #   5. third_party/viopose.json {"dir", "python"}: what `load_config()` reads, so vision/pose_estimation.py finds it.
@@ -35,8 +35,9 @@ CONFIG_PATH = THIRD_PARTY / "viopose.json"
 PYTHON_VERSION = "3.9"                                   # what VioPose's pinned requirements need
 # pins in VioPose's requirements.txt that none of its code imports (checked against its sources); several have no
 # wheels on Windows or other platforms and would stop the whole install
-UNUSED_PINS = {"jax", "jaxlib", "flax", "chex", "optax", "orbax-checkpoint", "tensorflow-decision-forests",
-               "tensorflowjs", "tensorstore", "wurlitzer"}
+# Module -> pip distribution where they differ, and extra pins that keep TensorFlow 2.13 working (all else is resolved)
+DISTRIBUTIONS = {"cv2": {"opencv-python", "opencv-contrib-python", "opencv-python-headless"}}
+COMPAT_PINS = {"keras", "protobuf", "numpy", "tensorflow-estimator", "tensorflow-hub"}
 
 
 class SetupError(RuntimeError):
@@ -82,13 +83,15 @@ def environment_command(env_dir, which=shutil.which, run=subprocess.run):
                      "then re-run the setup.")
 
 
-def filter_requirements(text, skip=UNUSED_PINS):
-    """requirements.txt text -> (text without the `skip` packages, the lines that were left out)."""
-    kept, dropped = [], []
-    for line in text.splitlines():
-        name = line.split("==")[0].split(">=")[0].split("[")[0].strip().lower().replace("_", "-")
-        (dropped if name in skip else kept).append(line)
-    return "\n".join(kept) + "\n", dropped
+def core_requirements(text, modules):
+    """requirements.txt text + the modules inference.py imports -> only the pin lines of those modules' packages (and
+    COMPAT_PINS); pip chooses the rest."""
+    wanted = set(COMPAT_PINS)
+    for module in modules:
+        wanted |= DISTRIBUTIONS.get(module, {module.lower().replace("_", "-")})
+    lines = [line for line in text.splitlines()
+             if line.split("==")[0].split("[")[0].strip().lower().replace("_", "-") in wanted]
+    return "\n".join(lines) + "\n"
 
 
 def runtime_modules(root, entry="inference.py"):
@@ -179,14 +182,17 @@ def install_requirements(interpreter, requirements_file, text, execute, log):
 
 
 def check_imports(interpreter, modules, failed_pins, execute):
-    """Run `import <modules>` in the VioPose environment; raise SetupError (naming the failed pins) if that breaks."""
-    try:
-        execute([str(interpreter), "-c", "import " + ", ".join(modules)])
-    except subprocess.CalledProcessError:
-        raise SetupError("The VioPose environment is incomplete: inference.py needs "
-                         f"{', '.join(modules)} but importing them fails"
+    """Import each module in the VioPose environment; raise SetupError naming those that fail (and failed pins)."""
+    broken = []
+    for module in modules:
+        try:
+            execute([str(interpreter), "-c", f"import {module}"])
+        except subprocess.CalledProcessError:
+            broken.append(module)
+    if broken:
+        raise SetupError(f"The VioPose environment is incomplete: importing {', '.join(broken)} fails"
                          + (f" (pins that would not install: {', '.join(failed_pins)})" if failed_pins else "")
-                         + ". See the pip output above.")
+                         + ". See the output above; the environment's Python must be 3.9.")
 
 
 def setup_viopose(directory=None, python=None, skip_weights=False, dry_run=False, run=None, log=print):
@@ -228,20 +234,19 @@ def setup_viopose(directory=None, python=None, skip_weights=False, dry_run=False
 
     log("[3/5] VioPose requirements (TensorFlow, mediapipe, OpenCV: several GB)")
     original = directory / "requirements.txt"
-    wanted, dropped = filter_requirements(original.read_text()) if original.is_file() else ("", [])
+    modules = runtime_modules(directory) if (directory / "inference.py").is_file() else []
+    wanted = core_requirements(original.read_text(), modules) if original.is_file() else ""
     digest = hashlib.sha256(wanted.encode()).hexdigest()
     if wanted and marker("requirements").is_file() and marker("requirements").read_text() == digest:
         log("  already installed")
     else:
-        if dropped:
-            log(f"  leaving out {len(dropped)} pins VioPose never imports: {', '.join(d.split('==')[0] for d in dropped)}")
         filtered = directory.parent / "viopose-requirements.txt"
         if not dry_run:
             filtered.parent.mkdir(parents=True, exist_ok=True)
             filtered.write_text(wanted)
         failed = install_requirements(interpreter, filtered, wanted, execute, log)
         if not dry_run:
-            check_imports(interpreter, runtime_modules(directory), failed, execute)
+            check_imports(interpreter, modules, failed, execute)
             marker("requirements").write_text(digest)
 
     log("[4/5] Model weights")

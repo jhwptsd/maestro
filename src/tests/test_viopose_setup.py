@@ -41,7 +41,7 @@ class Recorder:
     def __init__(self, checkout_files=None):
         self.calls = []
         self.checkout_files = checkout_files if checkout_files is not None else {
-            "inference.py": "# fake", "requirements.txt": "tensorflow==2.13.1\n", "download.sh": DOWNLOAD_SH}
+            "inference.py": "import tensorflow", "requirements.txt": "tensorflow==2.13.1\n", "download.sh": DOWNLOAD_SH}
 
     def __call__(self, cmd, cwd=None):
         cmd = [str(c) for c in cmd]
@@ -153,10 +153,10 @@ class Installer(unittest.TestCase):
         self.assertEqual(len(recorder.commands("pip")), 2)           # only the requirements step ran again
         self.assertEqual(len(recorder.calls), before + 2)            # pip + the import check
 
-    def test_unusable_pins_are_left_out_of_the_install(self):
-        text, dropped = vs.filter_requirements("tensorflow==2.13.1\njaxlib==0.4.13\nWurlitzer==3.0\nnumpy>=1.2\n")
-        self.assertEqual(text, "tensorflow==2.13.1\nnumpy>=1.2\n")
-        self.assertEqual(len(dropped), 2)
+    def test_only_the_pins_of_imported_packages_are_installed(self):
+        text = "tensorflow==2.13.1\ntriton==2.3.1\nopencv-contrib-python==4.8.1\nKeras==2.13.1\nlibclang==16\n"
+        out = vs.core_requirements(text, ["cv2", "tensorflow"])
+        self.assertEqual(out, "tensorflow==2.13.1\nopencv-contrib-python==4.8.1\nKeras==2.13.1\n")
 
     def test_failed_bulk_install_falls_back_to_single_pins_and_bad_imports_are_reported(self):
         def run(cmd, **kw):
