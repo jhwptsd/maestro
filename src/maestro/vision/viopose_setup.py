@@ -87,21 +87,24 @@ def environment_command(env_dir, which=shutil.which, run=subprocess.run):
                      "then re-run the setup.")
 
 
-def core_requirements(text, modules):
-    """requirements.txt text + the modules inference.py imports -> only the pin lines of those modules' packages (and
+def core_requirements(text, imports):
+    """requirements.txt text + the import statements of inference.py -> only the pin lines of those modules' packages (and
     COMPAT_PINS); pip chooses the rest."""
     wanted = set(COMPAT_PINS)
-    for module in modules:
+    for statement in imports:
+        module = ast.parse(statement).body[0]
+        module = (module.names[0].name if isinstance(module, ast.Import) else module.module).split(".")[0]
         wanted |= DISTRIBUTIONS.get(module, {module.lower().replace("_", "-")})
     lines = [line for line in text.splitlines()
              if line.split("==")[0].split("[")[0].strip().lower().replace("_", "-") in wanted]
     return "\n".join(lines) + "\n"
 
 
-def runtime_modules(root, entry="inference.py"):
-    """Third-party modules that `entry` imports at module level, following the checkout's own modules (absolute and
+def runtime_imports(root, entry="inference.py"):
+    """Third-party import statements that `entry` runs at module level, following the checkout's own modules (absolute and
     relative imports, packages with or without __init__.py). Imports inside functions do not count: inference.py only
-    imports moviepy when it renders a visualisation video, which Maestro never asks for. -> sorted names."""
+    imports moviepy when it renders a visualisation video, which Maestro never asks for. -> sorted statement texts,
+    e.g. `from tensorflow import keras` (checking whole statements catches broken submodules, not just missing packages)."""
     root, stdlib = Path(root), sys.stdlib_module_names
 
     def local(parts, base):                                    # dotted name -> file in the checkout (longest prefix)
@@ -112,7 +115,7 @@ def runtime_modules(root, entry="inference.py"):
                     return candidate
 
     is_local = lambda name: (root / name).is_dir() or (root / f"{name}.py").is_file()      # the checkout's own names
-    seen, todo, third = set(), [root / entry], set()
+    seen, todo, third = set(), [root / entry], set()          # third = import statements
     while todo:
         file = todo.pop()
         if file in seen:
@@ -132,7 +135,7 @@ def runtime_modules(root, entry="inference.py"):
                 if found:
                     todo.append(found)
                 elif parts and not getattr(node, "level", 0) and parts[0] not in stdlib and not is_local(parts[0]):
-                    third.add(parts[0])
+                    third.add(ast.unparse(node))
     return sorted(third)
 
 
@@ -185,16 +188,16 @@ def install_requirements(interpreter, requirements_file, text, execute, log):
     return failed
 
 
-def check_imports(interpreter, modules, failed_pins, execute):
-    """Import each module in the VioPose environment; raise SetupError naming those that fail (and failed pins)."""
+def check_imports(interpreter, imports, failed_pins, execute):
+    """Run each import statement in the VioPose environment; raise SetupError naming those that fail."""
     broken = []
-    for module in modules:
+    for statement in imports:
         try:
-            execute([str(interpreter), "-c", f"import {module}"])
+            execute([str(interpreter), "-c", statement])
         except subprocess.CalledProcessError:
-            broken.append(module)
+            broken.append(statement)
     if broken:
-        raise SetupError(f"The VioPose environment is incomplete: importing {', '.join(broken)} fails"
+        raise SetupError("The VioPose environment is incomplete: these imports fail: " + "; ".join(broken)
                          + (f" (pins that would not install: {', '.join(failed_pins)})" if failed_pins else "")
                          + ". See the output above; the environment's Python must be 3.9.")
 
@@ -238,9 +241,9 @@ def setup_viopose(directory=None, python=None, skip_weights=False, dry_run=False
 
     log("[3/5] VioPose requirements (TensorFlow, mediapipe, OpenCV: several GB)")
     original = directory / "requirements.txt"
-    modules = runtime_modules(directory) if (directory / "inference.py").is_file() else []
+    modules = runtime_imports(directory) if (directory / "inference.py").is_file() else []
     wanted = core_requirements(original.read_text(), modules) if original.is_file() else ""
-    digest = hashlib.sha256(wanted.encode()).hexdigest()
+    digest = hashlib.sha256((wanted + "\n".join(modules)).encode()).hexdigest()   # re-check when the imports change
     if wanted and marker("requirements").is_file() and marker("requirements").read_text() == digest:
         log("  already installed")
     else:
