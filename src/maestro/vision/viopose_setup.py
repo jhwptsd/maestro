@@ -40,6 +40,10 @@ DISTRIBUTIONS = {"cv2": {"opencv-python", "opencv-contrib-python", "opencv-pytho
 COMPAT_PINS = {"keras", "protobuf", "numpy", "tensorflow-estimator", "tensorflow-hub"}
 
 
+# gdown has no __main__ module (`python -m gdown` fails), so its command-line entry point is called directly
+GDOWN_CODE = "from gdown.cli import main; main()"
+
+
 class SetupError(RuntimeError):
     """A VioPose setup step cannot be completed (the message says what to install or fix)."""
 
@@ -143,7 +147,7 @@ def parse_download_script(text):
 
 
 def run_download_script(text, root, python, run, skip_demo=True):
-    """Carry out download.sh inside `root` (the VioPose checkout), using `python -m gdown` for the Google Drive
+    """Carry out download.sh inside `root` (the VioPose checkout), using gdown's command line for the Google Drive
     downloads. Commands run in the demo-data folder are skipped when skip_demo (Maestro supplies its own video)."""
     root, cwd = Path(root).resolve(), Path(root).resolve()
     demo = root / "data"
@@ -155,7 +159,7 @@ def run_download_script(text, root, python, run, skip_demo=True):
         elif skip_demo and (cwd == demo or demo in cwd.parents):
             continue
         elif command == "gdown":
-            run([str(python), "-m", "gdown", *args], cwd=cwd)
+            run([str(python), "-c", GDOWN_CODE, *args], cwd=cwd)
         elif command == "unzip":
             with zipfile.ZipFile(cwd / args[0]) as z:
                 z.extractall(cwd)

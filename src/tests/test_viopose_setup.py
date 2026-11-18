@@ -51,12 +51,12 @@ class Recorder:
             target.mkdir(parents=True)
             for name, text in self.checkout_files.items():
                 (target / name).write_text(text)
-        elif cmd[1:3] == ["-m", "gdown"] and cmd[-1] in ZIPS:     # "downloads" a weights zip into cwd
+        elif cmd[1:3] == ["-c", vs.GDOWN_CODE] and cmd[-1] in ZIPS:     # "downloads" a weights zip into cwd
             with zipfile.ZipFile(Path(cwd) / ZIPS[cmd[-1]], "w") as z:
                 z.writestr(ZIPS[cmd[-1]][:-4] + "/weights.txt", "w")
 
     def commands(self, word):
-        return [c for c, _ in self.calls if word in c]
+        return [c for c, _ in self.calls if (vs.GDOWN_CODE if word == "gdown" else word) in c]
 
 
 class DownloadScript(unittest.TestCase):
@@ -133,7 +133,7 @@ class Installer(unittest.TestCase):
     def test_full_install_runs_the_steps_in_order_and_records_the_config(self):
         recorder = Recorder()
         config = self.setup(recorder)
-        steps = [("clone" if c[0] == "git" else "pip" if "pip" in c else "gdown" if "gdown" in c else "check" if "-c" in c else "?") for c, _ in recorder.calls]
+        steps = [("clone" if c[0] == "git" else "pip" if "pip" in c else "gdown" if vs.GDOWN_CODE in c else "check" if "-c" in c else "?") for c, _ in recorder.calls]
         self.assertEqual(steps, ["clone", "pip", "check", "gdown", "gdown", "gdown"])
         pip = recorder.commands("pip")[0]
         self.assertEqual(pip[:4], [sys.executable, "-m", "pip", "install"])
