@@ -95,7 +95,7 @@ def _movement_cards(a):
     BL = charts.BLUE
     grade = lambda v, good, ok: charts.BAD if v is None else charts.grade_color(v, good, ok)
     cards = []
-    bowing, posture, pitch, mocap = (a.get(k) for k in ("bowing", "posture", "visual_pitch", "mocap"))
+    bowing, posture, pitch = (a.get(k) for k in ("bowing", "posture", "visual_pitch"))
     if bowing and bowing["available"]:
         cards += [
             _card("Bow strokes", str(bowing["n_strokes"]), BL, f"About {bowing['strokes_per_second']:.1f} strokes per second."),
@@ -117,11 +117,6 @@ def _movement_cards(a):
     if pitch and pitch["available"]:
         cards.append(_card("Left-hand travel", f"{pitch['range_semitones']:.1f} semitones", BL,
                            "How far the left hand moved along the fingerboard, from the video alone (approximate)."))
-    if mocap:
-        unit = "mm" if mocap["metric"] else ""
-        cards.append(_card("Pose accuracy vs mocap", f"{mocap['pa_mpjpe']:.1f} {unit}".strip(),
-                           grade(mocap["pa_mpjpe"], 25, 50) if mocap["metric"] else BL,
-                           f"Average joint position error against motion capture (time offset {mocap['lag_s']:+.2f} s)."))
     return cards
 
 
@@ -131,10 +126,11 @@ def _movement_sections(perf):
     status = a.get("visual_status", {"available": False, "reason": ""})
     if not status["available"]:
         return ['<div class="sec"><h2>Movement analysis</h2><p>Not available: ' + escape(status["reason"]) + '</p>'
-                '<div class="how">Upload a pose file (3D joints, e.g. converted VioPose output) with your video, or set '
-                "<code>VIOPOSE_DIR</code> on the server so VioPose can run. Pitch and timing results above do not depend on it.</div></div>"]
+                '<div class="how">The movement analysis needs VioPose, which the project setup installs (<code>setup.ps1</code> / '
+                "<code>setup.sh</code>, or <code>python src/scripts/setup_viopose.py</code>). Pitch and timing results above do "
+                "not depend on it.</div></div>"]
     motion, parts = perf.motion_features, []
-    bowing, pitch, mocap = (a.get(k) for k in ("bowing", "visual_pitch", "mocap"))
+    bowing, pitch = (a.get(k) for k in ("bowing", "visual_pitch"))
     if bowing and bowing["available"]:
         parts.append(_section(
             "Bow movement",
@@ -163,14 +159,6 @@ def _movement_sections(perf):
             "Read it as <i>movement</i>: how far and how fast you shift. It cannot see which string you are on "
             "(on the A string 0 = A4, +7 = E5), and the scale assumes a full-size violin and that your furthest reach is first "
             "position, so absolute pitch can be off by a few semitones."))
-    if mocap:
-        parts.append(_section(
-            "Pose accuracy vs motion capture",
-            f"How close the video-based pose is to a motion-capture recording of the same performance, after matching their "
-            f"clocks (offset {mocap['lag_s']:+.2f} s) and coordinate systems.",
-            charts.mocap_chart(mocap),
-            f"Shorter bars are better. Bow-hand motion correlation with the mocap: {mocap['bow_motion_corr']:.2f} "
-            "(1.0 = identical movement)."))
     return parts
 
 

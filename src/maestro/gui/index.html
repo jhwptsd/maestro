@@ -19,12 +19,6 @@ shows your pitch and timing, with charts that explain each number.</p>
     <input type="file" name="video" accept="video/*,audio/*" required></label></div>
   <div><label>Score <span class="hint">(MusicXML, .mxl, MIDI, or PDF/image if Audiveris is installed)</span>
     <input type="file" name="score" accept=".musicxml,.xml,.mxl,.mid,.midi,.pdf,.png,.jpg,.jpeg,.tif,.tiff" required></label></div>
-  <details><summary>Optional: movement analysis files</summary>
-    <div style="margin-top:10px"><label>Pose file <span class="hint">(3D joints as .json, .csv or .trc, e.g. VioPose output converted with convert_viopose.py; without it the movement analysis runs only if VioPose is configured on the server)</span>
-      <input type="file" name="pose" accept=".json,.npy,.csv,.trc"></label></div>
-    <div style="margin-top:10px"><label>Motion-capture annotations <span class="hint">(to measure how accurate the pose is: .trc, .csv, .json)</span>
-      <input type="file" name="mocap" accept=".json,.csv,.trc,.npy"></label></div>
-  </details>
   <div><button id="go">Analyze</button></div>
   <div id="status" role="status"></div>
 </form>

@@ -3,7 +3,7 @@
 # Run `python src/scripts/serve.py` (or `maestro-gui` after `pip install -e .`) and open
 # http://127.0.0.1:8000. GET / serves index.html (upload form); POST /api/analyze receives the
 # recording + score as multipart form data, runs maestro.analyze() and returns {"html": <report>}
-# built by gui/report.py (optional "pose" / "mocap" fields enable the movement analysis and its accuracy check), or {"error": message} with HTTP 400 for unusable input (InputError,
+# built by gui/report.py, or {"error": message} with HTTP 400 for unusable input (InputError,
 # MismatchError, missing Audiveris). Binds to localhost only: it is meant for personal use.
 import json
 import sys
@@ -19,7 +19,7 @@ from maestro.gui.report import CSS, VIEWER_JS, build_report
 from maestro.utils.errors import InputError, OMRUnavailableError
 
 MAX_UPLOAD = 1 << 30  # 1 GiB
-FIELDS = ("video", "score", "pose", "mocap")  # the upload form's file inputs; pose and mocap are optional
+FIELDS = ("video", "score")                   # the upload form's file inputs; anything else a client sends is ignored
 INDEX = (Path(__file__).parent / "index.html").read_text(encoding="utf-8").replace("/*CSS*/", CSS).replace("/*VIEWER_JS*/", VIEWER_JS)
 
 
@@ -66,8 +66,7 @@ class Handler(BaseHTTPRequestHandler):
                     # only the known field name plus the extension of the user's file name reach the path
                     paths[field] = Path(tmp) / (field + Path(name).suffix[:10])
                     paths[field].write_bytes(data)
-                perf = analyze(paths["video"], paths["score"], Path(tmp) / "work",
-                               pose_file=paths.get("pose"), mocap_file=paths.get("mocap"))
+                perf = analyze(paths["video"], paths["score"], Path(tmp) / "work")
                 self._json(200, {"html": build_report(perf)})
         except (InputError, OMRUnavailableError) as e:
             self._json(400, {"error": str(e)})

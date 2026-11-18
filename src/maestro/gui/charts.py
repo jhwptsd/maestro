@@ -11,7 +11,6 @@
 #   stroke_chart        <- assessment["bowing"]["strokes"]  (length of each bow stroke)
 #   arm_chart           <- motion_features["elbow_angle"]  (elbow angles over time)
 #   visual_pitch_chart  <- assessment["visual_pitch"]  (pitch implied by the left hand's position)
-#   mocap_chart         <- assessment["mocap"]  (visual estimate vs motion capture, per joint)
 # The annotated score itself comes from score/visualize.py. gui/report.py arranges all of these with
 # explanations; gui/server.py serves that report. The pitch/timing thresholds come from the assessment
 # modules, so the colours on every chart and the grades on the summary cards always agree.
@@ -295,19 +294,4 @@ def visual_pitch_chart(vp):
     p.line(0, 0, float(t[-1]), 0, GREY, 1.2, "4 3", "open string")
     _polyline(p, t, s, BLUE, 2)
     p.legend([(BLUE, "estimated from hand position"), (GREY, "open string (0)")])
-    return p.svg()
-
-
-def mocap_chart(mocap):
-    """Per-joint error of the visual estimate vs motion capture (after aligning time, scale and axes)."""
-    joints = mocap["per_joint"]
-    unit = "mm" if mocap["metric"] else "(unit-free)"
-    top = max(joints.values()) * 1.15 or 1
-    p = _Plot(f"Visual estimate vs motion capture, error per joint {unit}", (0, top), (0, len(joints) + 1),
-              f"mean position error {unit}", "", h=60 + 26 * len(joints))
-    p.grid(_ticks(0, top, 6))
-    for k, (name, err) in enumerate(sorted(joints.items(), key=lambda kv: kv[1]), start=1):
-        color = grade_color(err, 25, 50) if mocap["metric"] else BLUE
-        p.rect(0, err, len(joints) + 1 - k - 0.35, len(joints) + 1 - k + 0.35, color, f"{name}: {err:.1f}")
-        p.text(p.L - 6, p.y(len(joints) + 1 - k) + 4, name, "#333", "end")
     return p.svg()

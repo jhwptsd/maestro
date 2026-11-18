@@ -1,7 +1,5 @@
-"""Visual analysis: pose files, the VioPose runner, bow/arm motion, visual pitch, movement metrics, mocap comparison,
-and the analyze() hook. None of it uses audio: pose in, movement results out. Synthetic violinists and a fake VioPose
+"""Visual analysis: pose files, the VioPose runner, bow/arm motion, visual pitch, movement metrics and the analyze() hook. None of it uses audio: pose in, movement results out. Synthetic violinists and a fake VioPose
 checkout come from pose_fixture.py (VioPose itself needs TensorFlow and downloaded weights)."""
-import json
 import os
 import tempfile
 import unittest
@@ -15,15 +13,14 @@ from maestro.assessment.bowing import assess_bowing
 from maestro.assessment.posture import assess_posture
 from maestro.utils.Performance import Performance
 from maestro.utils.errors import InputError, PoseUnavailableError
-from maestro.vision.mocap_compare import compare_to_mocap
 from maestro.vision.motion_features import extract_motion
 from maestro.vision.pose_estimation import estimate_pose, run_viopose
-from maestro.vision.pose_io import (VIOPOSE_JOINTS, Pose, body_scale, canonical_name, load_pose, save_pose,
-                                    viopose_result_to_pose)
+from maestro.vision import viopose_setup
+from maestro.vision.pose_io import VIOPOSE_JOINTS, Pose, body_scale, load_pose, save_pose, viopose_result_to_pose
 from maestro.vision.visual_pitch import (FIRST_POSITION_MM, OPEN_STRINGS, calibrate_visual_pitch, distance_from_nut_mm,
                                          estimate_visual_pitch, semitones_above_open)
-from pose_fixture import (fingerboard_truth, last_call, minuet_notes, mocap_version, save_viopose_result, steady_mask,
-                          synth_pose, write_fake_viopose, write_malicious_npy)
+from pose_fixture import (fingerboard_truth, last_call, minuet_notes, save_viopose_result, steady_mask, synth_pose,
+                          write_fake_viopose, write_malicious_npy)
 
 NOTES = minuet_notes()
 N_STROKES = sum(1 for k, n in enumerate(NOTES) if k == 0 or not NOTES[k - 1][3])    # slurred notes share a stroke
@@ -40,56 +37,33 @@ class PoseFiles(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.pose = synth_pose(NOTES, noise_mm=0)
 
-    def test_joint_names_are_canonicalised(self):
-        names = ["LeftShoulder", "left_shoulder", "R_WRIST", "nose", "RIndex", "l_pinky", "Left_Thumb", "r_pelvis",
-                 "RTOE", "BowTip", "Foo"]
-        self.assertEqual([canonical_name(n) for n in names], ["l_shoulder", "l_shoulder", "r_wrist", "head", "r_index",
-                         "l_pinky", "l_thumb", "r_pelvis", "r_ankle", "bow_tip", "Foo"])
-
     def test_json_roundtrip_keeps_gaps(self):
         self.pose.xyz[3, 2] = np.nan                       # an untracked joint in one frame
-        save_pose(self.pose, self.d / "p.json")
-        back = load_pose(self.d / "p.json")
-        self.assertEqual((back.fps, back.joints, back.units), (30, self.pose.joints, "mm"))
+        save_pose(self.pose, self.d / "pose.json")
+        back = load_pose(self.d / "pose.json")
+        self.assertEqual((back.fps, back.joints), (30, self.pose.joints))
         np.testing.assert_allclose(back.xyz, self.pose.xyz, equal_nan=True)
-
-    def test_npy_needs_joint_names_and_fps(self):
-        np.save(self.d / "p.npy", self.pose.xyz)
-        with self.assertRaises(InputError):
-            load_pose(self.d / "p.npy")
-        back = load_pose(self.d / "p.npy", fps=30, joints=["LSHOULDER" if j == "l_shoulder" else j for j in self.pose.joints])
-        self.assertEqual(back.joints, self.pose.joints)
-        (self.d / "p.json").write_text(json.dumps({"fps": 25, "joints": self.pose.joints}))   # sidecar
-        self.assertEqual(load_pose(self.d / "p.npy").fps, 25)
-
-    def test_csv_and_trc(self):
-        (self.d / "p.csv").write_text("time,l_shoulder_x,l_shoulder_y,l_shoulder_z,r_hand_x,r_hand_y,r_hand_z\n"
-                                      "0.0,1,2,3,4,5,6\n0.1,1,2,3,4,5,7\n0.2,1,2,3,4,5,8\n")
-        csv = load_pose(self.d / "p.csv")
-        self.assertAlmostEqual(csv.fps, 10)
-        self.assertEqual((csv.joints, csv.xyz[2, 1, 2]), (["l_shoulder", "r_hand"], 8.0))
-        (self.d / "p.trc").write_text(
-            "PathFileType\t4\t(X/Y/Z)\tp.trc\nDataRate\tCameraRate\tNumFrames\tNumMarkers\tUnits\n"
-            "100\t100\t2\t2\tm\n"
-            "Frame#\tTime\tLSHO\t\t\tRWRI\t\t\n\t\tX1\tY1\tZ1\tX2\tY2\tZ2\n\n"
-            "1\t0.00\t0.1\t0.2\t0.3\t1\t2\t3\n2\t0.01\t0.1\t0.2\t0.3\t1\t2\t4\n")
-        trc = load_pose(self.d / "p.trc")
-        self.assertEqual((trc.fps, trc.units, trc.joints), (100.0, "m", ["l_shoulder", "r_wrist"]))
-        self.assertEqual(trc.xyz[1, 1, 2], 4.0)
 
     def test_bad_files_raise_input_error(self):
         (self.d / "x.json").write_text("{not json")
-        (self.d / "y.c3d").write_bytes(b"\x00")
-        for name in ("x.json", "y.c3d", "missing.json"):
+        (self.d / "y.json").write_text('{"fps": 30, "joints": ["a"]}')              # no xyz
+        for name in ("x.json", "y.json", "missing.json"):
             with self.subTest(name), self.assertRaises(InputError):
                 load_pose(self.d / name)
         with self.assertRaises(InputError):
             Pose(30, ["a", "b"], np.zeros((5, 3, 3)))        # joints/array mismatch
 
-    def test_2d_keypoints_get_a_zero_depth_axis_and_scale_is_shoulder_width(self):
-        p = Pose(30, ["l_shoulder", "r_shoulder"], np.array([[[0, 0], [2, 0]]] * 4), "normalized")
-        self.assertEqual(p.xyz.shape, (4, 2, 3))
+    def test_only_json_is_read_so_nothing_is_ever_unpickled(self):
+        marker = self.d / "pwned"
+        write_malicious_npy(self.d / "evil.npy", marker)
+        with self.assertRaisesRegex(InputError, "convert_viopose"):
+            load_pose(self.d / "evil.npy")
+        self.assertFalse(marker.exists())                    # the payload never ran
+
+    def test_body_scale_is_the_shoulder_width(self):
+        p = Pose(30, ["l_shoulder", "r_shoulder"], np.array([[[0, 0, 0], [2, 0, 0]]] * 4))
         self.assertEqual(body_scale(p), 2.0)
+        self.assertEqual(body_scale(Pose(30, ["l_hand"], np.zeros((4, 1, 3)))), 1.0)       # no shoulders: unit scale
 
 
 class VioPoseResult(unittest.TestCase):
@@ -103,7 +77,7 @@ class VioPoseResult(unittest.TestCase):
         save_viopose_result(self.pose, self.d / "result.npy")
         got = viopose_result_to_pose(self.d / "result.npy")
         self.assertEqual(got.joints, VIOPOSE_JOINTS + ["l_hand", "r_hand"])
-        self.assertEqual((got.units, got.fps, len(got)), ("mm", 30, len(self.pose)))
+        self.assertEqual((got.fps, len(got)), (30, len(self.pose)))
         np.testing.assert_allclose(got.joint("l_hand"), self.pose.joint("l_hand"), atol=1e-3)    # mean of index/pinky/thumb
         np.testing.assert_allclose(got.joint("r_wrist"), self.pose.joint("r_wrist"), atol=1e-3)
 
@@ -115,12 +89,13 @@ class VioPoseResult(unittest.TestCase):
             with self.subTest(name), self.assertRaises(InputError):
                 viopose_result_to_pose(self.d / f"{name}.npy")
 
-    def test_uploads_are_never_unpickled(self):
-        marker = self.d / "pwned"
-        write_malicious_npy(self.d / "evil.npy", marker)
-        with self.assertRaisesRegex(InputError, "convert_viopose"):
-            load_pose(self.d / "evil.npy", fps=30, joints=["l_hand"])
-        self.assertFalse(marker.exists())                    # the payload never ran
+
+def isolate_from_real_install(test, tmp):
+    """Keep a VioPose really installed on this machine (third_party/) out of the test: no saved config, no default checkout."""
+    for name, value in (("CONFIG_PATH", tmp / "no_config.json"), ("DEFAULT_DIR", tmp / "no_default_checkout")):
+        patcher = mock.patch.object(viopose_setup, name, value)
+        patcher.start()
+        test.addCleanup(patcher.stop)
 
 
 class VioPoseRunner(unittest.TestCase):
@@ -137,6 +112,7 @@ class VioPoseRunner(unittest.TestCase):
         self.addCleanup(self.env.stop)
         for k in ("VIOPOSE_AUDIO", "VIOPOSE_FOLDER", "FAKE_VIOPOSE_FAIL", "VIOPOSE_TIMEOUT"):
             os.environ.pop(k, None)
+        isolate_from_real_install(self, self.d)
 
     def test_runs_inference_from_its_own_directory_and_reads_the_result(self):
         pose = run_viopose(self.d / "v.mp4")
@@ -158,7 +134,7 @@ class VioPoseRunner(unittest.TestCase):
 
     def test_setup_problems_are_reported_not_raised_as_crashes(self):
         with mock.patch.dict(os.environ, {"VIOPOSE_DIR": str(self.d / "nowhere")}):
-            with self.assertRaisesRegex(PoseUnavailableError, "VIOPOSE_DIR"):
+            with self.assertRaisesRegex(PoseUnavailableError, "not installed"):
                 run_viopose(self.d / "v.mp4")
         (self.root / "Logs" / "VioPose_wo_audio").rmdir()
         with self.assertRaisesRegex(PoseUnavailableError, "download.sh"):
@@ -178,13 +154,28 @@ class VioPoseRunner(unittest.TestCase):
             with self.assertRaises(PoseUnavailableError):                                # not the old file
                 run_viopose(self.d / "v.mp4")
 
+    def test_the_install_is_found_without_any_environment_variables(self):
+        """After setup the pose is generated implicitly: nothing to upload, nothing to export."""
+        for k in ("VIOPOSE_DIR", "VIOPOSE_PYTHON"):
+            os.environ.pop(k)
+        with mock.patch.object(viopose_setup, "CONFIG_PATH", self.d / "viopose.json"):
+            viopose_setup.write_config(self.root, "python3")                          # what the setup script records
+            pose = estimate_pose(self.d / "v.mp4")
+        np.testing.assert_allclose(pose.joint("r_hand"), self.pose.joint("r_hand"), atol=1e-3)
+        with mock.patch.object(viopose_setup, "DEFAULT_DIR", self.root):                # or the default checkout location
+            self.assertEqual(viopose_setup.load_config()["dir"], str(self.root))
+        os.environ["VIOPOSE_DIR"] = "/elsewhere"                                          # environment beats the saved file
+        with mock.patch.object(viopose_setup, "CONFIG_PATH", self.d / "viopose.json"):
+            self.assertEqual(viopose_setup.load_config()["dir"], "/elsewhere")
+
     def test_pose_file_wins_and_missing_sources_mean_unavailable(self):
         save_pose(self.pose, self.d / "p.json")
         estimate_pose(self.d / "v.mp4", pose_file=self.d / "p.json")
         self.assertFalse((self.root / "last_call.json").exists())                        # VioPose was not run
         with mock.patch.dict(os.environ):
             os.environ.pop("VIOPOSE_DIR")
-            with self.assertRaisesRegex(PoseUnavailableError, "No pose source"):
+            os.environ.pop("VIOPOSE_PYTHON")
+            with self.assertRaisesRegex(PoseUnavailableError, "setup"):                     # points at the setup scripts
                 estimate_pose(self.d / "v.mp4")
         with self.assertRaisesRegex(PoseUnavailableError, "Audio-only"):
             estimate_pose(None)
@@ -332,37 +323,6 @@ class VisualPitch(unittest.TestCase):
         self.assertIn("frames", self.estimate(short)["reason"])
 
 
-class MocapComparison(unittest.TestCase):
-    def test_lag_scale_axes_and_units_are_handled(self):
-        est = synth_pose(NOTES, noise_mm=3.0)                     # video estimate, 30 fps, mm
-        r = compare_to_mocap(est, mocap_version(NOTES, time_shift=0.2))   # 60 fps, metres, rotated, 0.2 s later
-        self.assertAlmostEqual(r["lag_s"], -0.2, delta=0.05)
-        self.assertTrue(r["metric"])
-        self.assertLess(r["pa_mpjpe"], 6)                         # mm: tracker noise only
-        self.assertLess(r["mpjve_mm_s"], 400)
-        self.assertGreater(r["bow_motion_corr"], 0.95)
-        self.assertEqual(set(r["per_joint"]), set(est.joints))
-
-    def test_error_grows_with_estimate_noise(self):
-        mocap = mocap_version(NOTES, time_shift=0)
-        low = compare_to_mocap(synth_pose(NOTES, noise_mm=2), mocap)["pa_mpjpe"]
-        high = compare_to_mocap(synth_pose(NOTES, noise_mm=25), mocap)["pa_mpjpe"]
-        self.assertGreater(high, 3 * low)
-
-    def test_unit_free_estimate_reports_no_millimetres(self):
-        est = synth_pose(NOTES)
-        est = Pose(est.fps, est.joints, est.xyz / 300.0, "normalized")
-        r = compare_to_mocap(est, mocap_version(NOTES, time_shift=0))
-        self.assertFalse(r["metric"])
-        self.assertIsNone(r["mpjpe_mm"])
-        self.assertLess(r["pa_mpjpe"], 0.05)                      # still aligned via the similarity transform
-
-    def test_too_few_common_joints(self):
-        est = synth_pose(NOTES)
-        with self.assertRaises(ValueError):
-            compare_to_mocap(est, Pose(30, ["foo", "bar", "baz"], np.zeros((len(est), 3, 3))))
-
-
 class AnalyzeVisualHook(unittest.TestCase):
     """analyze_visual needs only a pose: no audio analysis has run, and none is used."""
 
@@ -370,8 +330,8 @@ class AnalyzeVisualHook(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.d = Path(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
+        isolate_from_real_install(self, self.d)
         save_pose(synth_pose(NOTES, with_bow=True), self.d / "pose.json")
-        save_pose(mocap_version(NOTES, time_shift=0.1), self.d / "mocap.json")
 
     def bare_performance(self):
         perf = Performance()
@@ -379,37 +339,44 @@ class AnalyzeVisualHook(unittest.TestCase):
         return perf
 
     def test_runs_on_a_performance_without_any_audio_results(self):
-        perf = analyze_visual(self.bare_performance(), self.d / "pose.json", self.d / "mocap.json")
+        perf = analyze_visual(self.bare_performance(), self.d / "pose.json")
         a = perf.assessment
         self.assertTrue(a["visual_status"]["available"])
         self.assertEqual(a["bowing"]["n_strokes"], N_STROKES)
         self.assertTrue(a["posture"]["available"])
         self.assertTrue(a["visual_pitch"]["available"])
-        self.assertLess(a["mocap"]["pa_mpjpe"], 10)
         self.assertIsNotNone(perf.pose)
         self.assertIsNotNone(perf.motion_features)
 
-    def test_without_a_pose_source_it_says_why(self):
+    def test_without_viopose_or_a_pose_file_it_says_why(self):
+        perf = self.bare_performance()
+        perf.video = str(self.d / "v.mp4")
         with mock.patch.dict(os.environ):
             os.environ.pop("VIOPOSE_DIR", None)
-            perf = analyze_visual(self.bare_performance())
+            analyze_visual(perf)
         self.assertFalse(perf.assessment["visual_status"]["available"])
+        self.assertIn("setup", perf.assessment["visual_status"]["reason"])               # tells the user how to install it
         self.assertNotIn("bowing", perf.assessment)
 
-    def test_uses_viopose_when_configured(self):
+    def test_viopose_generates_the_pose_which_is_used_and_saved(self):
         root = write_fake_viopose(self.d / "viopose", synth_pose(NOTES, noise_mm=0))
         perf = self.bare_performance()
         perf.video = str(self.d / "v.mp4")
         (self.d / "v.mp4").write_bytes(b"x")
+        out = self.d / "out"
+        out.mkdir()
         with mock.patch.dict(os.environ, {"VIOPOSE_DIR": str(root), "VIOPOSE_PYTHON": "python3"}):
-            analyze_visual(perf)
+            analyze_visual(perf, save_dir=out)
         self.assertTrue(perf.assessment["visual_status"]["available"])
         self.assertEqual(perf.assessment["bowing"]["n_strokes"], N_STROKES)
+        saved = load_pose(out / "pose.json")                                   # the generated pose is kept next to the outputs
+        np.testing.assert_allclose(saved.joint("l_hand"), perf.pose.joint("l_hand"))
 
-    def test_too_few_common_joints_with_the_mocap_is_an_input_error(self):
-        save_pose(Pose(30, ["foo", "bar", "baz"], np.zeros((300, 3, 3))), self.d / "odd.json")
-        with self.assertRaisesRegex(InputError, "motion-capture"):
-            analyze_visual(self.bare_performance(), self.d / "pose.json", self.d / "odd.json")
+    def test_a_given_pose_file_is_not_rewritten(self):
+        out = self.d / "out"
+        out.mkdir()
+        analyze_visual(self.bare_performance(), self.d / "pose.json", save_dir=out)
+        self.assertFalse((out / "pose.json").exists())
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 """GUI: SVG charts, the explained report, and the upload server (end to end over HTTP)."""
 import json
+import os
 import re
 import tempfile
 import threading
@@ -8,14 +9,16 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from unittest import mock
 
 from helpers import make_video, musicxml, synth, write_wav
 from minuet import minuet_musicxml, play_minuet
-from pose_fixture import minuet_notes, mocap_version, synth_pose
+from pose_fixture import minuet_notes, synth_pose, write_fake_viopose
 from maestro import analyze
 from maestro.gui import charts
 from maestro.gui.report import build_report, standalone_page
 from maestro.gui.server import make_server
+from maestro.vision import viopose_setup
 from maestro.vision.pose_io import save_pose
 
 MIDIS = [69, 71, 72, 74, 76, 74, 72, 71]
@@ -86,7 +89,8 @@ class Report(unittest.TestCase):
 
 
 class VisualReport(unittest.TestCase):
-    """The movement section of the report, from analyze() with a pose file (pose only: the audio side is independent)."""
+    """The movement section of the report (pose only: the audio side is independent). The pose here comes from a saved
+    pose.json; the Server tests below get it from VioPose the way a real run does."""
     @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.TemporaryDirectory()
@@ -95,8 +99,7 @@ class VisualReport(unittest.TestCase):
         write_wav(d / "a.wav", play_minuet())
         make_video(d / "v.mp4", d / "a.wav", 18)
         save_pose(synth_pose(minuet_notes(), with_bow=True), d / "pose.json")
-        save_pose(mocap_version(minuet_notes(), time_shift=0.1), d / "mocap.json")
-        cls.perf = analyze(d / "v.mp4", d / "m.musicxml", pose_file=d / "pose.json", mocap_file=d / "mocap.json")
+        cls.perf = analyze(d / "v.mp4", d / "m.musicxml", pose_file=d / "pose.json")
         cls.html = build_report(cls.perf)
 
     @classmethod
@@ -105,14 +108,14 @@ class VisualReport(unittest.TestCase):
 
     def test_movement_cards_and_sections(self):
         for text in ("Movement summary", "Bow strokes", "Bow speed evenness", "Smoothness within strokes", "Down/up balance",
-                     "Torso sway", "Shoulder tilt", "Left-hand travel", "Pose accuracy vs mocap",
-                     "Bow movement", "Arm angles", "Left-hand position as pitch (video only)", "Pose accuracy vs motion capture"):
+                     "Torso sway", "Shoulder tilt", "Left-hand travel", "Bow movement", "Arm angles",
+                     "Left-hand position as pitch (video only)"):
             self.assertIn(text, self.html)
         self.assertNotIn("Not available", self.html)
 
     def test_visual_charts_are_valid_svg(self):
         svgs_ = svgs(self.html)
-        self.assertEqual(len(svgs_), 8 + 5)                            # the 8 audio/score figures + bow, strokes, arms, visual pitch, mocap
+        self.assertEqual(len(svgs_), 8 + 4)                            # the 8 audio/score figures + bow, strokes, arms, visual pitch
         for s in svgs_:
             ET.fromstring(s)
 
@@ -126,10 +129,11 @@ class VisualReport(unittest.TestCase):
         self.assertIn("string-length law", self.html)
 
     def test_without_a_pose_source_the_section_explains_why(self):
-        perf = analyze(self.d / "v.mp4", self.d / "m.musicxml")        # no pose file, VioPose not configured
+        isolate_from_real_install(self, self.d)
+        perf = analyze(self.d / "v.mp4", self.d / "m.musicxml")        # no pose file, VioPose not installed
         html = build_report(perf)
         self.assertFalse(perf.assessment["visual_status"]["available"])
-        self.assertIn("VIOPOSE_DIR", html)
+        self.assertIn("setup_viopose.py", html)                         # tells the user how to install it
         self.assertNotIn("Movement summary", html)
         self.assertIn("Average pitch error", html)                      # the audio results are unaffected
 
@@ -137,6 +141,19 @@ class VisualReport(unittest.TestCase):
         for chart in (charts.bow_chart({"bow": None}), charts.stroke_chart({"strokes": []}), charts.arm_chart({"elbow_angle": {}}),
                       charts.visual_pitch_chart({"available": False, "reason": "left hand not tracked"})):
             ET.fromstring(chart)
+
+
+def isolate_from_real_install(test, tmp):
+    """Keep a VioPose really installed on this machine out of the test."""
+    for name, value in (("CONFIG_PATH", tmp / "no_config.json"), ("DEFAULT_DIR", tmp / "no_default_checkout")):
+        patcher = mock.patch.object(viopose_setup, name, value)
+        patcher.start()
+        test.addCleanup(patcher.stop)
+    patcher = mock.patch.dict(os.environ)
+    patcher.start()
+    test.addCleanup(patcher.stop)
+    for k in ("VIOPOSE_DIR", "VIOPOSE_PYTHON"):
+        os.environ.pop(k, None)
 
 
 def multipart(files):
@@ -178,9 +195,27 @@ class Server(unittest.TestCase):
             return self.post({"video": ("take1.wav", wav.read_bytes()),
                               "score": ("piece.musicxml", musicxml(score_midis).encode())})
 
-    def test_pose_upload_adds_the_movement_report_and_odd_field_names_are_ignored(self):
+    def test_viopose_generates_the_pose_for_a_video_upload(self):
+        """Upload a video and a score, nothing else: the installed VioPose makes the pose and the report uses it."""
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
+            isolate_from_real_install(self, d)
+            root = write_fake_viopose(d / "viopose", synth_pose(minuet_notes(), with_bow=True, noise_mm=0))
+            with mock.patch.object(viopose_setup, "CONFIG_PATH", d / "viopose.json"):
+                viopose_setup.write_config(root, "python3")                         # what setup.ps1 / setup.sh record
+                wav = d / "a.wav"
+                write_wav(wav, synth([(m, 0.3 + 0.5 * i, 0.4) for i, m in enumerate(MIDIS)]))
+                make_video(d / "v.mp4", wav, 5)
+                status, data = self.post({"video": ("take.mp4", (d / "v.mp4").read_bytes()),
+                                          "score": ("piece.musicxml", musicxml(MIDIS).encode())})
+        self.assertEqual(status, 200)
+        for text in ("Movement summary", "Bow movement", "Left-hand position as pitch"):
+            self.assertIn(text, data["html"])
+
+    def test_extra_form_fields_cannot_choose_paths_or_inject_a_pose(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            isolate_from_real_install(self, d)
             wav = d / "a.wav"
             write_wav(wav, synth([(m, 0.3 + 0.5 * i, 0.4) for i, m in enumerate(MIDIS)]))
             save_pose(synth_pose(minuet_notes(), with_bow=True), d / "pose.json")
@@ -188,31 +223,21 @@ class Server(unittest.TestCase):
             try:
                 status, data = self.post({"video": ("take.wav", wav.read_bytes()),
                                           "score": ("piece.musicxml", musicxml(MIDIS).encode()),
-                                          "pose": ("pose.json", (d / "pose.json").read_bytes()),
+                                          "pose": ("pose.json", (d / "pose.json").read_bytes()),     # no such upload any more
                                           "../escape": ("x.txt", b"must never be written outside the upload folder")})
                 self.assertFalse(escape.exists())                      # a crafted field name cannot choose the path
             finally:
                 escape.unlink(missing_ok=True)
         self.assertEqual(status, 200)
-        for text in ("Movement summary", "Bow movement", "Left-hand position as pitch"):
-            self.assertIn(text, data["html"])
-
-    def test_bad_pose_upload_is_a_readable_error(self):
-        with tempfile.TemporaryDirectory() as d:
-            wav = Path(d) / "a.wav"
-            write_wav(wav, synth([(m, 0.3 + 0.5 * i, 0.4) for i, m in enumerate(MIDIS)]))
-            status, data = self.post({"video": ("take.wav", wav.read_bytes()), "score": ("p.musicxml", musicxml(MIDIS).encode()),
-                                      "pose": ("pose.json", b"{not json")})
-        self.assertEqual(status, 400)
-        self.assertIn("pose", data["error"].lower())
+        self.assertNotIn("Movement summary", data["html"])             # the extra pose was ignored; no VioPose here
 
     def test_index_has_upload_form(self):
         with urllib.request.urlopen(self.url + "/") as r:
             page = r.read().decode()
         self.assertIn('name="video"', page)
         self.assertIn('name="score"', page)
-        self.assertIn('name="pose"', page)                          # optional movement-analysis inputs
-        self.assertIn('name="mocap"', page)
+        self.assertNotIn('name="pose"', page)                       # the pose is generated, never uploaded
+        self.assertNotIn("mocap", page.lower())
         self.assertNotIn("/*CSS*/", page)              # stylesheet was inlined
 
     def test_upload_returns_report(self):

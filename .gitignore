@@ -3,3 +3,4 @@ __pycache__/
 out/
 build/
 *.egg-info/
+third_party/

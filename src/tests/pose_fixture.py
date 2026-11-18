@@ -7,8 +7,7 @@
    in 1st position, work out its distance from the nut, and place the hand that far down the arm (the hand rests at
    1st position before the first note and after the last, as a player's does);
  - shoulders sway a little and Gaussian noise models tracker error.
-`mocap_version` records the same performance as a motion-capture system would (other frame rate, units, axes, time
-offset). `write_fake_viopose` creates a stand-in VioPose checkout whose inference.py writes ./output/result.npy in
+`write_fake_viopose` creates a stand-in VioPose checkout whose inference.py writes ./output/result.npy in
 VioPose's real format, so the runner can be tested without TensorFlow."""
 import json
 from pathlib import Path
@@ -66,11 +65,10 @@ def steady_mask(notes, t, margin=0.1):
     return mask
 
 
-def synth_pose(notes, fps=30, noise_mm=2.0, with_bow=False, sway_mm=4.0, stroke_jitter=0.0, time_shift=0.0,
-               left_hand=True, seed=0):
+def synth_pose(notes, fps=30, noise_mm=2.0, with_bow=False, sway_mm=4.0, stroke_jitter=0.0, left_hand=True, seed=0):
     """Pose (mm) of a violinist playing `notes` (see minuet_notes)."""
     rng = np.random.default_rng(seed)
-    t = np.arange(int((notes[-1][1] + 1.5) * fps)) / fps - time_shift                # a long rest at the end, as in a real clip
+    t = np.arange(int((notes[-1][1] + 1.5) * fps)) / fps                              # a long rest at the end, as in a real clip
     # bow: a new stroke starts at every note that does not continue a slur
     starts = [n[0] for k, n in enumerate(notes) if k == 0 or not notes[k - 1][3]] + [notes[-1][1]]
     nodes_t, nodes_s, s = [0.0, starts[0]], [0.0, 0.0], 0.0
@@ -98,15 +96,7 @@ def synth_pose(notes, fps=30, noise_mm=2.0, with_bow=False, sway_mm=4.0, stroke_
     if with_bow:   # frog at the right hand, tip 650 mm along -axis (so frog - tip = +axis = down-bow)
         joints["bow_frog"], joints["bow_tip"] = r_hand, r_hand - 650 * BOW_AXIS
         names += ["bow_frog", "bow_tip"]
-    return Pose(fps, names, np.stack([joints[n] for n in names], axis=1) + rng.normal(0, noise_mm, (len(t), len(names), 3)), "mm")
-
-
-def mocap_version(notes, time_shift=0.2, fps=60, noise_mm=0.5, seed=1):
-    """The same performance as a mocap system records it: 60 fps, metres, rotated 90 degrees about the
-    vertical axis, starting `time_shift` s later than the video estimate."""
-    p = synth_pose(notes, fps=fps, noise_mm=noise_mm, time_shift=time_shift, seed=seed)
-    rot = np.array([[0, 0, 1], [0, 1, 0], [-1, 0, 0]], dtype=float)
-    return Pose(fps, p.joints, (p.xyz @ rot.T) / 1000.0, "m")
+    return Pose(fps, names, np.stack([joints[n] for n in names], axis=1) + rng.normal(0, noise_mm, (len(t), len(names), 3)))
 
 
 def viopose_result(pose):

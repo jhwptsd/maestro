@@ -9,30 +9,29 @@ results at all (combining the two comes later).
           -> vision/hand_tracking.py + vision/motion_features.py   hands, bow strokes, elbow angles, shoulder tilt
           -> assessment/bowing.py, assessment/posture.py           consistency and stability metrics
           -> vision/visual_pitch.py                                pitch implied by the left hand (video only)
-          -> vision/mocap_compare.py (optional)                    accuracy against motion-capture annotations
 
-Results are in `Performance.assessment` (`visual_status`, `bowing`, `posture`, `visual_pitch`, `mocap`) and in the GUI
+Results are in `Performance.assessment` (`visual_status`, `bowing`, `posture`, `visual_pitch`) and in the GUI
 report ("Movement summary" and the movement sections). Without a pose source the stage is skipped and the report says why.
 
-### Getting a pose
-1. **VioPose** ([github.com/SeongJong-Yoo/VioPose](https://github.com/SeongJong-Yoo/VioPose), MIT, Yoo et al., WACV 2025).
-   It runs as an external program in its own environment (Python 3.9, TensorFlow ~2.13, mediapipe, OpenCV):
-   ```
-   git clone https://github.com/SeongJong-Yoo/VioPose && cd VioPose
-   conda create -n viopose python==3.9 && conda activate viopose && pip install -r requirements.txt && ./download.sh
-   ```
-   (`download.sh` fetches the weights from Google Drive.) Then tell Maestro where it is:
-   `VIOPOSE_DIR=/path/to/VioPose`, `VIOPOSE_PYTHON=/path/to/conda/envs/viopose/bin/python`; optional `VIOPOSE_FOLDER`
-   (weights folder, default `Logs/VioPose`), `VIOPOSE_AUDIO=1` (also give VioPose the audio for its audio model; off by
-   default), `VIOPOSE_TIMEOUT`. VioPose outputs 18 joints in millimetres (ankle/knee/pelvis/shoulder/elbow/wrist per side
-   plus index, pinky and thumb); Maestro derives each hand as the mean of the three finger joints. There are no bow or
-   violin keypoints, so the bow axis is the main direction of the right hand's motion.
-2. **A pose file**: `.json` (Maestro format, see `vision/pose_io.py`), `.csv`, `.trc`, or `.npy` with a sidecar `.json`.
-   `analyze(..., pose_file=...)` or the GUI's optional "Pose file". VioPose's own `result.npy` is a pickle, so Maestro never
-   loads one from an upload: convert your own with `python src/scripts/convert_viopose.py result.npy pose.json`.
+### Where the pose comes from
+VioPose ([github.com/SeongJong-Yoo/VioPose](https://github.com/SeongJong-Yoo/VioPose), MIT, Yoo et al., WACV 2025)
+generates it, automatically, for every analysis that has a video. It lifts MediaPipe 2D keypoints to 3D (18 joints in
+millimetres: ankle, knee, pelvis, shoulder, elbow and wrist per side, plus index, pinky and thumb; Maestro derives each hand
+as the mean of the three finger joints). There are no bow or violin keypoints, so the bow axis is the main direction of the
+right hand's motion.
 
-`analyze(..., mocap_file=...)` (or the GUI's "Motion-capture annotations") compares the pose with a motion-capture
-recording of the same performance after matching their clocks, units and axes.
+**Install**: the project setup does it (`setup.ps1` / `setup.sh`, or `python src/scripts/setup_viopose.py`): clone into
+`third_party/VioPose`, create `third_party/viopose-env` (Python 3.9 via conda, uv or a python3.9 venv; VioPose pins
+TensorFlow 2.13 so it cannot share Maestro's environment), install its requirements, download the weights by carrying out
+its `download.sh` (Google Drive), and record the locations in `third_party/viopose.json`.
+
+**Run**: `vision/pose_estimation.py` runs VioPose's `inference.py` from its own directory (it uses relative paths and always
+writes `./output/result.npy`), one run at a time, reads the result and deletes it. The generated pose is saved as
+`pose.json` in the analysis output folder. Overrides: `VIOPOSE_DIR`, `VIOPOSE_PYTHON` (win over the saved config),
+`VIOPOSE_FOLDER` (weights folder, default `Logs/VioPose`), `VIOPOSE_AUDIO=1` (give VioPose the audio track for its audio
+model; off by default), `VIOPOSE_TIMEOUT`. For offline work, `analyze(..., pose_file="pose.json")` skips VioPose, and
+`python src/scripts/convert_viopose.py result.npy pose.json` converts a `result.npy` you produced yourself (it is a pickle,
+so Maestro only unpickles the file its own VioPose run just wrote, never an upload).
 
 ### Visual pitch estimation
 `vision/visual_pitch.py` is a geometric baseline (Koepke, Wiles & Zisserman, 2019 train a CNN; that needs a labelled

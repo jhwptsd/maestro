@@ -1,7 +1,8 @@
 """Convert VioPose's result.npy to Maestro's pose JSON: python src/scripts/convert_viopose.py result.npy pose.json
 
-Use this on a result.npy you produced yourself (it is a pickle, so Maestro never loads one from an upload),
-then upload pose.json to the GUI or pass it as `pose_file=` to maestro.analyze().
+Use this on a result.npy you produced yourself (it is a pickle, so Maestro only unpickles files it wrote itself), then
+pass pose.json as `pose_file=` to maestro.analyze() to skip running VioPose. Normally this is not needed: analyses run
+VioPose automatically and save the pose as pose.json.
 """
 import sys
 

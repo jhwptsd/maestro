@@ -10,7 +10,7 @@
 #       semitones = 12 * log2(L / (L - x))                       (the equal-tempered string-length law)
 # The pose gives the hand's distance from the left shoulder; moving up the fingerboard brings the hand toward the
 # body. So, per recording:
-#   1. d(t)   = distance from left shoulder to the left hand, in mm (pose units, or shoulder widths x 380 mm);
+#   1. d(t)   = distance from the left shoulder to the left hand, in mm (the pose is metric);
 #   2. ref    = the 95th percentile of d: the hand's furthest reach, taken to be first position (finger at
 #               FIRST_POSITION_MM from the nut);
 #   3. x(t)   = FIRST_POSITION_MM + (ref - d(t));  semitones_above_open(t) = 12 log2(L / (L - x(t))).
@@ -24,12 +24,9 @@
 # absolute MIDI pitch per frame; nothing here depends on how those pairs were obtained.
 import numpy as np
 
-from maestro.vision.pose_io import body_scale
-
 OPEN_STRINGS = (55, 62, 69, 76)       # G3 D4 A4 E5 (MIDI)
 STRING_LENGTH_MM = 325.0              # vibrating string length of a full-size violin (nut to bridge)
 FIRST_POSITION_MM = 55.0              # fingertip distance from the nut in first position (fingers 1-4 span ~35-82 mm)
-SHOULDER_WIDTH_MM = 380.0             # adult average; only used when the pose has no metric scale
 MIN_FRAMES = 10
 
 
@@ -47,8 +44,7 @@ def left_hand_distance_mm(pose, hands):
     """Per-frame distance from the left shoulder to the left hand in millimetres, or None if not tracked."""
     if "left" not in hands or not pose.has("l_shoulder"):
         return None
-    shoulder_width_mm = body_scale(pose.to_mm()) if pose.units != "normalized" else SHOULDER_WIDTH_MM
-    return np.linalg.norm(hands["left"]["rel_shoulder"], axis=1) * shoulder_width_mm   # rel_shoulder is in shoulder widths
+    return np.linalg.norm(hands["left"]["rel_shoulder"], axis=1) * hands["scale"]      # rel_shoulder is in shoulder widths
 
 
 def calibrate_visual_pitch(distances_mm, midi_pitches, degree=2):
