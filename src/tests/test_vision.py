@@ -290,7 +290,6 @@ class VisualPitch(unittest.TestCase):
 
     def test_hand_toward_the_body_means_higher_pitch(self):
         pose = synth_pose(NOTES, noise_mm=0)
-        _, midi_true = fingerboard_truth(NOTES, pose.times)
         base = self.estimate(pose)["semitones_above_open"]
         direction = pose.joint("l_hand") - pose.joint("l_shoulder")
         playing = steady_mask(NOTES, pose.times)
