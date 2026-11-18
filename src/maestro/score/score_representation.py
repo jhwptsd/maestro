@@ -37,6 +37,8 @@ class Note:
     articulation: Optional[str]   # e.g. "staccato", "accent" or None
     onset: float                  # seconds from the start of the score
     offset: float                 # seconds
+    dynamic: Optional[str] = None   # dynamic mark in force at this note ("pp" ... "ff", "sf"), None if none was written
+    hairpin: Optional[str] = None   # "crescendo" / "diminuendo" if inside a wedge, else None
 
     def to_dict(self):
         return asdict(self)

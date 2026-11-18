@@ -1,5 +1,6 @@
 """CLI: python src/scripts/analyze.py VIDEO SCORE [OUT_DIR] [--pitch-backend NAME]."""
 import argparse
+import json
 from pathlib import Path
 
 from maestro import analyze
@@ -20,6 +21,8 @@ def main():
     )
     parser.add_argument("--crepe-device", default=None, help="CREPE device, e.g. cpu or cuda:0")
     parser.add_argument("--crepe-model", choices=("tiny", "full"), default="full")
+    parser.add_argument("--neural", choices=("clap",), default=None,
+                        help="add the pretrained CLAP tone/expression judgement (needs transformers + torch)")
     args = parser.parse_args()
 
     pitch_options = {}
@@ -36,12 +39,14 @@ def main():
             out,
             pitch_backend=args.pitch_backend,
             pitch_options=pitch_options,
+            neural=args.neural,
         )
     except (InputError, OMRUnavailableError, ImportError, ValueError) as exc:
         parser.exit(2, f"error: {exc}\n")
 
     (out / "report.html").write_text(standalone_page(build_report(perf)), encoding="utf-8")
-    print(f"report: {out / 'report.html'}")
+    (out / "assessment.json").write_text(json.dumps(perf.assessment["synthesis"], indent=1), encoding="utf-8")
+    print(f"report: {out / 'report.html'}\nassessment events (JSON): {out / 'assessment.json'}")
     print(f"pitch backend: {perf.audio_features['pitch_backend']}")
     intonation, rhythm = perf.assessment["intonation"], perf.assessment["rhythm"]
     print(

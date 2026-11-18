@@ -11,6 +11,11 @@
 #   stroke_chart        <- assessment["bowing"]["strokes"]  (length of each bow stroke)
 #   arm_chart           <- motion_features["elbow_angle"]  (elbow angles over time)
 #   visual_pitch_chart  <- assessment["visual_pitch"]  (pitch implied by the left hand's position)
+# Assessment events (assessment/synthesize.py, the single JSON report assessment["synthesis"]):
+#   module_scores_chart <- synthesis["scores"]  (0-100 per module and overall)
+#   event_timeline_chart <- synthesis["events"]  (one lane per module, one block per event, colour = severity)
+#   cause_chart         <- synthesis["causes"]  (what most often explains the events)
+#   measure_heatmap     <- synthesis["by_measure"]  (worst event per module per measure)
 # The annotated score itself comes from score/visualize.py. gui/report.py arranges all of these with
 # explanations; gui/server.py serves that report. The pitch/timing thresholds come from the assessment
 # modules, so the colours on every chart and the grades on the summary cards always agree.
@@ -104,6 +109,14 @@ class _Plot:
     def svg(self):
         return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {self.w} {self.h}" width="100%" '
                 f'font-family="sans-serif" font-size="11">' + "".join(self.p) + "</svg>")
+
+
+SEVERITY_COLORS = ((0.34, GOOD), (0.67, OK), (1.01, BAD))
+
+
+def severity_color(severity):
+    """Green / orange / red for an event severity (0-1), the same scale on every assessment chart."""
+    return next(c for limit, c in SEVERITY_COLORS if severity < limit)
 
 
 def _empty(title, message):
@@ -294,4 +307,82 @@ def visual_pitch_chart(vp):
     p.line(0, 0, float(t[-1]), 0, GREY, 1.2, "4 3", "open string")
     _polyline(p, t, s, BLUE, 2)
     p.legend([(BLUE, "estimated from hand position"), (GREY, "open string (0)")])
+    return p.svg()
+
+
+MODULE_ORDER = ("intonation", "rhythm", "expression", "tone", "bowing", "posture")
+
+
+def module_scores_chart(scores):
+    """Horizontal bar per assessed module (0-100, 100 = no events) plus the overall score."""
+    items = [(m, v) for m, v in scores.items() if v is not None]
+    if not items:
+        return _empty("Scores", "Nothing could be assessed.")
+    p = _Plot("Score per skill (100 = nothing to correct)", (0, 100), (0, len(items)), "score", "", h=60 + 34 * len(items))
+    p.grid(_ticks(0, 100, 5), ())
+    for k, (name, v) in enumerate(items):
+        p.rect(0, v, len(items) - k - 0.8, len(items) - k - 0.2, severity_color(1 - v / 100), f"{name}: {v:.0f}")
+        p.text(p.L - 6, p.y(len(items) - k - 0.45) + 3, name, anchor="end")
+        p.text(p.x(v) + 4, p.y(len(items) - k - 0.45) + 3, f"{v:.0f}")
+    return p.svg()
+
+
+def event_timeline_chart(events):
+    """One lane per module over time; every event is a block coloured by severity (hover: what and why)."""
+    lanes = [m for m in MODULE_ORDER if any(e["module"] == m for e in events)]
+    if not lanes:
+        return _empty("Events over time", "No problems were found.")
+    end = max(e["end"] for e in events) + 0.5
+    p = _Plot("When things went wrong", (0, end), (0, len(lanes)), "time in the recording (s)", "", h=70 + 36 * len(lanes))
+    p.grid(_ticks(0, end, 8), ())
+    for k, lane in enumerate(lanes):
+        y0 = len(lanes) - k - 1
+        p.text(p.L - 6, p.y(y0 + 0.5) + 3, lane, anchor="end")
+        for e in events:
+            if e["module"] == lane:
+                why = e["causes"][0]["explanation"] if e["causes"] else ""
+                bar = max(e["end"], e["start"] + end / 150)
+                p.rect(e["start"], bar, y0 + 0.15, y0 + 0.85, severity_color(e["severity"]),
+                       f"{e['category']} (severity {e['severity']:.2f}): {e['message']} {why}")
+    p.legend([(GOOD, "minor"), (OK, "moderate"), (BAD, "severe")], bottom=True)
+    return p.svg()
+
+
+def cause_chart(causes, top=8):
+    """Bars for the causes that explain the most (severity x confidence) of what went wrong."""
+    causes = causes[:top]
+    if not causes:
+        return _empty("Most likely causes", "No problems were found.")
+    peak = max(c["weight"] for c in causes) * 1.15
+    p = _Plot("Most likely causes", (0, peak), (0, len(causes)), "weight (sum of severity x confidence)", "", h=70 + 28 * len(causes))
+    p.L = 190
+    p.grid(_ticks(0, peak, 5), ())
+    for k, c in enumerate(causes):
+        y0 = len(causes) - k - 1
+        p.rect(0, c["weight"], y0 + 0.15, y0 + 0.85, BLUE, f"{c['cause']}: {c['count']} events ({', '.join(c['modules'])})")
+        p.text(p.L - 6, p.y(y0 + 0.5) + 3, c["cause"].replace("_", " "), anchor="end")
+        p.text(p.x(c["weight"]) + 4, p.y(y0 + 0.5) + 3, f"x{c['count']}")
+    return p.svg()
+
+
+def measure_heatmap(events):
+    """Grid of module x measure; the colour is the worst event there. Shows which bars to practise, and what at."""
+    cells = {}
+    for e in events:
+        if e["measure"] is not None:
+            key = (e["module"], e["measure"])
+            cells[key] = max(cells.get(key, 0), e["severity"])
+    if not cells:
+        return _empty("Problem bars", "No problems were found.")
+    measures = sorted({m for _, m in cells})
+    lanes = [m for m in MODULE_ORDER if any(k[0] == m for k in cells)]
+    p = _Plot("Which bars need work", (min(measures) - 0.5, max(measures) + 0.5), (0, len(lanes)), "measure", "",
+              h=70 + 34 * len(lanes))
+    p.grid(_ticks(min(measures), max(measures), 10), (), xfmt=lambda v: f"{v:.0f}")
+    for k, lane in enumerate(lanes):
+        y0 = len(lanes) - k - 1
+        p.text(p.L - 6, p.y(y0 + 0.5) + 3, lane, anchor="end")
+        for (m, bar), sev in cells.items():
+            if m == lane:
+                p.rect(bar - 0.45, bar + 0.45, y0 + 0.1, y0 + 0.9, severity_color(sev), f"bar {bar}, {lane}: severity {sev:.2f}")
     return p.svg()

@@ -58,9 +58,25 @@ class Report(unittest.TestCase):
         for text in ("Average pitch error", "Overall tuning", "Wrong notes", "Tempo", "Average timing error",
                      "Timing unevenness", "Score match", "How to read it"):
             self.assertIn(text, self.html)
-        self.assertEqual(len(svgs(self.html)), 8)      # match, 2 engraved panels, piano roll, pitch trace, intonation, tempo, timing
-        self.assertEqual(self.html.count('class="how"'), 8)    # 7 explained charts + the "movement analysis not available" notice
+        # match, 2 engraved panels, piano roll, pitch trace, intonation, tempo, timing + 4 assessment charts
+        self.assertEqual(len(svgs(self.html)), 12)
+        self.assertEqual(self.html.count('class="how"'), 12)   # 11 explained charts + the "movement analysis not available" notice
+        for text in ("Assessment: score per skill", "Assessment: when things went wrong", "Assessment: bars to practise",
+                     "Assessment: why it went wrong", "maestro-assessment.json"):
+            self.assertIn(text, self.html)
         self.assertIn("Movement analysis", self.html)
+
+    def test_assessment_charts_show_the_events(self):
+        report = self.perf.assessment["synthesis"]
+        events = [dict(e, severity=0.9, causes=[], measure=2) for e in report["events"][:1]] or [
+            {"module": "intonation", "category": "sharp", "start": 1.0, "end": 1.4, "severity": 0.9, "message": "C is sharp.",
+             "causes": [], "measure": 2}]
+        timeline = charts.event_timeline_chart(events)
+        ET.fromstring(timeline)
+        self.assertIn(charts.BAD, timeline)                                  # severity 0.9 is drawn red
+        self.assertIn("intonation", charts.measure_heatmap(events))
+        self.assertIn("Nothing could be assessed", charts.module_scores_chart({"intonation": None}))
+        self.assertIn("No problems", charts.event_timeline_chart([]))
 
     def test_all_charts_are_valid_xml(self):
         for s in svgs(self.html):
@@ -115,7 +131,7 @@ class VisualReport(unittest.TestCase):
 
     def test_visual_charts_are_valid_svg(self):
         svgs_ = svgs(self.html)
-        self.assertEqual(len(svgs_), 8 + 4)                            # the 8 audio/score figures + bow, strokes, arms, visual pitch
+        self.assertEqual(len(svgs_), 12 + 4)                           # the 12 audio/score/assessment figures + bow, strokes, arms, visual pitch
         for s in svgs_:
             ET.fromstring(s)
 

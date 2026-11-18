@@ -88,6 +88,34 @@ and `--dir`. The result is recorded in `third_party/viopose.json`; the variables
 override it, and `VIOPOSE_AUDIO=1` also gives VioPose the recording's audio. Without VioPose the audio analysis works as
 before and the report says how to install it. Details and the visual pitch method are in `src/docs/README.md`.
 
+## Assessment events and root causes
+
+`maestro/assessment/` turns the aligned audio, video and score into **events**: one JSON object per problem, in a single
+shared form (`assessment/events.py`): `module`, `category`, `start`/`end` (s), `measure`/`beat`, `severity` (0-1), measured
+`value` vs `expected`, a `message`, and `causes`, the likely reasons with a confidence and the evidence they rest on.
+
+| file | events | causes come from |
+|---|---|---|
+| `intonation.py` | sharp / flat / wrong note | global tuning offset, shift overshoot (the leap into the note), drift over time, register, left hand in the video |
+| `rhythm.py` | early / late notes, tempo | rests, leaps, fast notes, rushing/dragging neighbours, bow change lagging the onset |
+| `expression.py` | flat dynamics, missing hairpins, vibrato (absent / rate / width / uneven), staccato and legato marks | bow speed (constant vs not used for loudness), stroke length, vibrato measurements |
+| `tone.py` | noisy, slow attack, unsteady level, too bright / dull | bow speed at that moment (pressure vs skating), bow wobble |
+| `bowing.py` | speed outliers, jerky strokes, unbalanced up/down bows, bow change off the onset | stroke statistics; strokes are also labelled detache / legato / staccato |
+| `posture.py` | uneven shoulders, head movement, drift | persistent tilt = setup, transient = leaning, leaps = shift compensation, steady drift = fatigue |
+| `synthesize.py` | merges all of the above | `assessment["synthesis"]`: events with ids, ranked causes, per-bar summary, cross-skill links, scores |
+
+The report draws scores, a timeline of events per skill, a bars-to-practise heat map and the ranked causes, and offers
+the whole JSON as a download (`python src/scripts/analyze.py ... ` also writes `assessment.json`).
+
+**Neural models.** No public pretrained violin tone/expression grader exists (Giraldo et al. 2019 trained on unreleased
+TELMI recordings; Dalmazzo & Ramirez 2019 needs wearable sensors; VioTech 2025 builds on MERT with its own annotations).
+The optional `neural="clap"` / `--neural clap` option runs the pretrained LAION CLAP audio-text model
+(`pip install -e ".[neural]"`, ~600 MB download) on 6 s windows of the recording against descriptions such as "a warm, smooth
+violin tone" vs "a harsh, scratchy violin tone". Its probabilities become extra events, explained by the measured features
+inside each window, never by the network alone. It is zero-shot and coarse: treat it as a second opinion. A backend that
+returns `p_first(windows, sr, prompts)` can be swapped in (`assessment/neural.py`); trained heads (e.g. on a frozen MERT
+encoder with the VioTech labels) would plug in the same way.
+
 ## Status
 
 Implemented: audio extraction, selectable pitch/transcription backends, score conversion, score-audio alignment, pitch-deviation and timing assessment, and score visualization. Movement analysis from VioPose poses (bowing, posture, visual pitch) is implemented and independent of the audio analysis; combining the two, multimodal fusion and LLM feedback remain in development.

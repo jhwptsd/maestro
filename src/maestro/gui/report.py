@@ -5,7 +5,9 @@
 # ["correspondence"], audio_features, alignment, score). charts.py draws the figures,
 # score/visualize.py draws the annotated score. gui/server.py sends `build_report` output to the
 # browser; `standalone_page` wraps it into one self-contained .html file (used by scripts/analyze.py).
+import json
 from html import escape
+from urllib.parse import quote
 
 from maestro.gui import charts
 from maestro.gui.viewer import build_viewer
@@ -25,6 +27,7 @@ h2{margin-top:2em;border-bottom:2px solid #eee;padding-bottom:.2em}
 .vlegend i{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:5px;vertical-align:-1px}
 .vsummary{font-size:.9em;color:#444}
 .note.hl{filter:drop-shadow(0 0 3px #0a64ff)}
+.events{border-collapse:collapse;width:100%;font-size:.9em;margin:.8em 0}.events td,.events th{border-bottom:1px solid #eee;padding:4px 8px;text-align:left;vertical-align:top}
 """
 
 # Hover a note in either panel of the side-by-side viewer to highlight its partner in the other. Scripts
@@ -223,7 +226,51 @@ def build_report(perf):
         charts.timing_chart(r),
         "Bars inside the green band (±%d ms) are on time. Runs of bars in one direction mean you rushed or "
         "dragged a passage; single tall bars are individual late or early entries." % charts.MS_GOOD))
-    return "".join(parts + _movement_sections(perf))
+    return "".join(parts + _assessment_sections(perf) + _movement_sections(perf))
+
+
+def _assessment_sections(perf):
+    """Event-based assessment: scores, when/where things went wrong, why, and the downloadable JSON report."""
+    report = perf.assessment.get("synthesis")
+    if not report:
+        return []
+    events = report["events"]
+    rows = "".join(
+        f"<tr><td>{e['start']:.1f}s</td><td>{'' if e['measure'] is None else e['measure']}</td><td>{escape(e['module'])}</td>"
+        f"<td>{escape(e['message'])}</td><td>{escape(e['causes'][0]['explanation']) if e['causes'] else ''}"
+        f"{' (' + format(e['causes'][0]['confidence'], '.0%') + ' sure)' if e['causes'] else ''}</td></tr>"
+        for e in sorted(events, key=lambda e: -e["severity"])[:15])
+    table = (f'<table class="events"><tr><th>time</th><th>bar</th><th>skill</th><th>what</th><th>probable cause</th></tr>{rows}</table>'
+             if rows else "<p>No problems were found.</p>")
+    links = "".join(f"<li>{escape(l['hypothesis'])} ({l['start']:.1f}s)</li>" for l in report["links"][:6])
+    payload = quote(json.dumps(report))
+    download = (f'<p><a download="maestro-assessment.json" href="data:application/json;charset=utf-8,{payload}">'
+                "Download the full assessment as JSON</a></p>")
+    unavailable = "".join(f"<li><b>{escape(m)}</b>: {escape(str(r))}</li>" for m, r in report["unavailable"].items())
+    return [
+        _section("Assessment: score per skill",
+                 "Every skill is judged on its own from the aligned audio, video and score. 100 means nothing to correct; "
+                 "each problem found takes off points in proportion to how severe it is.",
+                 charts.module_scores_chart(report["scores"]),
+                 "Green is good, red needs work. Skills that could not be assessed are listed below the chart."
+                 + (f"<ul>{unavailable}</ul>" if unavailable else "")),
+        _section("Assessment: when things went wrong",
+                 "Each block is one problem found in the recording, on the lane of the skill it belongs to. "
+                 "Hover a block to read what it is and the most likely cause.",
+                 charts.event_timeline_chart(events),
+                 "Blocks of different lanes at the same moment point to a shared cause (see the list below)."
+                 + (f"<ul>{links}</ul>" if links else "")),
+        _section("Assessment: bars to practise",
+                 "The same problems placed on the score's bars, one row per skill.",
+                 charts.measure_heatmap(events),
+                 "Dark red cells are the worst moment of that skill in that bar: start practising there."),
+        _section("Assessment: why it went wrong",
+                 "For every problem the analysis names the most likely cause from the measurements (tuning offset, "
+                 "leaps, bow speed, posture ...). The bars add up severity x confidence per cause.",
+                 charts.cause_chart(report["causes"]),
+                 "A tall bar is a habit that explains many problems: fixing it improves several bars at once. Causes "
+                 "are informed guesses with the evidence attached, not certainties.")
+        + table + download]
 
 
 def standalone_page(fragment, title="Maestro report"):

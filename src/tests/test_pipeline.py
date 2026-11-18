@@ -1,4 +1,5 @@
 """End to end: synthetic performance (video + MusicXML score) through maestro.analyze."""
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -32,6 +33,12 @@ class Pipeline(unittest.TestCase):
         timing = {note["score_idx"]: note["error"] for note in performance.assessment["rhythm"]["notes"]}
         self.assertEqual(max(timing, key=lambda key: abs(timing[key])), 5)
         self.assertAlmostEqual(performance.assessment["rhythm"]["tempo_ratio"], 1.0, delta=0.1)
+
+        report = performance.assessment["synthesis"]                  # one JSON report from every module
+        self.assertEqual(json.loads(json.dumps(report)), report)
+        modules = ("intonation", "rhythm", "expression", "tone")
+        self.assertEqual(report["n_events"], sum(len(performance.assessment[m]["events"]) for m in modules))
+        self.assertTrue(set(modules) <= set(report["scores"]))          # (posture/bowing need VioPose: not installed here)
 
     def test_realistic_minuet_through_video_is_accepted(self):
         with tempfile.TemporaryDirectory() as directory:

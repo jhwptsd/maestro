@@ -4,8 +4,13 @@ from pathlib import Path
 
 from maestro.alignment.align_audio_score import align_audio_score
 from maestro.alignment.correspondence import check_correspondence, played_section
+from maestro.assessment.events import Context
+from maestro.assessment.expression import assess_expression
 from maestro.assessment.intonation import assess_intonation
+from maestro.assessment.neural import analyze_windows, load_backend, NeuralUnavailable
 from maestro.assessment.rhythm import assess_rhythm
+from maestro.assessment.synthesize import synthesize_assessment
+from maestro.assessment.tone import assess_tone
 from maestro.audio.features import extract_features
 from maestro.audio.pitch import DEFAULT_PITCH_BACKEND, estimate_pitch
 from maestro.audio.transcription import transcribe
@@ -43,14 +48,15 @@ def analyze_visual(perf, pose_file=None, save_dir=None):
         save_pose(perf.pose, Path(save_dir) / "pose.json")
     perf.motion_features = motion = extract_motion(perf.pose)
     result["visual_status"] = {"available": True, "reason": ""}
-    result["bowing"] = assess_bowing(motion)
-    result["posture"] = assess_posture(motion, perf.pose)
     result["visual_pitch"] = estimate_visual_pitch(perf.pose, motion["hands"])
+    ctx = Context(perf)                                    # notes + alignment let the events name their measure
+    result["bowing"] = assess_bowing(motion, ctx)
+    result["posture"] = assess_posture(motion, perf.pose, ctx)
     return perf
 
 
 def analyze(video_path, score_path, out_dir=None, denoise=True,
-            pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None, pose_file=None):
+            pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None, pose_file=None, neural=None):
     """Analyze a performance against a score and return the filled Performance.
 
     video_path: any video or audio file ffmpeg reads; score_path: MusicXML, .mxl, MIDI, PDF or image.
@@ -61,6 +67,10 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     for CREPE. Optional backends are loaded only when selected.
     The movement analysis needs VioPose (installed by the project setup); it runs automatically and its pose is saved as
     work/pose.json. pose_file (a saved pose.json) skips VioPose. The visual stage is independent of the audio analysis.
+
+    neural: None (default) or "clap" to add the pretrained CLAP tone/expression judgement (assessment/neural.py; needs
+    transformers + torch and downloads ~600 MB once; if it cannot load, the analysis continues without it).
+    assessment["synthesis"] is the single JSON report built from every module (assessment/synthesize.py).
 
     Raises utils.errors.InputError for unusable files, and its subclass MismatchError if the recording
     does not appear to be the given score.
@@ -90,10 +100,21 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     perf.assessment = {
         "correspondence": corr,
         "section": played_section(perf.score_features, perf.alignment),
-        "intonation": assess_intonation(perf.score_features, notes, perf.alignment),
-        "rhythm": assess_rhythm(perf.score_features, notes, perf.alignment),
     }
-    analyze_visual(perf, pose_file, work)
+    analyze_visual(perf, pose_file, work)                  # pose first: its results are evidence for audio-side causes
+    try:
+        backend = load_backend(neural)
+        if backend:
+            perf.assessment["neural"] = analyze_windows(y, sr, backend)
+    except NeuralUnavailable as e:
+        perf.assessment["neural"] = {"error": str(e)}
+    ctx = Context(perf)
+    a = perf.assessment
+    a["intonation"] = assess_intonation(perf.score_features, notes, perf.alignment, ctx=ctx)
+    a["rhythm"] = assess_rhythm(perf.score_features, notes, perf.alignment, ctx=ctx)
+    a["expression"] = assess_expression(perf.score_features, notes, perf.alignment, ctx=ctx)
+    a["tone"] = assess_tone(perf.score_features, notes, perf.alignment, ctx=ctx)
+    a["synthesis"] = synthesize_assessment(a)
     if out_dir:
         score_to_svg(perf.score, perf.assessment["intonation"], work / "score.svg")
     return perf

@@ -61,6 +61,8 @@ class _State:
     time_signature: Optional[tuple] = None
     repeat_size: int = 0                # measure-repeat sign: measures in the group / still to fill
     repeat_left: int = 0
+    dynamic: Optional[str] = None       # last dynamic mark seen ("p", "mf", ...): applies until the next one
+    hairpin: Optional[str] = None       # "crescendo" / "diminuendo" while a wedge is open
 
 
 def _read_barlines(mel, m, st):
@@ -115,12 +117,22 @@ def _read_directions(el, m, cursor):
         m.coda = ""
 
 
+def _read_dynamics(el, st):
+    """Dynamic marks (<dynamics><mf/>) and hairpins (<wedge>) of a <direction> -> st.dynamic / st.hairpin."""
+    for dyn in el.iter("dynamics"):
+        if len(dyn):
+            st.dynamic = dyn[0].tag
+    for wedge in el.iter("wedge"):
+        st.hairpin = {"crescendo": "crescendo", "diminuendo": "diminuendo"}.get(wedge.get("type"))
+
+
 def _note_record(el, st, onset, dur):
     """One pitched <note> as a plain dict (onset relative to the measure, in quarters)."""
     ties = {t.get("type") for t in el.findall("tie")} | {t.get("type") for t in el.findall("notations/tied")}
     art = el.find("notations/articulations")
     return {"midi": _midi(el.find("pitch")), "onset": onset, "dur": dur,
             "art": art[0].tag if art is not None and len(art) else None,
+            "dyn": st.dynamic, "hairpin": st.hairpin,
             "beat_type": st.beat_type, "tie_start": "start" in ties, "tie_stop": "stop" in ties}
 
 
@@ -141,6 +153,7 @@ def _read_measures(part):
                 _read_attributes(el, st)
             elif el.tag in ("direction", "sound"):
                 _read_directions(el, m, cursor)
+                _read_dynamics(el, st)
             elif el.tag in ("backup", "forward"):
                 step = int(el.findtext("duration")) / st.divisions
                 cursor += step if el.tag == "forward" else -step
@@ -189,7 +202,8 @@ def parse_musicxml(path, part=None, expand_repeats=True):
                     del open_ties[n["midi"]]
                 continue
             rec = {"measure": m.number, "beat": 1.0 + n["onset"] * n["beat_type"] / 4.0, "midi": n["midi"],
-                   "dur": n["dur"], "art": n["art"], "onset": onset}
+                   "dur": n["dur"], "art": n["art"], "onset": onset,
+                   "dyn": n["dyn"], "hairpin": n["hairpin"]}
             recs.append(rec)
             if n["tie_start"]:
                 open_ties[n["midi"]] = rec
@@ -207,6 +221,6 @@ def parse_musicxml(path, part=None, expand_repeats=True):
         return sec
 
     notes = [Note(r["measure"], r["beat"], midi_to_name(r["midi"]), r["midi"], r["dur"], r["art"],
-                  seconds(r["onset"]), seconds(r["onset"] + r["dur"])) for r in recs]
+                  seconds(r["onset"]), seconds(r["onset"] + r["dur"]), r["dyn"], r["hairpin"]) for r in recs]
     notes.sort(key=lambda n: (n.onset, n.midi_pitch))
     return Score(notes, tempo_map[0][1], meta["key_fifths"], meta["time_signature"])
