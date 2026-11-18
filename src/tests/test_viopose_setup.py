@@ -1,5 +1,6 @@
 """VioPose setup (vision/viopose_setup.py): environment choice, download.sh handling, the step-by-step installer with
 every external command replaced by a recorder (no network, no multi-GB installs), idempotence, configuration."""
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -132,8 +133,8 @@ class Installer(unittest.TestCase):
     def test_full_install_runs_the_steps_in_order_and_records_the_config(self):
         recorder = Recorder()
         config = self.setup(recorder)
-        steps = [("clone" if c[0] == "git" else "pip" if "pip" in c else "gdown" if "gdown" in c else "?") for c, _ in recorder.calls]
-        self.assertEqual(steps, ["clone", "pip", "gdown", "gdown", "gdown"])
+        steps = [("clone" if c[0] == "git" else "pip" if "pip" in c else "gdown" if "gdown" in c else "check" if "-c" in c else "?") for c, _ in recorder.calls]
+        self.assertEqual(steps, ["clone", "pip", "check", "gdown", "gdown", "gdown"])
         pip = recorder.commands("pip")[0]
         self.assertEqual(pip[:4], [sys.executable, "-m", "pip", "install"])
         self.assertTrue(pip[-1].endswith("requirements.txt"))
@@ -150,7 +151,25 @@ class Installer(unittest.TestCase):
         (self.tp / "VioPose/requirements.txt").write_text("tensorflow==2.14.0\n")
         self.setup(recorder)
         self.assertEqual(len(recorder.commands("pip")), 2)           # only the requirements step ran again
-        self.assertEqual(len(recorder.calls), before + 1)
+        self.assertEqual(len(recorder.calls), before + 2)            # pip + the import check
+
+    def test_unusable_pins_are_left_out_of_the_install(self):
+        text, dropped = vs.filter_requirements("tensorflow==2.13.1\njaxlib==0.4.13\nWurlitzer==3.0\nnumpy>=1.2\n")
+        self.assertEqual(text, "tensorflow==2.13.1\nnumpy>=1.2\n")
+        self.assertEqual(len(dropped), 2)
+
+    def test_failed_bulk_install_falls_back_to_single_pins_and_bad_imports_are_reported(self):
+        def run(cmd, **kw):
+            if "-r" in cmd or "bad==1" in cmd or "-c" in cmd:
+                raise subprocess.CalledProcessError(1, cmd)
+            return mock.Mock(returncode=0)
+        calls = []
+        failed = vs.install_requirements("py", Path("r.txt"), "# c\ngood==1\nbad==1\n",
+                                         lambda c, **kw: (calls.append(c), run(c))[1], self.log.append)
+        self.assertEqual(failed, ["bad==1"])
+        self.assertEqual(len(calls), 3)                              # bulk, good, bad
+        with self.assertRaisesRegex(vs.SetupError, "bad==1"):
+            vs.check_imports("py", ["cv2"], failed, run)
 
     def test_skip_weights_and_dry_run(self):
         recorder = Recorder()

@@ -6,12 +6,17 @@
 #   2. a Python 3.9 environment for it (it pins TensorFlow 2.13, mediapipe, OpenCV: they cannot share Maestro's
 #      environment) via conda, else uv, else a python3.9 venv; if none of those exists, `pip install uv` (uv fetches
 #      Python 3.9 itself)                                     -> third_party/viopose-env
-#   3. pip install -r VioPose/requirements.txt in that environment (several GB; skipped if already installed)
+#   3. pip install VioPose's requirements in that environment (several GB; skipped if already installed). Its
+#      requirements.txt is an exported environment: it pins jax, jaxlib, flax, chex, ... that no VioPose code imports and
+#      that cannot install everywhere (jaxlib 0.4.13 has no Windows wheel, tensorflow-decision-forests no Windows build,
+#      wurlitzer is POSIX-only), so UNUSED_PINS are left out; if pip still fails on some other pin it is retried one pin
+#      at a time, and the result is accepted only if inference.py's own imports then work (checked in the environment)
 #   4. the model weights, by carrying out VioPose's own download.sh in Python (cd / mkdir / gdown / unzip / rm), so it
 #      works on Windows too and follows upstream if the file ids change; the demo data it also fetches is skipped
 #   5. third_party/viopose.json {"dir", "python"}: what `load_config()` reads, so vision/pose_estimation.py finds it.
 # Every step is skipped when already done, so re-running only repairs what is missing. `load_config()` also honours the
 # environment variables VIOPOSE_DIR / VIOPOSE_PYTHON, which win over the file, and falls back to the default checkout.
+import ast
 import hashlib
 import json
 import os
@@ -28,6 +33,10 @@ THIRD_PARTY = ROOT / "third_party"
 DEFAULT_DIR = THIRD_PARTY / "VioPose"
 CONFIG_PATH = THIRD_PARTY / "viopose.json"
 PYTHON_VERSION = "3.9"                                   # what VioPose's pinned requirements need
+# pins in VioPose's requirements.txt that none of its code imports (checked against its sources); several have no
+# wheels on Windows or other platforms and would stop the whole install
+UNUSED_PINS = {"jax", "jaxlib", "flax", "chex", "optax", "orbax-checkpoint", "tensorflow-decision-forests",
+               "tensorflowjs", "tensorstore", "wurlitzer"}
 
 
 class SetupError(RuntimeError):
@@ -73,6 +82,53 @@ def environment_command(env_dir, which=shutil.which, run=subprocess.run):
                      "then re-run the setup.")
 
 
+def filter_requirements(text, skip=UNUSED_PINS):
+    """requirements.txt text -> (text without the `skip` packages, the lines that were left out)."""
+    kept, dropped = [], []
+    for line in text.splitlines():
+        name = line.split("==")[0].split(">=")[0].split("[")[0].strip().lower().replace("_", "-")
+        (dropped if name in skip else kept).append(line)
+    return "\n".join(kept) + "\n", dropped
+
+
+def runtime_modules(root, entry="inference.py"):
+    """Third-party modules that `entry` imports at module level, following the checkout's own modules (absolute and
+    relative imports, packages with or without __init__.py). Imports inside functions do not count: inference.py only
+    imports moviepy when it renders a visualisation video, which Maestro never asks for. -> sorted names."""
+    root, stdlib = Path(root), sys.stdlib_module_names
+
+    def local(parts, base):                                    # dotted name -> file in the checkout (longest prefix)
+        for n in range(len(parts), 0, -1):
+            path = base.joinpath(*parts[:n])
+            for candidate in (path.with_suffix(".py"), path / "__init__.py"):
+                if candidate.is_file():
+                    return candidate
+
+    is_local = lambda name: (root / name).is_dir() or (root / f"{name}.py").is_file()      # the checkout's own names
+    seen, todo, third = set(), [root / entry], set()
+    while todo:
+        file = todo.pop()
+        if file in seen:
+            continue
+        seen.add(file)
+        for node in ast.parse(file.read_text(encoding="utf-8")).body:
+            if isinstance(node, ast.Import):
+                targets = [(a.name.split("."), root) for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                base = root if not node.level else file.parents[node.level - 1]
+                module = node.module.split(".") if node.module else []
+                targets = [(module, base)] + [(module + [a.name], base) for a in node.names]
+            else:
+                continue
+            for parts, base in targets:
+                found = local(parts, base) if parts else None
+                if found:
+                    todo.append(found)
+                elif parts and not getattr(node, "level", 0) and parts[0] not in stdlib and not is_local(parts[0]):
+                    third.add(parts[0])
+    return sorted(third)
+
+
 def parse_download_script(text):
     """VioPose's download.sh -> [(command, args)] for the commands it uses: cd, mkdir, gdown, unzip, rm."""
     actions = []
@@ -102,6 +158,35 @@ def run_download_script(text, root, python, run, skip_demo=True):
                 z.extractall(cwd)
         elif command == "rm":
             (cwd / args[0]).unlink(missing_ok=True)
+
+
+def install_requirements(interpreter, requirements_file, text, execute, log):
+    """pip install -r the file; if that fails, retry the pins one at a time (each with its dependencies) and keep
+    what installs. -> the pins that could not be installed."""
+    try:
+        execute([str(interpreter), "-m", "pip", "install", "-r", str(requirements_file)])
+        return []
+    except subprocess.CalledProcessError:
+        log("  pip could not install the whole list; retrying one pin at a time and keeping what works")
+    failed = []
+    for pin in (line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")):
+        try:
+            execute([str(interpreter), "-m", "pip", "install", pin])
+        except subprocess.CalledProcessError:
+            failed.append(pin)
+            log(f"  could not install {pin}")
+    return failed
+
+
+def check_imports(interpreter, modules, failed_pins, execute):
+    """Run `import <modules>` in the VioPose environment; raise SetupError (naming the failed pins) if that breaks."""
+    try:
+        execute([str(interpreter), "-c", "import " + ", ".join(modules)])
+    except subprocess.CalledProcessError:
+        raise SetupError("The VioPose environment is incomplete: inference.py needs "
+                         f"{', '.join(modules)} but importing them fails"
+                         + (f" (pins that would not install: {', '.join(failed_pins)})" if failed_pins else "")
+                         + ". See the pip output above.")
 
 
 def setup_viopose(directory=None, python=None, skip_weights=False, dry_run=False, run=None, log=print):
@@ -142,13 +227,21 @@ def setup_viopose(directory=None, python=None, skip_weights=False, dry_run=False
             execute(command)
 
     log("[3/5] VioPose requirements (TensorFlow, mediapipe, OpenCV: several GB)")
-    requirements = directory / "requirements.txt"
-    digest = hashlib.sha256(requirements.read_bytes()).hexdigest() if requirements.is_file() else ""
-    if digest and marker("requirements").is_file() and marker("requirements").read_text() == digest:
+    original = directory / "requirements.txt"
+    wanted, dropped = filter_requirements(original.read_text()) if original.is_file() else ("", [])
+    digest = hashlib.sha256(wanted.encode()).hexdigest()
+    if wanted and marker("requirements").is_file() and marker("requirements").read_text() == digest:
         log("  already installed")
     else:
-        execute([str(interpreter), "-m", "pip", "install", "-r", str(requirements)], cwd=directory)
+        if dropped:
+            log(f"  leaving out {len(dropped)} pins VioPose never imports: {', '.join(d.split('==')[0] for d in dropped)}")
+        filtered = directory.parent / "viopose-requirements.txt"
         if not dry_run:
+            filtered.parent.mkdir(parents=True, exist_ok=True)
+            filtered.write_text(wanted)
+        failed = install_requirements(interpreter, filtered, wanted, execute, log)
+        if not dry_run:
+            check_imports(interpreter, runtime_modules(directory), failed, execute)
             marker("requirements").write_text(digest)
 
     log("[4/5] Model weights")
