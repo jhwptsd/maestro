@@ -29,6 +29,7 @@ class Pose:
     fps: float
     joints: List[str]                  # e.g. "l_shoulder", "r_hand" (see VIOPOSE_JOINTS)
     xyz: np.ndarray                    # (T, J, 3) millimetres; NaN where a joint was not tracked
+    audio_used: bool = False           # True if VioPose's audio model (which also listens to the recording) made it
 
     def __post_init__(self):
         self.xyz = np.asarray(self.xyz, dtype=float)
@@ -85,7 +86,8 @@ def viopose_result_to_pose(path):
 def save_pose(pose, path):
     """Write the Maestro JSON format."""
     Path(path).write_text(json.dumps({"fps": pose.fps, "joints": pose.joints,
-                                      "xyz": np.where(np.isnan(pose.xyz), None, pose.xyz).tolist()}))
+                                      "xyz": np.where(np.isnan(pose.xyz), None, pose.xyz).tolist(),
+                                      "audio_used": pose.audio_used}))
 
 
 def load_pose(path):
@@ -98,6 +100,6 @@ def load_pose(path):
                          "(convert a VioPose result.npy with src/scripts/convert_viopose.py).")
     try:
         d = json.loads(path.read_text())
-        return Pose(float(d["fps"]), d["joints"], np.array(d["xyz"], dtype=float))
+        return Pose(float(d["fps"]), d["joints"], np.array(d["xyz"], dtype=float), bool(d.get("audio_used", False)))
     except (KeyError, ValueError, TypeError, OSError) as e:        # json.JSONDecodeError is a ValueError
         raise InputError(f"Could not read pose file {path.name}: {e}")

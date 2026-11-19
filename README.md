@@ -85,7 +85,7 @@ with its own Python 3.9 environment (conda, uv, or a `python3.9` venv; uv is ins
 (several GB) and its model weights (Google Drive). `python src/scripts/setup_viopose.py` does just that step, is safe to
 re-run (finished steps are skipped) and takes `--dry-run`, `--skip-weights`, `--python PATH` (an existing environment)
 and `--dir`. The result is recorded in `third_party/viopose.json`; the variables `VIOPOSE_DIR` and `VIOPOSE_PYTHON`
-override it, and `VIOPOSE_AUDIO=1` also gives VioPose the recording's audio. Without VioPose the audio analysis works as
+override it, and `VIOPOSE_AUDIO=0` runs VioPose without the recording's audio (by default its audio model is used). Without VioPose the audio analysis works as
 before and the report says how to install it. Details and the visual pitch method are in `src/docs/README.md`.
 
 ## Assessment events and root causes
@@ -118,4 +118,4 @@ encoder with the VioTech labels) would plug in the same way.
 
 ## Status
 
-Implemented: audio extraction, selectable pitch/transcription backends, score conversion, score-audio alignment, pitch-deviation and timing assessment, and score visualization. Movement analysis from VioPose poses (bowing, posture, visual pitch) is implemented and independent of the audio analysis; combining the two, multimodal fusion and LLM feedback remain in development.
+Implemented: audio extraction, selectable pitch/transcription backends, score conversion, score-audio alignment, pitch-deviation and timing assessment, and score visualization. Movement analysis from VioPose poses (bowing, posture, visual pitch) is implemented; VioPose and the visual pitch use the audio by default (`visual_audio=False` turns that off) and the assessment events combine both; multimodal fusion and LLM feedback remain in development.

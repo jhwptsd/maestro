@@ -26,37 +26,55 @@ from maestro.assessment.posture import assess_posture
 from maestro.vision.motion_features import extract_motion
 from maestro.vision.pose_estimation import estimate_pose
 from maestro.vision.pose_io import save_pose
-from maestro.vision.visual_pitch import estimate_visual_pitch
+from maestro.vision.visual_pitch import calibrate_from_audio, estimate_visual_pitch
 
 
-def analyze_visual(perf, pose_file=None, save_dir=None):
+def analyze_visual(perf, pose_file=None, save_dir=None, use_audio=True):
     """Visual stage: VioPose pose -> motion features -> bowing, posture and visual pitch.
 
     The pose is generated automatically by the installed VioPose (vision/pose_estimation.py) and used straight away;
-    if save_dir is given it is also written there as pose.json. `pose_file` (a saved pose.json) skips VioPose. The
-    stage uses the pose only, none of the audio results. Fills perf.pose, perf.motion_features and
-    assessment["visual_status"|"bowing"|"posture"|"visual_pitch"]. Without VioPose (not installed, or an audio-only
-    upload) the stage is skipped and visual_status says why.
+    if save_dir is given it is also written there as pose.json. `pose_file` (a saved pose.json) skips VioPose.
+    use_audio (default True) lets the visual models use the recording's audio where they can be configured to: VioPose
+    runs its audio model on the extracted audio, and the visual pitch is calibrated against the notes heard in the audio
+    (when at least 6 are aligned). The motion, bowing and posture metrics themselves are pose geometry and have no audio
+    input. Fills perf.pose, perf.motion_features and assessment["visual_status"|"bowing"|"posture"|"visual_pitch"].
+    Without VioPose (not installed, or an audio-only upload) the stage is skipped and visual_status says why.
     """
     result = perf.assessment
+    wav = _write_audio(perf, save_dir) if use_audio and perf.audio and not pose_file else None
     try:
-        perf.pose = estimate_pose(perf.video, perf.audio_source, pose_file)
+        perf.pose = estimate_pose(perf.video, wav, pose_file)
     except PoseUnavailableError as e:
         result["visual_status"] = {"available": False, "reason": str(e)}
         return perf
+    finally:
+        if wav and not save_dir:
+            Path(wav).unlink(missing_ok=True)
     if save_dir and not pose_file:
         save_pose(perf.pose, Path(save_dir) / "pose.json")
     perf.motion_features = motion = extract_motion(perf.pose)
-    result["visual_status"] = {"available": True, "reason": ""}
-    result["visual_pitch"] = estimate_visual_pitch(perf.pose, motion["hands"])
+    result["visual_status"] = {"available": True, "reason": "", "viopose_audio": perf.pose.audio_used, "pitch_calibrated": False}
+    calibration = None
+    if use_audio and perf.audio_features:
+        calibration = calibrate_from_audio(perf.pose, motion["hands"], perf.audio_features["notes"])
+        result["visual_status"]["pitch_calibrated"] = calibration is not None
+    result["visual_pitch"] = estimate_visual_pitch(perf.pose, motion["hands"], calibration)
     ctx = Context(perf)                                    # notes + alignment let the events name their measure
     result["bowing"] = assess_bowing(motion, ctx)
     result["posture"] = assess_posture(motion, perf.pose, ctx)
     return perf
 
 
+def _write_audio(perf, directory):
+    """The performance's audio as a wav for VioPose's audio model (in `directory`, else a temp file) -> path."""
+    from scipy.io import wavfile
+    path = Path(directory) / "viopose_audio.wav" if directory else Path(tempfile.mkstemp(suffix=".wav")[1])
+    wavfile.write(path, perf.audio["sr"], perf.audio["samples"].astype("float32"))
+    return str(path)
+
+
 def analyze(video_path, score_path, out_dir=None, denoise=True,
-            pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None, pose_file=None, neural=None):
+            pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None, pose_file=None, neural=None, visual_audio=True):
     """Analyze a performance against a score and return the filled Performance.
 
     video_path: any video or audio file ffmpeg reads; score_path: MusicXML, .mxl, MIDI, PDF or image.
@@ -66,7 +84,9 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     pitch_options is a dict of backend-specific settings, e.g. ``{"device": "cpu"}``
     for CREPE. Optional backends are loaded only when selected.
     The movement analysis needs VioPose (installed by the project setup); it runs automatically and its pose is saved as
-    work/pose.json. pose_file (a saved pose.json) skips VioPose. The visual stage is independent of the audio analysis.
+    work/pose.json. pose_file (a saved pose.json) skips VioPose.
+    visual_audio (default True): the visual models use the audio where they can (VioPose's audio model, visual-pitch
+    calibration against the heard notes); False keeps the visual analysis audio-free.
 
     neural: None (default) or "clap" to add the pretrained CLAP tone/expression judgement (assessment/neural.py; needs
     transformers + torch and downloads ~600 MB once; if it cannot load, the analysis continues without it).
@@ -101,7 +121,7 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
         "correspondence": corr,
         "section": played_section(perf.score_features, perf.alignment),
     }
-    analyze_visual(perf, pose_file, work)                  # pose first: its results are evidence for audio-side causes
+    analyze_visual(perf, pose_file, work, visual_audio)                  # pose first: its results are evidence for audio-side causes
     try:
         backend = load_backend(neural)
         if backend:

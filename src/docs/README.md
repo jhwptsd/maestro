@@ -2,8 +2,10 @@
 Any relevant documentation, citations, images, papers, et cetera.
 
 ## Visual (movement) analysis
-The visual stage is independent of the audio tools: it takes a 3D pose and produces movement results, using no audio
-results at all (combining the two comes later).
+The visual stage takes a 3D pose and produces movement results. Where a visual model can be configured to use audio it
+does by default (`analyze(..., visual_audio=False)` turns that off): VioPose's audio model, and the visual-pitch
+calibration. The motion, bowing and posture metrics are pose geometry with no audio input; the assessment events combine them
+with the audio results.
 
     video -> vision/pose_estimation.py (VioPose, or a pose file) -> Pose (vision/pose_io.py)
           -> vision/hand_tracking.py + vision/motion_features.py   hands, bow strokes, elbow angles, shoulder tilt
@@ -28,8 +30,8 @@ its `download.sh` (Google Drive), and record the locations in `third_party/viopo
 **Run**: `vision/pose_estimation.py` runs VioPose's `inference.py` from its own directory (it uses relative paths and always
 writes `./output/result.npy`), one run at a time, reads the result and deletes it. The generated pose is saved as
 `pose.json` in the analysis output folder. Overrides: `VIOPOSE_DIR`, `VIOPOSE_PYTHON` (win over the saved config),
-`VIOPOSE_FOLDER` (weights folder, default `Logs/VioPose`), `VIOPOSE_AUDIO=1` (give VioPose the audio track for its audio
-model; off by default), `VIOPOSE_TIMEOUT`. For offline work, `analyze(..., pose_file="pose.json")` skips VioPose, and
+`VIOPOSE_FOLDER` (weights folder, default `Logs/VioPose`), `VIOPOSE_AUDIO=0` (run VioPose without the audio; by default its audio model gets the
+recording's audio, falling back to the video-only weights if those are missing or the run fails), `VIOPOSE_TIMEOUT`. For offline work, `analyze(..., pose_file="pose.json")` skips VioPose, and
 `python src/scripts/convert_viopose.py result.npy pose.json` converts a `result.npy` you produced yourself (it is a pickle,
 so Maestro only unpickles the file its own VioPose run just wrote, never an upload).
 
@@ -39,7 +41,10 @@ dataset). A finger pressed `x` mm from the nut raises a string of length `L` by 
 left hand's distance from the shoulder (relative to its furthest reach, taken as first position) gives `x`. Result:
 semitones above the open string per frame plus one candidate pitch per open string (the string cannot be seen). It is
 approximate (assumed anatomy, a few semitones of absolute offset) and best read as *movement*. `calibrate_visual_pitch`
-fits distance -> pitch from any known (distance, pitch) pairs for absolute pitch.
+fits distance -> pitch from any known (distance, pitch) pairs for absolute pitch. `calibrate_from_audio` builds the pairs from the
+heard notes: the audio says which string each note is on, so one curve (distance -> semitones above that string) fits all four
+strings. It is used by default (`analyze(..., visual_audio=True)`) when at least 6 notes are aligned; the geometric estimate
+(`visual_audio=False`) stays audio-free, which is the one to compare against the audio pitch.
 
 References: VioPose (above); Bowing gestures: Dalmazzo & Ramirez, 2019 (a gesture classifier is future work, once audio
 is integrated).

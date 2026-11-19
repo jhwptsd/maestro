@@ -1,4 +1,4 @@
-"""Visual analysis: pose files, the VioPose runner, bow/arm motion, visual pitch, movement metrics and the analyze() hook. None of it uses audio: pose in, movement results out. Synthetic violinists and a fake VioPose
+"""Visual analysis: pose files, the VioPose runner, bow/arm motion, visual pitch, movement metrics and the analyze() hook. The movement metrics use the pose only; VioPose can also use audio and the visual pitch can be calibrated against heard notes. Synthetic violinists and a fake VioPose
 checkout come from pose_fixture.py (VioPose itself needs TensorFlow and downloaded weights)."""
 import os
 import tempfile
@@ -17,7 +17,7 @@ from maestro.vision.motion_features import extract_motion
 from maestro.vision.pose_estimation import estimate_pose, run_viopose
 from maestro.vision import viopose_setup
 from maestro.vision.pose_io import VIOPOSE_JOINTS, Pose, body_scale, load_pose, save_pose, viopose_result_to_pose
-from maestro.vision.visual_pitch import (FIRST_POSITION_MM, OPEN_STRINGS, calibrate_visual_pitch, distance_from_nut_mm,
+from maestro.vision.visual_pitch import (FIRST_POSITION_MM, OPEN_STRINGS, calibrate_from_audio, calibrate_visual_pitch, distance_from_nut_mm,
                                          estimate_visual_pitch, semitones_above_open)
 from pose_fixture import (fingerboard_truth, last_call, minuet_notes, save_viopose_result, steady_mask, synth_pose,
                           write_fake_viopose, write_malicious_npy)
@@ -123,14 +123,28 @@ class VioPoseRunner(unittest.TestCase):
         self.assertEqual(call["weights"], "Logs/VioPose_wo_audio")                       # no audio: the *_wo_audio model
         self.assertFalse((self.root / "output" / "result.npy").exists())                 # result is read, then removed
 
-    def test_audio_is_only_passed_when_asked_for(self):
-        estimate_pose(self.d / "v.mp4", self.d / "a.wav")                                # VIOPOSE_AUDIO unset: audio ignored
-        self.assertNotIn("--audio_path", last_call(self.root)["args"])
-        with mock.patch.dict(os.environ, {"VIOPOSE_AUDIO": "1"}):
-            estimate_pose(self.d / "v.mp4", self.d / "a.wav")
+    def test_audio_is_used_by_default_and_can_be_switched_off(self):
+        pose = estimate_pose(self.d / "v.mp4", self.d / "a.wav")
         call = last_call(self.root)
         self.assertEqual(call["args"][-2:], ["--audio_path", str((self.d / "a.wav").resolve())])
-        self.assertEqual(call["weights"], "Logs/VioPose")
+        self.assertEqual(call["weights"], "Logs/VioPose")                                # the audio-trained model
+        self.assertTrue(pose.audio_used)
+        with mock.patch.dict(os.environ, {"VIOPOSE_AUDIO": "0"}):
+            pose = estimate_pose(self.d / "v.mp4", self.d / "a.wav")
+        self.assertNotIn("--audio_path", last_call(self.root)["args"])
+        self.assertFalse(pose.audio_used)
+        self.assertFalse(estimate_pose(self.d / "v.mp4").audio_used)                     # no audio given
+
+    def test_missing_audio_weights_fall_back_to_the_video_only_model(self):
+        (self.root / "Logs" / "VioPose").rmdir()
+        pose = estimate_pose(self.d / "v.mp4", self.d / "a.wav")
+        self.assertFalse(pose.audio_used)
+        self.assertEqual(last_call(self.root)["weights"], "Logs/VioPose_wo_audio")
+
+    def test_the_audio_flag_survives_saving_the_pose(self):
+        pose = estimate_pose(self.d / "v.mp4", self.d / "a.wav")
+        save_pose(pose, self.d / "p.json")
+        self.assertTrue(load_pose(self.d / "p.json").audio_used)
 
     def test_setup_problems_are_reported_not_raised_as_crashes(self):
         with mock.patch.dict(os.environ, {"VIOPOSE_DIR": str(self.d / "nowhere")}):
@@ -315,6 +329,22 @@ class VisualPitch(unittest.TestCase):
         self.assertEqual(vp["method"], "calibrated")
         self.assertEqual(vp["midi"].shape, vp["semitones_above_open"].shape)
 
+    def test_calibration_from_the_heard_notes(self):
+        pose = synth_pose(NOTES, noise_mm=0)
+        hands = extract_motion(pose)["hands"]
+        heard = [{"onset": o, "offset": f, "midi": float(m)} for o, f, m, _ in NOTES]
+        cal = calibrate_from_audio(pose, hands, heard)
+        self.assertGreaterEqual(cal["n"], 6)
+        self.assertLess(cal["mae_semitones"], 0.3)                                     # one curve fits all four strings
+        vp = estimate_visual_pitch(pose, hands, cal)
+        truth, _ = fingerboard_truth(NOTES, pose.times)
+        steady = steady_mask(NOTES, pose.times)
+        self.assertLess(np.mean(np.abs(vp["semitones_above_open"][steady] - truth[steady])), 0.5)   # the geometry read 1-4 too low
+        self.assertEqual(vp["candidates"].shape, (len(pose.times), 4))
+        self.assertIsNone(calibrate_from_audio(pose, hands, heard[:3]))                # too few notes to fit a curve
+        no_left = synth_pose(NOTES, left_hand=False)
+        self.assertIsNone(calibrate_from_audio(no_left, extract_motion(no_left)["hands"], heard))
+
     def test_unavailable_cases(self):
         no_left = synth_pose(NOTES, left_hand=False)
         self.assertFalse(self.estimate(no_left)["available"])
@@ -324,7 +354,7 @@ class VisualPitch(unittest.TestCase):
 
 
 class AnalyzeVisualHook(unittest.TestCase):
-    """analyze_visual needs only a pose: no audio analysis has run, and none is used."""
+    """analyze_visual needs only a pose; audio (VioPose's audio model, visual-pitch calibration) is used when present."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -371,6 +401,32 @@ class AnalyzeVisualHook(unittest.TestCase):
         self.assertEqual(perf.assessment["bowing"]["n_strokes"], N_STROKES)
         saved = load_pose(out / "pose.json")                                   # the generated pose is kept next to the outputs
         np.testing.assert_allclose(saved.joint("l_hand"), perf.pose.joint("l_hand"))
+
+    def test_the_visual_stage_uses_the_audio_unless_told_not_to(self):
+        root = write_fake_viopose(self.d / "viopose", synth_pose(NOTES, noise_mm=0))
+        (self.d / "v.mp4").write_bytes(b"x")
+        out = self.d / "out"
+        out.mkdir()
+
+        def performance():
+            perf = self.bare_performance()
+            perf.video = str(self.d / "v.mp4")
+            perf.audio = {"samples": np.zeros(16000, dtype=np.float32), "sr": 16000}
+            perf.audio_features = {"notes": [{"onset": o, "offset": f, "midi": float(m)} for o, f, m, _ in NOTES]}
+            return perf
+
+        with mock.patch.dict(os.environ, {"VIOPOSE_DIR": str(root), "VIOPOSE_PYTHON": "python3"}):
+            perf = analyze_visual(performance(), save_dir=out)
+            status = perf.assessment["visual_status"]
+            self.assertEqual((status["viopose_audio"], status["pitch_calibrated"]), (True, True))
+            self.assertEqual(perf.assessment["visual_pitch"]["method"], "calibrated")
+            self.assertIn("--audio_path", last_call(root)["args"])
+            self.assertTrue((out / "viopose_audio.wav").is_file())
+            perf = analyze_visual(performance(), save_dir=out, use_audio=False)
+            status = perf.assessment["visual_status"]
+            self.assertEqual((status["viopose_audio"], status["pitch_calibrated"]), (False, False))
+            self.assertEqual(perf.assessment["visual_pitch"]["method"], "geometry")
+            self.assertNotIn("--audio_path", last_call(root)["args"])
 
     def test_a_given_pose_file_is_not_rewritten(self):
         out = self.d / "out"

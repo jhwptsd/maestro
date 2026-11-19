@@ -21,7 +21,12 @@
 # lean add noise, and the first-position reference makes the absolute scale approximate (a few semitones). It is
 # most reliable for *changes* in position (how many semitones the hand moved), less so for absolute pitch.
 # `calibrate_visual_pitch` fits a curve from known (distance, pitch) pairs, e.g. pitches measured elsewhere, to get
-# absolute MIDI pitch per frame; nothing here depends on how those pairs were obtained.
+# absolute MIDI pitch per frame; nothing here depends on how those pairs were obtained. `calibrate_from_audio` builds the
+# pairs from the pitches heard in the recording (audio/transcription.py notes) and the hand position while each sounded:
+# the one place the visual estimate can use the audio (maestro.analyze(visual_audio=True)): the audio says which string
+# each note is on, and a curve distance -> semitones above that string is fitted. Calibrated output is no longer an
+# independent check on the audio pitch (it was fitted to it): compare the geometric estimate (visual_audio=False) when
+# vision and audio should be judged against each other. The leave-one-out error in the calibration says how well it fits.
 import numpy as np
 
 OPEN_STRINGS = (55, 62, 69, 76)       # G3 D4 A4 E5 (MIDI)
@@ -64,6 +69,36 @@ def calibrate_visual_pitch(distances_mm, midi_pitches, degree=2):
             "mae_semitones": float(err.mean()), "within_1_semitone": float((err <= 1).mean())}
 
 
+def calibrate_from_audio(pose, hands, notes, min_pairs=6):
+    """Fit hand distance -> semitones above the open string from the heard notes ({"onset", "offset", "midi"}).
+
+    The audio settles what vision cannot: which string each note is on. For every note the geometric estimate is
+    compared with the heard pitch and the open string that makes them agree is taken, so one curve fits notes on all
+    four strings (a single distance -> pitch curve would not: strings differ by fifths). The pair is then the median
+    left-hand distance over the middle of the note against the semitones above that string. -> a calibration dict
+    (calibrate_visual_pitch's, plus "target": "semitones_above_open"), or None if the hand is not tracked or fewer than
+    `min_pairs` notes can be used."""
+    distance = left_hand_distance_mm(pose, hands)
+    if distance is None or len(distance) < MIN_FRAMES:
+        return None
+    reference = np.percentile(distance, 95)
+    times, pairs = np.asarray(pose.times), []
+    for n in notes:
+        if "offset" not in n:
+            continue
+        quarter = (n["offset"] - n["onset"]) / 4
+        inside = (times >= n["onset"] + quarter) & (times <= n["offset"] - quarter)
+        if inside.sum() < 2 or np.isnan(distance[inside]).all():
+            continue
+        d = float(np.nanmedian(distance[inside]))
+        geometric = float(semitones_above_open(FIRST_POSITION_MM + (reference - d)))
+        string = min(OPEN_STRINGS, key=lambda o: abs(o + geometric - n["midi"]))
+        pairs.append((d, n["midi"] - string))
+    if len(pairs) < min_pairs:
+        return None
+    return {**calibrate_visual_pitch(*zip(*pairs)), "target": "semitones_above_open"}
+
+
 def estimate_visual_pitch(pose, hands, calibration=None):
     """Left-hand position -> pitch per frame, from video alone (see the module comment).
 
@@ -86,6 +121,13 @@ def estimate_visual_pitch(pose, hands, calibration=None):
            "mean_semitones": float(semitones.mean())}
     if calibration is not None:
         out["method"] = "calibrated"
-        out["midi"] = np.polyval(calibration["coeffs"], distance)
+        fitted = np.polyval(calibration["coeffs"], distance)
+        if calibration.get("target") == "semitones_above_open":          # from calibrate_from_audio: refines the geometry
+            out["semitones_above_open"] = fitted
+            out["candidates"] = fitted[:, None] + np.array(OPEN_STRINGS)[None, :]
+            out["mean_semitones"] = float(fitted.mean())
+            out["range_semitones"] = float(np.percentile(fitted, 95) - np.percentile(fitted, 5))
+        else:
+            out["midi"] = fitted
         out["calibration"] = calibration
     return out
