@@ -13,7 +13,8 @@ with the audio results.
           -> vision/visual_pitch.py                                pitch implied by the left hand (video only)
 
 Results are in `Performance.assessment` (`visual_status`, `bowing`, `posture`, `visual_pitch`) and in the GUI
-report ("Movement summary" and the movement sections). Without a pose source the stage is skipped and the report says why.
+player page (bow, shoulder-tilt, elbow-angle and left-hand traces, and the skeleton beside the video). Without a pose source the
+stage is skipped and those traces are absent.
 
 ### Where the pose comes from
 VioPose ([github.com/SeongJong-Yoo/VioPose](https://github.com/SeongJong-Yoo/VioPose), MIT, Yoo et al., WACV 2025)

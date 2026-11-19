@@ -5,9 +5,11 @@
 # whose events all have the same shape (`make_event`), so assessment/synthesize.py can merge them into one report and
 # gui/ can draw them without knowing which module made them:
 #     {"module", "category", "start", "end" (seconds in the performance), "measure", "beat", "score_idx", "perf_idx",
-#      "severity" (0 fine ... 1 severe), "value", "expected", "unit", "message",
-#      "causes": [{"cause" (slug), "explanation", "confidence" (0-1), "evidence": {...}}, ...] (most likely first)}
-# Causes are hypotheses read off the measurements (always with the evidence they rest on), not certainties.
+#      "severity" (0 fine ... 1 severe), "value", "expected", "unit",
+#      "causes": [{"cause" (slug), "confidence" (0-1), "evidence": {measurement: number, ...}}, ...] (most likely first)}
+# Purely quantitative: what (category, value vs expected), when (start/end, measure/beat) and why (cause slugs with the
+# measurements they rest on). No prose: explaining it in words is the job of the feedback stage (feedback/generator.py).
+# Causes are hypotheses read off the measurements, not certainties.
 #
 # `Context` is a read-only view of the Performance (score, notes, alignment, audio, pose/motion, visual pitch, optional
 # neural results) that the modules share for locating events and finding causes, so each module takes the same input.
@@ -32,13 +34,13 @@ def ramp(value, good, bad):
     return float(np.clip((value - good) / (bad - good), 0.0, 1.0))
 
 
-def cause(slug, explanation, confidence, **evidence):
+def cause(slug, confidence, **evidence):
     """One root-cause hypothesis with the measurements it rests on."""
-    return {"cause": slug, "explanation": explanation, "confidence": round(float(np.clip(confidence, 0, 1)), 2),
+    return {"cause": slug, "confidence": round(float(np.clip(confidence, 0, 1)), 2),
             "evidence": jsonable(evidence)}
 
 
-def make_event(module, category, start, end, severity, message, causes=(), ctx=None, score_idx=None, perf_idx=None,
+def make_event(module, category, start, end, severity, causes=(), ctx=None, score_idx=None, perf_idx=None,
                value=None, expected=None, unit=None):
     """An event in the common format. measure/beat are looked up from score_idx (or the time) when ctx is given;
     causes are sorted most likely first."""
@@ -48,7 +50,7 @@ def make_event(module, category, start, end, severity, message, causes=(), ctx=N
     return jsonable({"module": module, "category": category, "start": start, "end": end,
                      "measure": measure, "beat": beat, "score_idx": score_idx, "perf_idx": perf_idx,
                      "severity": round(float(severity), 3), "value": value, "expected": expected, "unit": unit,
-                     "message": message, "causes": sorted(causes, key=lambda c: -c["confidence"])})
+                     "causes": sorted(causes, key=lambda c: -c["confidence"])})
 
 
 def module_result(module, events, n_units, summary=None, available=True):

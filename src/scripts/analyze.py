@@ -5,7 +5,7 @@ from pathlib import Path
 
 from maestro import analyze
 from maestro.audio.pitch import DEFAULT_PITCH_BACKEND, list_pitch_backends
-from maestro.gui.report import build_report, standalone_page
+from maestro.gui.report import build_page, copy_media
 from maestro.utils.errors import InputError, OMRUnavailableError
 
 
@@ -44,7 +44,7 @@ def main():
     except (InputError, OMRUnavailableError, ImportError, ValueError) as exc:
         parser.exit(2, f"error: {exc}\n")
 
-    (out / "report.html").write_text(standalone_page(build_report(perf)), encoding="utf-8")
+    (out / "report.html").write_text(build_page(perf, copy_media(perf, out)), encoding="utf-8")
     (out / "assessment.json").write_text(json.dumps(perf.assessment["synthesis"], indent=1), encoding="utf-8")
     print(f"report: {out / 'report.html'}\nassessment events (JSON): {out / 'assessment.json'}")
     print(f"pitch backend: {perf.audio_features['pitch_backend']}")

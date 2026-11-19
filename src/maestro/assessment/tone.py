@@ -63,41 +63,30 @@ def assess_tone(score_notes, perf_notes, alignment, ctx=None):
         p = ctx._by_score[i]
         n = ctx.notes[p]
         span = (n["onset"], n["offset"])
-        speed, stroke = _bow_state(ctx, n["onset"])
-        make = lambda cat, sev, msg, causes, val, exp, unit: events.append(
-            make_event("tone", cat, *span, sev, msg, causes, ctx, i, p, val, exp, unit))
+        speed, _ = _bow_state(ctx, n["onset"])
+        make = lambda cat, sev, causes, val, exp, unit: events.append(
+            make_event("tone", cat, *span, sev, causes, ctx, i, p, val, exp, unit))
         if t["harmonic_ratio"] < HARMONIC_FLOOR or t["harmonic_ratio"] < med["harmonic_ratio"] - HARMONIC_DROP:
-            causes = [cause("too_much_bow_pressure", "Slow bow with a noisy sound: the bow is pressed harder than "
-                            "the speed supports (crunch).", 0.6, bow_speed_ratio=speed)] if speed is not None and speed < 0.8 else \
-                     [cause("bow_too_fast_or_light", "Fast bow with a noisy sound: the bow skates over the string "
-                            "without enough weight (whistly/airy).", 0.6, bow_speed_ratio=speed)] if speed is not None and speed > 1.25 else \
-                     [cause("bow_contact_unclear", "The string is not set into steady vibration: pressure, speed and "
-                            "contact point are not balanced.", 0.35, bow_speed_ratio=speed)]
+            causes = [cause("too_much_bow_pressure", 0.6, bow_speed_ratio=speed)] if speed is not None and speed < 0.8 else \
+                     [cause("bow_too_fast_or_light", 0.6, bow_speed_ratio=speed)] if speed is not None and speed > 1.25 else \
+                     [cause("bow_contact_unclear", 0.35, bow_speed_ratio=speed)]
             make("noisy_tone", ramp(t["harmonic_ratio"], HARMONIC_FLOOR + 0.1, 0.2) * 0.8 + 0.2,
-                 f"Only {t['harmonic_ratio']:.0%} of the energy sits at the harmonics (typical {med['harmonic_ratio']:.0%}).",
                  causes, t["harmonic_ratio"], med["harmonic_ratio"], "harmonic ratio")
         if t["attack_s"] > slow_limit and n["offset"] - n["onset"] >= 0.4:
             make("slow_attack", ramp(t["attack_s"], slow_limit, slow_limit + 0.2) * 0.7 + 0.2,
-                 f"The sound takes {t['attack_s'] * 1000:.0f} ms to reach full level.",
-                 [cause("bow_not_prepared", "The bow starts moving or settles on the string only after the note "
-                        "begins: not prepared on the string before the stroke.", 0.45, attack_s=t["attack_s"])],
+                 [cause("bow_not_prepared", 0.45, attack_s=t["attack_s"])],
                  t["attack_s"], slow_limit, "s")
         if t["dynamic_stability"] < unsteady_limit and n["offset"] - n["onset"] >= MIN_STABILITY_S:
             wobble = _bow_wobble(ctx, *span)
             make("unsteady_level", ramp(t["dynamic_stability"], unsteady_limit, 0.1) * 0.7 + 0.2,
-                 f"The level fluctuates during the note (stability {t['dynamic_stability']:.2f}).",
-                 [wobble] if wobble else [cause("uneven_bow", "The bow speed or weight changes during the stroke "
-                                                "(bow wobble or running out of bow).", 0.4,
+                 [wobble] if wobble else [cause("uneven_bow", 0.4,
                                                 stability=t["dynamic_stability"])],
                  t["dynamic_stability"], unsteady_limit, "stability")
         z = (t["brightness"] - med["brightness"]) / mad_bright
         if abs(z) > BRIGHT_Z and abs(t["brightness"] - med["brightness"]) > 1.5:
             bright = z > 0
             make("too_bright" if bright else "too_dull", ramp(abs(z), BRIGHT_Z, 2 * BRIGHT_Z) * 0.6 + 0.2,
-                 f"The note is much {'brighter' if bright else 'duller'} than the rest (z={z:+.1f}).",
-                 [cause("bow_near_bridge" if bright else "bow_over_fingerboard",
-                        "The bow is close to the bridge or heavily weighted: many upper partials." if bright else
-                        "The bow is over the fingerboard or too light: few upper partials.", 0.4, z=float(z))],
+                 [cause("bow_near_bridge" if bright else "bow_over_fingerboard", 0.4, z=float(z))],
                  t["brightness"], med["brightness"], "harmonic numbers")
     events += _neural(ctx, tones, med)
     summary = {"n_notes": len(tones), "median": med,
@@ -115,22 +104,21 @@ def _bow_wobble(ctx, start, end):
         return None
     cv = float(speed.std() / speed.mean())
     if cv > 0.5:
-        return cause("bow_speed_wobble", f"The bow speed varies strongly during the note (CV {cv:.2f}).", 0.6,
+        return cause("bow_speed_wobble", 0.6,
                      speed_cv=cv)
 
 
 def _neural(ctx, tones, med):
-    """Windows the neural model hears as poor tone, with the measured descriptors inside them as the explanation."""
+    """Windows the neural model hears as poor tone, with the measured descriptors inside them as evidence."""
     events = []
     for w in ctx.neural.get("tone", []):
         if w["p_good"] >= NEURAL_BAD:
             continue
         inside = [t for i, t in tones.items() if w["start"] <= ctx.notes[ctx._by_score[i]]["onset"] <= w["end"]]
         hr = float(np.mean([t["harmonic_ratio"] for t in inside])) if inside else None
-        causes = ([cause("measured_noise", f"The harmonic ratio in this window is {hr:.0%} (typical {med['harmonic_ratio']:.0%}).",
+        causes = ([cause("measured_noise",
                          0.5, harmonic_ratio=hr)] if hr is not None and hr < med["harmonic_ratio"] - 0.05 else
-                  [cause("unmeasured", "The model hears a harsh tone but no measured feature explains it.", 0.2)])
-        events.append(make_event("tone", "neural_harsh_tone", w["start"], w["end"], ramp(w["p_good"], NEURAL_BAD, 0.05),
-                                 f"The neural model rates this passage {w['p_good']:.0%} warm / smooth.", causes, ctx,
+                  [cause("unmeasured", 0.2)])
+        events.append(make_event("tone", "neural_harsh_tone", w["start"], w["end"], ramp(w["p_good"], NEURAL_BAD, 0.05), causes, ctx,
                                  None, None, w["p_good"], NEURAL_BAD, "p(good tone)"))
     return events

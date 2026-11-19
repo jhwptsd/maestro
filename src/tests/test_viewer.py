@@ -12,7 +12,7 @@ from helpers import make_video, synth, write_wav
 from minuet import minuet_musicxml
 from maestro import analyze
 from maestro.gui.notation import Glyph, infer_key, key_alters, layout_score, render_panel, spell
-from maestro.gui.report import VIEWER_JS, build_report, standalone_page
+from maestro.gui.report import CSS, VIEWER_JS, build_page
 from maestro.gui.viewer import build_viewer
 from maestro.score.musicxml import parse_musicxml
 from maestro.score.score_representation import Note, Score
@@ -217,17 +217,15 @@ class RealAnalysis(unittest.TestCase):
             write_wav(d / "a.wav", synth([(m, 0.4 + 0.5 * i, 0.4) for i, m in enumerate(first_notes)]))
             make_video(d / "v.mp4", d / "a.wav", 5)
             perf = analyze(d / "v.mp4", d / "s.musicxml")
-        html = build_report(perf)
-        self.assertIn("Score vs what was played", html)
-        panels = re.findall(r"<svg.*?</svg>", html.split("Score vs what was played")[1], re.S)[:2]
+        html = build_page(perf, "media.mp4")
+        self.assertIn("Score as read vs score as played", html)
+        panels = re.findall(r"<svg.*?</svg>", html.split("Score as read vs score as played")[1], re.S)[:2]
         for p in panels:
             ET.fromstring(p)
         self.assertEqual(Score.from_json(sc.to_json()), sc)               # key/time signature survive JSON
 
     def test_page_carries_the_hover_script(self):
         self.assertIn("data-pair", VIEWER_JS)
-        self.assertIn("<script>", standalone_page("x"))
-        self.assertIn(VIEWER_JS.strip()[:30], standalone_page("x"))
 
 
 @unittest.skipUnless(shutil.which("node") and subprocess.run(["node", "-e", "require('playwright')"], capture_output=True).returncode == 0,
@@ -236,7 +234,7 @@ class HoverInBrowser(unittest.TestCase):
     def test_hovering_a_note_highlights_its_partner(self):
         with tempfile.TemporaryDirectory() as d:
             page = Path(d) / "r.html"
-            page.write_text(standalone_page(build_viewer(fake_perf(["ok"] * 8))))
+            page.write_text(f"<style>{CSS}</style>{build_viewer(fake_perf(['ok'] * 8))}<script>{VIEWER_JS}</script>")
             js = ("const {chromium}=require('playwright');(async()=>{const b=await chromium.launch();"
                   "const p=await b.newPage({viewport:{width:1300,height:900}});await p.goto('file://'+process.argv[1]);"
                   "await p.hover('.vcol:first-child .note[data-pair=\"s2\"] .head');"

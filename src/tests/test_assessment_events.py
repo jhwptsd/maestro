@@ -23,7 +23,7 @@ from maestro.utils.audio_math import midi_to_hz
 
 SR, HOP = 16000, 256
 EVENT_KEYS = {"module", "category", "start", "end", "measure", "beat", "score_idx", "perf_idx", "severity", "value",
-              "expected", "unit", "message", "causes"}
+              "expected", "unit", "causes"}
 
 
 def scene(spec, spacing=0.5, motion=None):
@@ -81,7 +81,8 @@ class Intonation(unittest.TestCase):
         event, = r["events"]
         self.assertEqual((event["category"], event["score_idx"]), ("sharp", 4))
         self.assertEqual(top_cause(event), "shift_overshoot")
-        self.assertEqual(set(event) , EVENT_KEYS)
+        self.assertEqual(set(event), EVENT_KEYS)                    # numbers and slugs only: no prose
+        self.assertEqual(set(event["causes"][0]), {"cause", "confidence", "evidence"})
         self.assertEqual(event["measure"], 2)
 
     def test_whole_performance_flat_is_a_tuning_offset(self):

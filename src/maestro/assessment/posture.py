@@ -51,24 +51,19 @@ def _events(motion, pose, ctx):
             continue
         if tilt is not None and abs(np.nanmedian(tilt[m])) > TILT_DEG:
             d = float(np.nanmedian(tilt[m]))
-            c = (cause("setup_height", f"The shoulder line is tilted in {np.mean(flagged):.0%} of the performance "
-                       "(same direction): the shoulder rest or chin rest does not fit, or the violin is held too "
-                       "high/low.", 0.6, tilt_deg=d, share=float(np.mean(flagged)))
+            c = (cause("setup_height", 0.6, tilt_deg=d, share=float(np.mean(flagged)))
                  if persistent else
-                 cause("leaning", "The tilt appears only in this passage: the player leans or lifts a shoulder here.",
+                 cause("leaning",
                        0.5, tilt_deg=d, median_tilt_deg=median_tilt))
-            events.append(make_event("posture", "shoulders_uneven", a, b, ramp(abs(d), TILT_DEG, 25) * 0.7 + 0.2,
-                                     f"Shoulders are tilted {abs(d):.0f} degrees.", [c], ctx, value=d, expected=0.0, unit="deg"))
+            events.append(make_event("posture", "shoulders_uneven", a, b, ramp(abs(d), TILT_DEG, 25) * 0.7 + 0.2, [c], ctx, value=d, expected=0.0, unit="deg"))
         if head is not None and np.nanmean(head[m]) > HEAD_SPEED:
             v = float(np.nanmean(head[m]))
             leap = any(abs(ctx.score[i]["midi_pitch"] - ctx.score[i - 1]["midi_pitch"]) >= LEAP_SEMITONES
                        for i, p in ctx.matches if i > 0 and a <= ctx.notes[p]["onset"] < b)
-            c = (cause("shift_compensation", "A large leap falls in this window: the head moves to help the hand shift.",
+            c = (cause("shift_compensation",
                        0.55, head_speed=v) if leap else
-                 cause("body_driven_playing", "The head moves a lot without a leap to explain it: phrasing with the body "
-                       "or tension in the neck.", 0.35, head_speed=v))
-            events.append(make_event("posture", "head_movement", a, b, ramp(v, HEAD_SPEED, 1.5) * 0.7 + 0.2,
-                                     f"The head moves at {v:.2f} shoulder widths per second.", [c], ctx,
+                 cause("body_driven_playing", 0.35, head_speed=v))
+            events.append(make_event("posture", "head_movement", a, b, ramp(v, HEAD_SPEED, 1.5) * 0.7 + 0.2, [c], ctx,
                                      value=v, expected=HEAD_SPEED, unit="shoulder widths/s"))
     series = {"shoulder tilt": tilt, "left elbow angle": motion["elbow_angle"].get("left")}
     for name, x in series.items():
@@ -78,9 +73,7 @@ def _events(motion, pose, ctx):
         change = float(np.nanmedian(x[-third:]) - np.nanmedian(x[:third]))
         if abs(change) > DRIFT_DEG:
             events.append(make_event("posture", "posture_drift", float(t[0]), float(t[-1]), ramp(abs(change), DRIFT_DEG, 30) * 0.6 + 0.2,
-                                     f"The {name} moves {change:+.0f} degrees between the start and the end.",
-                                     [cause("fatigue", "A steady change over the performance points to tiring muscles "
-                                            "or slowly slumping.", 0.45, change_deg=change, signal=name)],
+                                     [cause("fatigue", 0.45, change_deg=change, signal=name)],
                                      ctx, value=change, expected=0.0, unit="deg"))
     return events
 

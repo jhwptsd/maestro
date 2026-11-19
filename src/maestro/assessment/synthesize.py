@@ -6,10 +6,10 @@
 #   {"version", "scores": {module: 0-100 or None, "overall"}, "n_events",
 #    "events": [every event, sorted by start, each with a unique "id"],
 #    "causes": [{"cause", "count", "weight", "modules", "events": [ids]}, ... most weighty first]   (weight = sum of
-#               severity x confidence over the events the cause is the leading explanation of)
+#               severity x confidence over the events the cause is the leading one of)
 #    "by_measure": {"12": {"events": n, "max_severity", "modules": [...]}, ...},
-#    "links": [{"events": [id, id], "modules", "start", "end", "hypothesis"}]    events from different modules that
-#               overlap in time, with what their combination suggests,
+#    "links": [{"events": [id, id], "modules": [a, b], "start", "end", "categories": [a, b], "causes": [a, b]}]
+#               events from different modules that overlap in time (the leading cause of each, for the feedback stage),
 #    "unavailable": {module: reason}}
 # gui/report.py draws it and feedback/generator.py is meant to read it, so the schema is the contract between them.
 import numpy as np
@@ -20,17 +20,6 @@ MODULES = ("intonation", "rhythm", "expression", "tone", "bowing", "posture")
 WEIGHTS = {"intonation": 0.25, "rhythm": 0.25, "expression": 0.2, "tone": 0.15, "bowing": 0.1, "posture": 0.05}
 LINK_MARGIN_S = 0.5            # events this close in time (gap between their spans) are linked
 LINK_MIN_SEVERITY = 0.4        # only substantial events are linked, otherwise every pair would be
-HYPOTHESES = {                 # what two modules failing at the same moment suggests
-    ("bowing", "rhythm"): "The bow arm's timing is the likely source of the timing fault.",
-    ("bowing", "tone"): "The bow motion (speed, length or direction change) matches the tone fault: bow technique is "
-                        "the likely cause.",
-    ("bowing", "expression"): "The bow motion matches the expressive fault: shaping needs a different bow speed or weight.",
-    ("intonation", "posture"): "Unsteady posture coincides with out-of-tune notes: tension or movement may disturb the left hand.",
-    ("posture", "rhythm"): "Body movement coincides with a timing fault: the player may be pushing the tempo with the body.",
-    ("intonation", "rhythm"): "Pitch and timing faults coincide: the passage is probably too hard at this tempo.",
-    ("intonation", "tone"): "Pitch and tone faults coincide: the left hand and the bow are not coordinated here.",
-    ("rhythm", "tone"): "Timing and tone faults coincide: unprepared bow changes may cause both.",
-}
 
 
 def _gap(a, b):
@@ -46,10 +35,11 @@ def _links(events):
             if b["start"] - a["end"] > LINK_MARGIN_S:          # sorted by start: nothing later can be close
                 break
             if a["module"] != b["module"] and _gap(a, b) <= LINK_MARGIN_S:
-                pair = tuple(sorted((a["module"], b["module"])))
-                links.append({"events": [a["id"], b["id"]], "modules": list(pair),
+                links.append({"events": [a["id"], b["id"]], "modules": [a["module"], b["module"]],
                               "start": min(a["start"], b["start"]), "end": max(a["end"], b["end"]),
-                              "hypothesis": HYPOTHESES.get(pair, f"{pair[0]} and {pair[1]} faults coincide.")})
+                              "categories": [a["category"], b["category"]],
+                              "causes": [a["causes"][0]["cause"] if a["causes"] else None,
+                                         b["causes"][0]["cause"] if b["causes"] else None]})
     return links
 
 

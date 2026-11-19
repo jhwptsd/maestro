@@ -38,22 +38,19 @@ def _causes(k, errors, items, score, ctx, perf_idx):
     s, out = score[si], []
     prev = score[si - 1] if si > 0 else None
     if prev is not None and s["onset"] - prev.get("offset", s["onset"]) > 0.1 and err > 0:
-        out.append(cause("late_after_rest", f"The note comes after a {s['onset'] - prev['offset']:.2f}s rest and "
-                         "enters late: the entry was not prepared.", 0.5, rest_seconds=s["onset"] - prev["offset"]))
+        out.append(cause("late_after_rest", 0.5, rest_seconds=s["onset"] - prev["offset"]))
     if prev is not None and abs(s["midi_pitch"] - prev["midi_pitch"]) >= LEAP_SEMITONES and err > 0:
-        out.append(cause("late_after_leap", f"A {abs(s['midi_pitch'] - prev['midi_pitch'])}-semitone leap leads into "
-                         "the note: the shift or string crossing took time.", 0.5,
+        out.append(cause("late_after_leap", 0.5,
                          leap_semitones=abs(s["midi_pitch"] - prev["midi_pitch"])))
     if s.get("duration", 1.0) <= FAST_NOTE_QUARTERS:
-        out.append(cause("fast_passage", "Short notes: finger and bow coordination is tightest here.", 0.35,
+        out.append(cause("fast_passage", 0.35,
                          duration_quarters=s.get("duration")))
     if perf_idx in ctx.bow_change_pairs():
         lag = ctx.bow_change_pairs()[perf_idx] - ctx.bow_sync_offset()      # video/audio latency removed
         if BOW_LAG_S < lag:
-            out.append(cause("late_bow_change", f"The bow changes direction {lag:.2f}s after the note sounds: the "
-                             "bow arm is behind the left hand.", 0.5, bow_change_lag_s=lag))
+            out.append(cause("late_bow_change", 0.5, bow_change_lag_s=lag))
     if not out:
-        out.append(cause("uneven_pulse", "No local pattern: the pulse is simply uneven here.", 0.3))
+        out.append(cause("uneven_pulse", 0.3))
     return out
 
 
@@ -97,10 +94,7 @@ def _tempo_changes(pairs, tempo, ctx):
             faster, mean = tempo[k] > 1, float(np.mean(tempo[k:j]))
             events.append(make_event(
                 "rhythm", "tempo_change", pairs[k][3], pairs[j - 1][3], 0.15 + 0.2 * ramp(abs(mean - 1), 0.25, 0.6),
-                f"The tempo is {mean:.0%} of the average for {j - k} notes.",
-                [cause("rushing" if faster else "dragging", f"This passage is played {'faster' if faster else 'slower'} than "
-                       "the rest: rushing or dragging if unintended, rubato or a ritardando if musical (the score "
-                       "carries one tempo).", 0.4, local_tempo_ratio=mean)], ctx, pairs[k][0], pairs[k][1],
+                [cause("rushing" if faster else "dragging", 0.4, local_tempo_ratio=mean)], ctx, pairs[k][0], pairs[k][1],
                 mean, 1.0, "ratio"))
         k = max(j, k + 1)
     return events
@@ -137,21 +131,17 @@ def assess_rhythm(score_notes, perf_notes, alignment, wrong_note_semitones=1.0, 
         if abs(err[k]) > tolerance:
             causes = _causes(k, err, items, score_notes, ctx, pi)
             if abs(err[k]) > MISALIGNED_FRACTION * gap:
-                causes.append(cause("possible_misalignment", f"The error is {abs(err[k]) / gap:.0%} of the gap between "
-                                    "notes here: in a fast passage the note may have been matched to a neighbouring onset.",
+                causes.append(cause("possible_misalignment",
                                     min(0.6, abs(err[k]) / gap - 0.2), error_over_gap=float(abs(err[k]) / gap)))
             events.append(make_event(
                 "rhythm", "late" if err[k] > 0 else "early", onset, onset,
                 0.2 + 0.8 * ramp(abs(err[k]) * 1000, tolerance * 500, MS_SEVERE),
-                f"Onset is {abs(err[k]) * 1000:.0f} ms {'late' if err[k] > 0 else 'early'}.",
                 causes, ctx, si, pi, float(err[k]), 0.0, "s"))
     events += _tempo_changes(pairs, local_tempo, ctx)
     ratio = float(1 / slope)
     if abs(ratio - 1) > TEMPO_OFF:
         events.append(make_event("rhythm", "tempo", float(po[0]), float(po[-1]), ramp(abs(ratio - 1), TEMPO_OFF, 0.5),
-                                 f"Played at {ratio:.0%} of the written tempo.",
-                                 [cause("tempo_choice", "The whole piece is taken slower/faster than written (practice "
-                                        "tempo, or a technical limit at the written tempo).", 0.5, tempo_ratio=ratio)],
+                                 [cause("tempo_choice", 0.5, tempo_ratio=ratio)],
                                  ctx, value=ratio, expected=1.0, unit="ratio"))
     summary = {"n_notes": len(pairs), "tempo_ratio": ratio, "mean_abs_error": float(np.abs(err).mean()),
                "std_error": float(err.std())}

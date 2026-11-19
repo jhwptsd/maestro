@@ -1,13 +1,14 @@
-"""GUI: SVG charts, the explained report, and the upload server (end to end over HTTP)."""
+"""GUI: the player page data, the page itself and the upload server (end to end over HTTP)."""
 import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest import mock
 
@@ -15,8 +16,7 @@ from helpers import make_video, musicxml, synth, write_wav
 from minuet import minuet_musicxml, play_minuet
 from pose_fixture import minuet_notes, synth_pose, write_fake_viopose
 from maestro import analyze
-from maestro.gui import charts
-from maestro.gui.report import build_report, standalone_page
+from maestro.gui.report import build_page, copy_media
 from maestro.gui.server import make_server
 from maestro.vision import viopose_setup
 from maestro.vision.pose_io import save_pose
@@ -33,80 +33,65 @@ def performance(d, midis=MIDIS, score=MIDIS):
     return analyze(d / "v.mp4", d / "s.musicxml", d / "out")
 
 
-def svgs(html):
-    """Every <svg>...</svg> block of an HTML fragment."""
-    out, i = [], 0
-    while (i := html.find("<svg", i)) != -1:
-        j = html.index("</svg>", i) + 6
-        out.append(html[i:j])
-        i = j
-    return out
+def page_data(html):
+    """The JSON the page embeds (`const D = {...};`)."""
+    return json.loads(re.search(r"const D = (\{.*\});\n", html).group(1).replace("<\\/", "</"))
 
 
-class Report(unittest.TestCase):
+class Page(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.TemporaryDirectory()
         cls.perf = performance(Path(cls._tmp.name))
-        cls.html = build_report(cls.perf)
+        cls.html = build_page(cls.perf, "media.mp4")
+        cls.data = page_data(cls.html)
 
     @classmethod
     def tearDownClass(cls):
         cls._tmp.cleanup()
 
-    def test_every_result_has_a_card_and_an_explained_chart(self):
-        for text in ("Average pitch error", "Overall tuning", "Wrong notes", "Tempo", "Average timing error",
-                     "Timing unevenness", "Score match", "How to read it"):
-            self.assertIn(text, self.html)
-        # match, 2 engraved panels, piano roll, pitch trace, intonation, tempo, timing + 4 assessment charts
-        self.assertEqual(len(svgs(self.html)), 12)
-        self.assertEqual(self.html.count('class="how"'), 12)   # 11 explained charts + the "movement analysis not available" notice
-        for text in ("Assessment: score per skill", "Assessment: when things went wrong", "Assessment: bars to practise",
-                     "Assessment: why it went wrong", "maestro-assessment.json"):
-            self.assertIn(text, self.html)
-        self.assertIn("Movement analysis", self.html)
+    def test_page_plays_the_recording_and_carries_all_the_data(self):
+        d = self.data
+        self.assertEqual(d["media"], {"url": "media.mp4", "kind": "video"})
+        self.assertGreater(d["duration"], 4)
+        self.assertEqual(set(d["traces"]), {"pitch", "loudness", "notes"})        # no pose here: no bow/posture traces
+        self.assertIsNone(d["pose"])
+        self.assertEqual(len(d["traces"]["pitch"]["t"]), len(d["traces"]["pitch"]["midi"]))
+        for key in ("scores", "events", "causes", "links", "unavailable"):
+            self.assertIn(key, d)
 
-    def test_assessment_charts_show_the_events(self):
-        report = self.perf.assessment["synthesis"]
-        events = [dict(e, severity=0.9, causes=[], measure=2) for e in report["events"][:1]] or [
-            {"module": "intonation", "category": "sharp", "start": 1.0, "end": 1.4, "severity": 0.9, "message": "C is sharp.",
-             "causes": [], "measure": 2}]
-        timeline = charts.event_timeline_chart(events)
-        ET.fromstring(timeline)
-        self.assertIn(charts.BAD, timeline)                                  # severity 0.9 is drawn red
-        self.assertIn("intonation", charts.measure_heatmap(events))
-        self.assertIn("Nothing could be assessed", charts.module_scores_chart({"intonation": None}))
-        self.assertIn("No problems", charts.event_timeline_chart([]))
+    def test_the_injected_errors_are_in_the_traces(self):
+        notes = self.data["traces"]["notes"]
+        self.assertAlmostEqual(notes[3]["cents"], 30, delta=8)                    # note 3 was played 30 cents sharp
+        late = max(notes, key=lambda n: abs(n["ms"] or 0))
+        self.assertEqual(notes.index(late), 5)                                    # note 5 was played late
+        self.assertEqual(self.data["traces"]["pitch"]["score"][0]["midi"], MIDIS[0])
 
-    def test_all_charts_are_valid_xml(self):
-        for s in svgs(self.html):
-            ET.fromstring(s)
+    def test_nothing_but_numbers_and_slugs(self):
+        for e in self.data["events"]:
+            self.assertEqual(set(e), {"id", "module", "category", "start", "end", "measure", "beat", "severity", "value",
+                                      "expected", "unit", "causes"})
+            self.assertTrue(all(isinstance(c, str) and " " not in c and isinstance(p, float) for c, p in e["causes"]))
+        for gone in ("How to read it", "explanation", "hypothesis", "message"):
+            self.assertNotIn(gone, self.html)
 
-    def test_charts_show_the_injected_errors(self):
-        i = self.perf.assessment["intonation"]["notes"]
-        self.assertRegex(charts.intonation_chart(self.perf.assessment["intonation"]), r"note 3: \+3[0-2] cents")  # injected +30
-        late = {int(n): int(v) for n, v in re.findall(r"note (\d): ([+-]\d+) ms",
-                                                    charts.timing_chart(self.perf.assessment["rhythm"]))}
-        self.assertEqual(max(late, key=late.get), 5)     # the injected 120 ms delay (partly absorbed by the fit)
-        self.assertGreater(late[5], 60)
-        self.assertEqual(len(i), len(MIDIS))
+    def test_the_score_viewer_is_kept_but_folded_away(self):
+        self.assertIn("<details><summary>Score as read vs score as played</summary>", self.html)
+        self.assertIn('class="viewer"', self.html)
 
-    def test_standalone_page(self):
-        page = standalone_page(self.html)
-        self.assertTrue(page.startswith("<!doctype html>") and "<style>" in page)
-
-    def test_charts_degrade_gracefully_without_data(self):
-        for s in (charts.intonation_chart({"notes": [], "tuning_offset_cents": None}),
-                  charts.timing_chart({"notes": []}),
-                  charts.tempo_chart([], [], {"notes": [], "tempo_ratio": None}),
-                  charts.pitch_trace_chart([{"time": 0.0, "estimated_pitch": 0.0}], [], [], [])):
-            ET.fromstring(s)                    # still valid SVG
-            self.assertIn("<text", s)           # with an explanatory message
+    def test_data_cannot_close_the_script_tag(self):
+        self.perf.assessment["synthesis"]["events"].append(
+            {"id": "e9999", "module": "tone", "category": "</script><b>x", "start": 0, "end": 0, "measure": None, "beat": None,
+             "severity": 0.1, "value": None, "expected": None, "unit": None, "causes": []})
+        try:
+            html = build_page(self.perf, "media.mp4")
+        finally:
+            self.perf.assessment["synthesis"]["events"].pop()
+        self.assertEqual(html.count("</script>"), 1)                              # the page's own script only
+        self.assertEqual(page_data(html)["events"][-1]["category"], "</script><b>x")
 
 
-class VisualReport(unittest.TestCase):
-    """The movement section of the report (pose only: the audio side is independent). The pose here comes from a saved
-    pose.json; the Server tests below get it from VioPose the way a real run does."""
+class VisualPage(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.TemporaryDirectory()
@@ -114,49 +99,61 @@ class VisualReport(unittest.TestCase):
         (d / "m.musicxml").write_text(minuet_musicxml())
         write_wav(d / "a.wav", play_minuet())
         make_video(d / "v.mp4", d / "a.wav", 18)
-        save_pose(synth_pose(minuet_notes(), with_bow=True), d / "pose.json")
+        cls.pose = synth_pose(minuet_notes(), with_bow=True)
+        save_pose(cls.pose, d / "pose.json")
         cls.perf = analyze(d / "v.mp4", d / "m.musicxml", pose_file=d / "pose.json")
-        cls.html = build_report(cls.perf)
+        cls.data = page_data(build_page(cls.perf, "media.mp4"))
 
     @classmethod
     def tearDownClass(cls):
         cls._tmp.cleanup()
 
-    def test_movement_cards_and_sections(self):
-        for text in ("Movement summary", "Bow strokes", "Bow speed evenness", "Smoothness within strokes", "Down/up balance",
-                     "Torso sway", "Shoulder tilt", "Left-hand travel", "Bow movement", "Arm angles",
-                     "Left-hand position as pitch (video only)"):
-            self.assertIn(text, self.html)
-        self.assertNotIn("Not available", self.html)
+    def test_movement_traces_and_skeleton_share_the_recording_clock(self):
+        t, d = self.data["traces"], self.data
+        self.assertTrue({"bow", "posture", "hand"} <= set(t))
+        self.assertEqual(len(t["bow"]["t"]), len(self.pose.xyz))
+        self.assertGreater(len(t["bow"]["strokes"]), 10)
+        self.assertEqual(len(d["pose"]["xyz"]), len(self.pose.xyz))                # one skeleton per video frame
+        self.assertEqual(d["pose"]["fps"], self.pose.fps)
+        self.assertTrue(all(a in d["pose"]["joints"] and b in d["pose"]["joints"] for a, b in d["pose"]["edges"]))
 
-    def test_visual_charts_are_valid_svg(self):
-        svgs_ = svgs(self.html)
-        self.assertEqual(len(svgs_), 12 + 4)                           # the 12 audio/score/assessment figures + bow, strokes, arms, visual pitch
-        for s in svgs_:
-            ET.fromstring(s)
+    def test_every_skill_with_a_result_has_a_score(self):
+        self.assertTrue({"intonation", "rhythm", "expression", "tone", "bowing", "posture", "overall"} <= set(self.data["scores"]))
 
-    def test_visual_pitch_chart_shows_the_hand_derived_pitch(self):
-        vp = self.perf.assessment["visual_pitch"]
-        chart = charts.visual_pitch_chart(vp)
-        ET.fromstring(chart)
-        self.assertIn("semitones above the open string", chart)
-        self.assertIn("estimated from hand position", chart)
-        self.assertGreater(vp["range_semitones"], 4)                   # the Minuet's hand travels well over a fourth
-        self.assertIn("string-length law", self.html)
 
-    def test_without_a_pose_source_the_section_explains_why(self):
-        isolate_from_real_install(self, self.d)
-        perf = analyze(self.d / "v.mp4", self.d / "m.musicxml")        # no pose file, VioPose not installed
-        html = build_report(perf)
-        self.assertFalse(perf.assessment["visual_status"]["available"])
-        self.assertIn("setup_viopose.py", html)                         # tells the user how to install it
-        self.assertNotIn("Movement summary", html)
-        self.assertIn("Average pitch error", html)                      # the audio results are unaffected
+HAS_BROWSER = bool(shutil.which("node") and subprocess.run(["node", "-e", "require('playwright')"], capture_output=True).returncode == 0)
 
-    def test_charts_degrade_gracefully(self):
-        for chart in (charts.bow_chart({"bow": None}), charts.stroke_chart({"strokes": []}), charts.arm_chart({"elbow_angle": {}}),
-                      charts.visual_pitch_chart({"available": False, "reason": "left hand not tracked"})):
-            ET.fromstring(chart)
+
+@unittest.skipUnless(HAS_BROWSER, "needs node + playwright")
+class PageInBrowser(unittest.TestCase):
+    """The page really runs: no script errors, the live charts and skeleton are drawn, clicking an event seeks."""
+
+    def test_charts_skeleton_and_seeking_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "m.musicxml").write_text(minuet_musicxml())
+            write_wav(d / "a.wav", play_minuet())
+            make_video(d / "v.mp4", d / "a.wav", 18)
+            save_pose(synth_pose(minuet_notes(), with_bow=True), d / "pose.json")
+            perf = analyze(d / "v.mp4", d / "m.musicxml", d / "out", pose_file=d / "pose.json")
+            (d / "out" / "r.html").write_text(build_page(perf, copy_media(perf, d / "out")), encoding="utf-8")
+            js = ("const {chromium}=require('playwright');(async()=>{const b=await chromium.launch();const p=await b.newPage();"
+                  "const errors=[];p.on('pageerror',e=>errors.push(String(e)));await p.goto('file://'+process.argv[1]);"
+                  "await p.waitForTimeout(500);await p.evaluate(()=>{media.currentTime=8;draw();});await p.waitForTimeout(300);"
+                  "const inked=await p.evaluate(()=>[...document.querySelectorAll('canvas')].map(c=>{const g=c.getContext('2d');"
+                  "const px=g.getImageData(0,0,c.width,c.height).data;let n=0;for(let i=3;i<px.length;i+=4)if(px[i])n++;return n>0;}));"
+                  "const rows=await p.evaluate(()=>document.querySelectorAll('#events tbody tr').length);"
+                  "let seeked=null;if(rows){const start=await p.evaluate(()=>D.events.slice().sort((a,b)=>b.severity-a.severity)[0].start);"
+                  "await p.click('#events tbody tr');await p.waitForTimeout(300);"
+                  "seeked=await p.evaluate(s=>Math.abs(media.currentTime-Math.max(0,s-1))<0.3,start);}"
+                  "console.log(JSON.stringify({errors,inked,rows,seeked}));await b.close();})()")
+            out = json.loads(subprocess.run(["node", "-e", js, str(d / "out" / "r.html")], capture_output=True, text=True,
+                                            check=True).stdout)
+        self.assertEqual(out["errors"], [])
+        self.assertTrue(all(out["inked"]), out["inked"])                     # every chart, the timeline and the skeleton
+        self.assertGreaterEqual(len(out["inked"]), 8)
+        if out["rows"]:
+            self.assertTrue(out["seeked"])
 
 
 def isolate_from_real_install(test, tmp):
@@ -225,8 +222,9 @@ class Server(unittest.TestCase):
                 status, data = self.post({"video": ("take.mp4", (d / "v.mp4").read_bytes()),
                                           "score": ("piece.musicxml", musicxml(MIDIS).encode())})
         self.assertEqual(status, 200)
-        for text in ("Movement summary", "Bow movement", "Left-hand position as pitch"):
-            self.assertIn(text, data["html"])
+        page = self.page(data)
+        self.assertTrue({"bow", "posture", "hand"} <= set(page["traces"]))      # the pose VioPose generated is in the page
+        self.assertIsNotNone(page["pose"])
 
     def test_extra_form_fields_cannot_choose_paths_or_inject_a_pose(self):
         with tempfile.TemporaryDirectory() as d:
@@ -245,7 +243,7 @@ class Server(unittest.TestCase):
             finally:
                 escape.unlink(missing_ok=True)
         self.assertEqual(status, 200)
-        self.assertNotIn("Movement summary", data["html"])             # the extra pose was ignored; no VioPose here
+        self.assertIsNone(self.page(data)["pose"])                     # the extra pose was ignored; no VioPose here
 
     def test_index_has_upload_form(self):
         with urllib.request.urlopen(self.url + "/") as r:
@@ -254,12 +252,37 @@ class Server(unittest.TestCase):
         self.assertIn('name="score"', page)
         self.assertNotIn('name="pose"', page)                       # the pose is generated, never uploaded
         self.assertNotIn("mocap", page.lower())
-        self.assertNotIn("/*CSS*/", page)              # stylesheet was inlined
 
-    def test_upload_returns_report(self):
+    def get(self, path, headers=None):
+        req = urllib.request.Request(self.url + path, headers=headers or {})
+        with urllib.request.urlopen(req) as r:
+            return r.status, dict(r.headers), r.read()
+
+    def page(self, answer):
+        """The page data of the run an upload answered with."""
+        return page_data(self.get(answer["url"])[2].decode())
+
+    def test_upload_returns_the_player_page(self):
         status, data = self.upload(MIDIS)
         self.assertEqual(status, 200)
-        self.assertIn("Intonation", data["html"])
+        page = self.page(data)
+        self.assertEqual(page["media"], {"url": "media", "kind": "audio"})     # a wav upload has no picture
+        self.assertEqual(len(page["traces"]["notes"]), len(MIDIS))
+        self.assertIn("intonation", page["scores"])
+
+    def test_media_is_served_with_range_requests_for_seeking(self):
+        _, data = self.upload(MIDIS)
+        status, headers, full = self.get(data["url"] + "media")
+        self.assertEqual((status, headers["Accept-Ranges"]), (200, "bytes"))
+        self.assertEqual(full[:4], b"RIFF")                                     # the uploaded wav, untouched
+        status, headers, part = self.get(data["url"] + "media", {"Range": "bytes=100-199"})
+        self.assertEqual((status, part), (206, full[100:200]))
+        self.assertEqual(headers["Content-Range"], f"bytes 100-199/{len(full)}")
+        _, _, tail = self.get(data["url"] + "media", {"Range": "bytes=-50"})
+        self.assertEqual(tail, full[-50:])
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.get("/run/" + "0" * 32 + "/")
+        self.assertEqual(cm.exception.code, 404)
 
     def test_wrong_score_returns_readable_error(self):
         status, data = self.upload([60, 62, 64, 65, 55, 57, 59, 60])

@@ -92,7 +92,9 @@ before and the report says how to install it. Details and the visual pitch metho
 
 `maestro/assessment/` turns the aligned audio, video and score into **events**: one JSON object per problem, in a single
 shared form (`assessment/events.py`): `module`, `category`, `start`/`end` (s), `measure`/`beat`, `severity` (0-1), measured
-`value` vs `expected`, a `message`, and `causes`, the likely reasons with a confidence and the evidence they rest on.
+`value` vs `expected` (+ `unit`), and `causes`: cause slugs with a confidence and the measurements they rest on. The
+events are purely quantitative (what, when, why as numbers and slugs, no prose): putting them into words is the job of the
+feedback stage.
 
 | file | events | causes come from |
 |---|---|---|
@@ -104,8 +106,14 @@ shared form (`assessment/events.py`): `module`, `category`, `start`/`end` (s), `
 | `posture.py` | uneven shoulders, head movement, drift | persistent tilt = setup, transient = leaning, leaps = shift compensation, steady drift = fatigue |
 | `synthesize.py` | merges all of the above | `assessment["synthesis"]`: events with ids, ranked causes, per-bar summary, cross-skill links, scores |
 
-The report draws scores, a timeline of events per skill, a bars-to-practise heat map and the ranked causes, and offers
-the whole JSON as a download (`python src/scripts/analyze.py ... ` also writes `assessment.json`).
+**The report** (`python src/scripts/serve.py`, or `analyze.py` which writes `report.html` with the media beside it) is a
+player: the recording plays with a skeleton of the estimated pose beside it (front and side view; VioPose gives 3D joints
+without a camera calibration, so the pose cannot be drawn over the picture itself), and live charts trace out as it plays:
+pitch against the written notes, loudness, timing error per note, bow position and speed, shoulder tilt, elbow angles and
+left-hand position, each shading the problems of its own skills. Below are a score per skill, a timeline of problem areas,
+one button per bar coloured by its worst problem, and a sortable event table (click a row to jump there). Clicking
+anywhere on the timeline seeks. The score viewer (written vs played notation) is folded away at the bottom.
+`analyze.py` also writes `assessment.json`, the full synthesized event report.
 
 **Neural models.** No public pretrained violin tone/expression grader exists (Giraldo et al. 2019 trained on unreleased
 TELMI recordings; Dalmazzo & Ramirez 2019 needs wearable sensors; VioTech 2025 builds on MERT with its own annotations).

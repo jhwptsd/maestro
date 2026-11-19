@@ -56,35 +56,24 @@ def _causes(note, ctx, offset, drift, drift_r2, preceding_leap):
     out = []
     if offset is not None and abs(offset) >= 12 and np.sign(offset) == np.sign(cents):
         out.append(cause("global_tuning_offset",
-                         f"The whole performance sits {abs(offset):.0f} cents {'sharp' if offset > 0 else 'flat'}: "
-                         "the instrument or reference pitch is probably off, not this finger.",
                          min(1, abs(offset) / abs(cents)), tuning_offset_cents=offset))
     if preceding_leap is not None and abs(preceding_leap) >= LEAP_SEMITONES and np.sign(preceding_leap) == np.sign(cents):
         out.append(cause("shift_overshoot",
-                         f"The note follows a {abs(preceding_leap):.0f}-semitone {'up' if preceding_leap > 0 else 'down'} "
-                         f"leap and lands {'sharp' if cents > 0 else 'flat'}: the shift overshot its target.",
                          0.55, leap_semitones=preceding_leap))
     elif preceding_leap is not None and abs(preceding_leap) >= LEAP_SEMITONES:
         out.append(cause("shift_undershoot",
-                         f"The note follows a {abs(preceding_leap):.0f}-semitone leap and lands on the other side of "
-                         "the target than the leap's direction: the shift stopped short or the hand corrected late.",
                          0.35, leap_semitones=preceding_leap))
     if abs(drift_r2) > 0.15 and abs(drift) > 10:
-        out.append(cause("pitch_drift",
-                         f"Pitch drifts {drift:+.0f} cents per minute over the performance (strings settling, or "
-                         "the hand losing its reference).", min(0.6, 2 * drift_r2), cents_per_minute=drift, r2=drift_r2))
+        out.append(cause("pitch_drift", min(0.6, 2 * drift_r2), cents_per_minute=drift, r2=drift_r2))
     if s["midi_pitch"] >= HIGH_MIDI:
-        out.append(cause("high_position", "The note is in a high position where the finger spacing is very small.",
+        out.append(cause("high_position",
                          0.4, midi=s["midi_pitch"]))
     gap = _visual_disagreement(ctx, s, ctx.notes[note["perf_idx"]]["onset"])
     calibrated = (ctx.assessment.get("visual_pitch") or {}).get("method") == "calibrated"
     if gap is not None and gap >= (HAND_GAP_CALIBRATED if calibrated else HAND_GAP_GEOMETRIC):
-        out.append(cause("hand_position_mismatch",
-                         f"The left hand in the video is {gap:.1f} semitones away from where this note lies on any "
-                         "string.", min(0.6, gap / 6), visual_gap_semitones=gap))
+        out.append(cause("hand_position_mismatch", min(0.6, gap / 6), visual_gap_semitones=gap))
     if not out:
-        out.append(cause("finger_placement", "No other pattern explains it: the finger was placed slightly off "
-                         "the correct spot.", 0.3))
+        out.append(cause("finger_placement", 0.3))
     return out
 
 
@@ -114,16 +103,13 @@ def assess_intonation(score_notes, perf_notes, alignment, wrong_note_semitones=1
         s, p = score_notes[n["score_idx"]], perf_notes[n["perf_idx"]]
         if n["wrong_note"]:
             events.append(make_event("intonation", "wrong_note", p["onset"], p.get("offset", p["onset"]), 1.0,
-                                     f"Played {p['midi']:.1f} instead of {s['midi_pitch']} ({s.get('pitch', s['midi_pitch'])}).",
-                                     [cause("wrong_note", "The pitch is over a semitone from the written note: a wrong "
-                                            "finger or string, or a misread note.", 0.6)],
+                                     [cause("wrong_note", 0.6)],
                                      ctx, n["score_idx"], n["perf_idx"], n["cents"], 0, "cents"))
         elif abs(n["cents"]) > CENTS_OK * _short_note_factor(p):
             leap = (s["midi_pitch"] - score_notes[n["score_idx"] - 1]["midi_pitch"]) if n["score_idx"] > 0 else None
             events.append(make_event(
                 "intonation", "sharp" if n["cents"] > 0 else "flat", p["onset"], p.get("offset", p["onset"]),
                 ramp(abs(n["cents"]), CENTS_OK - 15, CENTS_SEVERE) * 0.8 + 0.2,
-                f"{s.get('pitch', s['midi_pitch'])} is {abs(n['cents']):.0f} cents {'sharp' if n['cents'] > 0 else 'flat'}.",
                 _causes(n, ctx, offset, drift, drift_r2, leap), ctx, n["score_idx"], n["perf_idx"],
                 n["cents"], 0, "cents"))
     summary = {"n_notes": len(notes), "n_wrong_notes": sum(n["wrong_note"] for n in notes),

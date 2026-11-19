@@ -62,28 +62,21 @@ def _events(strokes, motion, ctx):
             fast = z > 0
             events.append(make_event(
                 "bowing", "bow_too_fast" if fast else "bow_too_slow", s["start"], s["end"],
-                ramp(abs(z), SPEED_Z, 2 * SPEED_Z) * 0.7 + 0.2, f"Stroke speed is {s['mean_speed'] / med:.1f}x the player's median.",
-                [cause("note_length_mismatch" if fast else "bow_hoarding",
-                       "The bow is used up quickly (fast stroke): more bow than the note needs." if fast else
-                       "Very little bow is used (slow stroke): the stroke stalls or the note is long.", 0.4,
+                ramp(abs(z), SPEED_Z, 2 * SPEED_Z) * 0.7 + 0.2,
+                [cause("note_length_mismatch" if fast else "bow_hoarding", 0.4,
                        speed_ratio=float(s["mean_speed"] / med))], ctx, value=float(s["mean_speed"]), expected=float(med), unit="mm/s"))
         if cvs[k] > wobble_limit:
             cv = float(cvs[k])
             events.append(make_event("bowing", "bow_speed_wobble", s["start"], s["end"], ramp(cv, wobble_limit, 1.5) * 0.7 + 0.2,
-                                     f"The bow speed varies strongly inside the stroke (CV {cv:.2f}).",
-                                     [cause("jerky_bow_arm", "The bow arm accelerates and stops within the stroke: tension "
-                                            "in the arm or an unprepared bow change.", 0.5, speed_cv=cv)],
+                                     [cause("jerky_bow_arm", 0.5, speed_cv=cv)],
                                      ctx, value=cv, expected=WOBBLE_CV, unit="CV"))
     lengths = {d: [s["length"] for s in strokes if s["dir"] == d] for d in (1, -1)}
     if all(lengths.values()):
         balance = min(np.mean(lengths[1]), np.mean(lengths[-1])) / max(np.mean(lengths[1]), np.mean(lengths[-1]))
         if balance < BALANCE_MIN:
-            short = "up" if np.mean(lengths[-1]) < np.mean(lengths[1]) else "down"
             events.append(make_event("bowing", "unbalanced_bow_use", strokes[0]["start"], strokes[-1]["end"],
                                      ramp(balance, BALANCE_MIN, 0.3) * 0.6 + 0.2,
-                                     f"{short.capitalize()}-bows are {balance:.0%} as long as the other direction.",
-                                     [cause("running_out_of_bow", f"{short.capitalize()}-bows travel less: the bow "
-                                            "drifts toward one end and strokes get cut short.", 0.5, balance=float(balance))],
+                                     [cause("running_out_of_bow", 0.5, balance=float(balance))],
                                      ctx, value=float(balance), expected=1.0, unit="length ratio"))
     offset = ctx.bow_sync_offset()
     for p, raw in ctx.bow_change_pairs().items():
@@ -95,10 +88,7 @@ def _events(strokes, motion, ctx):
             events.append(make_event(
                 "bowing", "bow_change_late" if late else "bow_change_early", onset, onset,
                 ramp(abs(lag), SYNC_LAG_S, SYNC_WINDOW_S) * 0.7 + 0.2,
-                f"The bow changes {abs(lag) * 1000:.0f} ms {'after' if late else 'before'} the note sounds.",
-                [cause("bow_behind_fingers" if late else "bow_ahead_of_fingers",
-                       "The bow arm lags the left hand." if late else "The bow arm anticipates the left hand "
-                       "(the old note is cut short or the new one is pre-sounded).", 0.5, lag_s=lag)],
+                [cause("bow_behind_fingers" if late else "bow_ahead_of_fingers", 0.5, lag_s=lag)],
                 ctx, None, p, lag, 0.0, "s"))
     return events
 

@@ -3,7 +3,7 @@
 <title>Maestro</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-/*CSS*/
+body{font-family:system-ui,sans-serif;max-width:640px;margin:2em auto;padding:0 1em;color:#222}
 form{display:grid;gap:14px;border:1px solid #ddd;border-radius:8px;padding:18px;background:#fafafa}
 label{font-weight:600}.hint{font-weight:400;color:#666;font-size:.9em}
 input[type=file]{display:block;margin-top:6px}
@@ -12,8 +12,7 @@ button:disabled{background:#999;cursor:wait}
 #status{min-height:1.4em}.error{color:#b00020;font-weight:600}
 </style>
 <h1>Maestro: violin feedback</h1>
-<p>Upload a video (or audio) of yourself playing and the score you played from. Maestro compares the two and
-shows your pitch and timing, with charts that explain each number.</p>
+<p>Upload a video (or audio) of yourself playing and the score you played from.</p>
 <form id="f">
   <div><label>Recording <span class="hint">(video or audio: mp4, mov, webm, wav, mp3, m4a …)</span>
     <input type="file" name="video" accept="video/*,audio/*" required></label></div>
@@ -22,21 +21,17 @@ shows your pitch and timing, with charts that explain each number.</p>
   <div><button id="go">Analyze</button></div>
   <div id="status" role="status"></div>
 </form>
-<div id="report"></div>
 <script>
-/*VIEWER_JS*/
-const f = document.getElementById("f"), status = document.getElementById("status"),
-      report = document.getElementById("report"), go = document.getElementById("go");
+const f = document.getElementById("f"), status = document.getElementById("status"), go = document.getElementById("go");
 f.addEventListener("submit", async (e) => {
   e.preventDefault();
-  go.disabled = true; report.innerHTML = "";
+  go.disabled = true;
   status.className = ""; status.textContent = "Uploading and analyzing… this can take a minute for long videos.";
   try {
     const res = await fetch("/api/analyze", {method: "POST", body: new FormData(f)});
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Analysis failed.");
-    status.textContent = "";
-    report.innerHTML = data.html;
+    location.href = data.url;
   } catch (err) {
     status.className = "error"; status.textContent = err.message;
   } finally { go.disabled = false; }

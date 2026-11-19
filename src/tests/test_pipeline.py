@@ -6,6 +6,7 @@ from pathlib import Path
 
 from helpers import make_video, musicxml, synth, write_wav
 from minuet import minuet_musicxml, play_minuet
+from test_gui import page_data
 from maestro import analyze
 from maestro.utils.errors import InputError, MismatchError
 
@@ -73,7 +74,7 @@ class Pipeline(unittest.TestCase):
         self.assertLess(performance.assessment["rhythm"]["mean_abs_error"], 0.08)
 
     def test_middle_section_and_report_card(self):
-        from maestro.gui.report import build_report
+        from maestro.gui.report import build_page
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             (directory / "minuet.musicxml").write_text(minuet_musicxml())
@@ -84,7 +85,7 @@ class Pipeline(unittest.TestCase):
             )
         section = performance.assessment["section"]
         self.assertEqual((section["first_measure"], section["last_measure"]), (3, 6))
-        self.assertIn("bars 3–6", build_report(performance))
+        self.assertEqual({n["measure"] for n in page_data(build_page(performance, "m.mp4"))["traces"]["notes"]}, {3, 4, 5, 6})
 
     def test_wrong_score_for_recording_raises_mismatch(self):
         played = [69, 71, 72, 74, 76, 74, 72, 71]

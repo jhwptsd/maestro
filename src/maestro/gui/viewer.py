@@ -14,7 +14,7 @@
 # Hovering a note highlights its partner (data-pair; the JS lives in gui/report.py and is loaded by the page).
 import numpy as np
 
-from maestro.gui import charts
+from maestro.gui import style
 from maestro.gui.notation import Glyph, layout_score, render_panel
 
 PLAYED = "What was detected in your playing"
@@ -24,7 +24,7 @@ EXTRA = "#8e44ad"
 
 
 def _status(cents):
-    return "ok" if abs(cents) <= charts.CENTS_GOOD else "warn" if abs(cents) <= charts.CENTS_OK else "bad"
+    return "ok" if abs(cents) <= style.CENTS_GOOD else "warn" if abs(cents) <= style.CENTS_OK else "bad"
 
 
 def _score_time_of(perf_t, pairs):
@@ -42,14 +42,14 @@ def _extra_notes(notes, played, match):
         return []
     return [(_score_time_of(p["onset"], pairs), int(round(p["midi"])),
              {"color": EXTRA, "pair": f"p{j}",
-              "title": f"extra note {charts.note_name(p['midi'])} at {p['onset']:.1f}s (not in the score)"})
+              "title": f"extra note {style.note_name(p['midi'])} at {p['onset']:.1f}s (not in the score)"})
             for j, p in enumerate(played) if j not in used]
 
 
 def _legend_html():
     swatch = lambda color, text, style="": f'<span><i style="background:{color};{style}"></i>{text}</span>'
-    return "".join([swatch(charts.GOOD, f"in tune (within {charts.CENTS_GOOD} cents)"),
-                    swatch(charts.OK, f"a bit off (within {charts.CENTS_OK})"), swatch(charts.BAD, "out of tune"),
+    return "".join([swatch(style.GOOD, f"in tune (within {style.CENTS_GOOD} cents)"),
+                    swatch(style.OK, f"a bit off (within {style.CENTS_OK})"), swatch(style.BAD, "out of tune"),
                     swatch(BAD_NOTE, "wrong note (shown where it was played)"),
                     swatch("white", "not detected", f"border:1.5px dashed {BAD_NOTE}"), swatch(EXTRA, "extra note"),
                     swatch("#ccc", "not played")])
@@ -85,10 +85,10 @@ def build_viewer(perf):
         if d["wrong_note"]:
             counts["wrong"] += 1
             return Glyph(int(round(played[j]["midi"])), color=BAD_NOTE, status="wrong", label="wrong", label_color=BAD_NOTE,
-                         title=f"written {n.pitch}, played {charts.note_name(played[j]['midi'])} (bar {n.measure})", **base)
+                         title=f"written {n.pitch}, played {style.note_name(played[j]['midi'])} (bar {n.measure})", **base)
         st = _status(d["cents"])
         counts[st] += 1
-        color = {"ok": charts.GOOD, "warn": charts.OK, "bad": charts.BAD}[st]
+        color = {"ok": style.GOOD, "warn": style.OK, "bad": style.BAD}[st]
         return Glyph(n.midi_pitch, color=color, status=st, label=("" if st == "ok" else f"{d['cents']:+.0f}c"),
                      label_color=color, title=f"{n.pitch}: {d['cents']:+.0f} cents (bar {n.measure})", **base)
 
