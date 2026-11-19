@@ -22,7 +22,7 @@ SPEED_Z = 4.0            # robust z-score of a stroke's mean speed beyond which 
 WOBBLE_CV = 0.6          # speed CV inside a stroke beyond which it is jerky, and above the player's own norm (WOBBLE_MADS)
 WOBBLE_MADS = 3.0
 BALANCE_MIN = 0.7        # shorter / longer mean stroke length across directions below this is unbalanced
-SYNC_WINDOW_S = 0.25     # a bow change this close to an onset is that onset's bow change
+SYNC_WINDOW_S = 0.25     # a bow change this close to an onset (and mutually nearest, see Context.bow_change_pairs) is its bow change
 SYNC_LAG_S = 0.12        # ... and counts as misaligned when it is off by more than this after the constant video/audio offset is removed
 
 
@@ -85,12 +85,10 @@ def _events(strokes, motion, ctx):
                                      [cause("running_out_of_bow", f"{short.capitalize()}-bows travel less: the bow "
                                             "drifts toward one end and strokes get cut short.", 0.5, balance=float(balance))],
                                      ctx, value=float(balance), expected=1.0, unit="length ratio"))
-    ends, offset = np.array([s["end"] for s in strokes]), ctx.bow_sync_offset()
-    for _, p in ctx.matches:
-        onset = ctx.notes[p]["onset"]
-        k = int(np.argmin(np.abs(ends - onset)))
-        lag = float(ends[k] - onset - offset)
-        if abs(lag + offset) <= SYNC_WINDOW_S and abs(lag) > SYNC_LAG_S:
+    offset = ctx.bow_sync_offset()
+    for p, raw in ctx.bow_change_pairs().items():
+        onset, lag = ctx.notes[p]["onset"], raw - offset
+        if abs(lag) > SYNC_LAG_S:
             late = lag > 0
             events.append(make_event(
                 "bowing", "bow_change_late" if late else "bow_change_early", onset, onset,

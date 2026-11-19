@@ -110,19 +110,27 @@ class Context:
         bow = (self.motion or {}).get("bow")
         return bow["strokes"] if bow else []
 
-    def bow_sync_offset(self, window=0.3):
-        """Median lag (s) of the bow direction changes behind the note onsets they belong to. A constant offset is the
-        video/audio latency and pose smoothing, not a fault, so judging code subtracts it. 0 without a pose."""
-        if not hasattr(self, "_bow_offset"):
+    def bow_change_pairs(self, window=0.25):
+        """{perf_idx: lag in seconds} pairing bow direction changes with the note onsets they belong to (lag > 0: the
+        bow changes after the note sounds). A pair needs both to be each other's nearest, within `window`: a note inside
+        a slur or a run has no bow change of its own and must not be matched to a neighbouring one."""
+        if not hasattr(self, "_bow_pairs"):
             ends = np.array([s["end"] for s in self.strokes()])
-            lags = []
-            if len(ends):
-                for _, p in self.matches:
-                    lag = ends[np.argmin(np.abs(ends - self.notes[p]["onset"]))] - self.notes[p]["onset"]
-                    if abs(lag) <= window:
-                        lags.append(lag)
-            self._bow_offset = float(np.median(lags)) if len(lags) >= 5 else 0.0
-        return self._bow_offset
+            idx = [p for _, p in self.matches]
+            onsets = np.array([self.notes[p]["onset"] for p in idx])
+            self._bow_pairs = {}
+            if len(ends) and len(onsets):
+                for j, e in enumerate(ends):
+                    i = int(np.argmin(np.abs(onsets - e)))
+                    if int(np.argmin(np.abs(ends - onsets[i]))) == j and abs(e - onsets[i]) <= window:
+                        self._bow_pairs[idx[i]] = float(e - onsets[i])
+        return self._bow_pairs
+
+    def bow_sync_offset(self):
+        """Median lag (s) of the paired bow changes. A constant offset is the video/audio latency and pose smoothing, not a
+        fault, so the judging code subtracts it. 0 without a pose or with fewer than 5 pairs."""
+        lags = list(self.bow_change_pairs().values())
+        return float(np.median(lags)) if len(lags) >= 5 else 0.0
 
     def stroke_at(self, time):
         """The bow stroke sounding at `time`, or None."""

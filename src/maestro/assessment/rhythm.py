@@ -25,10 +25,10 @@ LOCAL_WINDOW_S = 4.0                # score seconds on each side of a note that 
 MIN_LOCAL_NOTES = 4                 # fewer neighbours than this: fall back to the global line
 TEMPO_CHANGE = (0.8, 1.25)          # local / average tempo outside this band counts as a tempo change ...
 TEMPO_CHANGE_NOTES = 6              # ... when it lasts at least this many notes
-BOW_LAG_S = 0.08                    # the bow change lagging the onset by this much is itself a timing fault
+BOW_LAG_S = 0.12                    # the bow change lagging the onset by this much (after the constant offset) is itself a timing fault
 
 
-def _causes(k, errors, items, score, ctx, onset):
+def _causes(k, errors, items, score, ctx, perf_idx):
     """Causes for the k-th matched note (error `errors[k]` seconds, + late / - early)."""
     err = errors[k]
     si = items[k]
@@ -44,21 +44,14 @@ def _causes(k, errors, items, score, ctx, onset):
     if s.get("duration", 1.0) <= FAST_NOTE_QUARTERS:
         out.append(cause("fast_passage", "Short notes: finger and bow coordination is tightest here.", 0.35,
                          duration_quarters=s.get("duration")))
-    boundary = _nearest_bow_change(ctx, onset)
-    if boundary is not None:
-        lag = boundary - onset - ctx.bow_sync_offset()          # video/audio latency removed (see Context)
-        if BOW_LAG_S < lag < 0.3:
+    if perf_idx in ctx.bow_change_pairs():
+        lag = ctx.bow_change_pairs()[perf_idx] - ctx.bow_sync_offset()      # video/audio latency removed
+        if BOW_LAG_S < lag:
             out.append(cause("late_bow_change", f"The bow changes direction {lag:.2f}s after the note sounds: the "
                              "bow arm is behind the left hand.", 0.5, bow_change_lag_s=lag))
     if not out:
         out.append(cause("uneven_pulse", "No local pattern: the pulse is simply uneven here.", 0.3))
     return out
-
-
-def _nearest_bow_change(ctx, time):
-    """Time of the bow direction change closest to `time` (video), or None without a pose."""
-    ends = [s["end"] for s in ctx.strokes()]
-    return min(ends, key=lambda t: abs(t - time)) if ends else None
 
 
 def _local_errors(so, po, slope, intercept):
@@ -140,7 +133,7 @@ def assess_rhythm(score_notes, perf_notes, alignment, wrong_note_semitones=1.0, 
             events.append(make_event(
                 "rhythm", "late" if err[k] > 0 else "early", onset, onset, 0.2 + 0.8 * ramp(abs(err[k]) * 1000, MS_OK - 60, MS_SEVERE),
                 f"Onset is {abs(err[k]) * 1000:.0f} ms {'late' if err[k] > 0 else 'early'}.",
-                _causes(k, err, items, score_notes, ctx, onset), ctx, si, pi, float(err[k]), 0.0, "s"))
+                _causes(k, err, items, score_notes, ctx, pi), ctx, si, pi, float(err[k]), 0.0, "s"))
     events += _tempo_changes(pairs, local_tempo, ctx)
     ratio = float(1 / slope)
     if abs(ratio - 1) > TEMPO_OFF:

@@ -259,6 +259,20 @@ class Bowing(unittest.TestCase):
         self.assertEqual([e["perf_idx"] for e in late], [4])
         self.assertTrue(set(r["stroke_techniques"]) <= {"detache", "staccato", "legato", None})
 
+    def test_notes_inside_a_slur_are_not_blamed_for_a_missing_bow_change(self):
+        sp = strokes([100.0] * 10)                                  # a bow change every 0.5 s, so every second note is slurred
+        perf = scene([{"midi": 60 + i % 3, "dur": 0.2} for i in range(20)], spacing=0.25, motion=stroke_motion(sp))
+        self.assertEqual(assess_bowing(perf.motion_features, Context(perf))["events"], [])
+
+    def test_a_constant_video_audio_offset_is_not_a_fault(self):
+        sp = strokes([100.0] * 10)
+        for st in sp:
+            st["end"] += 0.15                                       # the whole pose is 150 ms behind the audio
+        perf = scene([{"midi": 60 + i % 3} for i in range(10)], spacing=0.5, motion=stroke_motion(sp))
+        ctx = Context(perf)
+        self.assertAlmostEqual(ctx.bow_sync_offset(), 0.15, delta=0.01)
+        self.assertEqual(assess_bowing(perf.motion_features, ctx)["events"], [])
+
     def test_too_few_strokes_is_unavailable(self):
         self.assertFalse(assess_bowing(stroke_motion(strokes([100.0])))["available"])
 
