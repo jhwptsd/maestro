@@ -125,13 +125,24 @@ class Rhythm(unittest.TestCase):
         self.assertTrue(late)
         self.assertIn("late_after_rest", [c["cause"] for c in late[0]["causes"]])
 
-    def test_rushing_passage_is_named_and_even_playing_is_clean(self):
-        spec = [{"midi": 60 + i % 3, "shift": -0.3 if 4 <= i < 12 else 0} for i in range(16)]
+    def test_a_change_of_tempo_is_one_mild_event_not_dozens_of_late_notes(self):
+        spec = [{"midi": 60 + i % 3, "shift": -0.2 * (min(max(i, 10), 30) - 10)} for i in range(40)]   # 20 notes at 0.3 s, not 0.5 s
         perf = scene(spec)
         r = assess_rhythm(*notes_of(perf), ctx=Context(perf))
-        self.assertTrue(any(top_cause(e) == "rushing" for e in r["events"]))
+        changes = [e for e in r["events"] if e["category"] == "tempo_change"]
+        self.assertTrue(changes)                                    # reported, relative to the average tempo ...
+        self.assertTrue(all(e["severity"] < 0.4 for e in changes))   # ... as an often-musical, never severe, event
+        self.assertEqual([e for e in r["events"] if e["category"] in ("early", "late")], [])
         clean = scene([{"midi": 60 + i % 3} for i in range(12)])
         self.assertEqual(assess_rhythm(*notes_of(clean))["events"], [])
+
+    def test_gradual_rubato_is_forgiven_but_a_single_slip_inside_it_is_found(self):
+        drift = lambda i: 0.4 * np.sin(i / 24 * np.pi)              # the player breathes by 0.4 s over the piece
+        spec = [{"midi": 60 + i % 3, "shift": drift(i) + (0.25 if i == 12 else 0)} for i in range(24)]
+        perf = scene(spec)
+        r = assess_rhythm(*notes_of(perf), ctx=Context(perf))
+        self.assertEqual([(e["category"], e["score_idx"]) for e in r["events"] if e["category"] in ("early", "late")],
+                         [("late", 12)])
 
     def test_tempo_far_from_the_written_one_is_an_event(self):
         perf = scene([{"midi": 60 + i % 3} for i in range(10)], spacing=0.5)

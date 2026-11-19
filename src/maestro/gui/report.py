@@ -221,8 +221,8 @@ def build_report(perf):
         "Playing at a different tempo is not penalised."))
     parts.append(_section(
         "Rhythm: timing error per note",
-        "After removing your overall tempo, each bar shows how early (down) or late (up) the note was, in "
-        "milliseconds.",
+        "After removing your overall tempo and any gradual speeding up or slowing down (judged against the notes "
+        "around each one), each bar shows how early (down) or late (up) the note was, in milliseconds.",
         charts.timing_chart(r),
         "Bars inside the green band (±%d ms) are on time. Runs of bars in one direction mean you rushed or "
         "dragged a passage; single tall bars are individual late or early entries." % charts.MS_GOOD))

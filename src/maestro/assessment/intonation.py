@@ -17,6 +17,8 @@ from maestro.utils.audio_math import cents_between
 CENTS_GOOD, CENTS_OK = 10, 25      # |pitch error| in cents: in tune / a bit off / out of tune (shared by every chart)
 CENTS_SEVERE = 50                  # severity 1.0 from here
 LEAP_SEMITONES = 3                 # an interval at least this large into the note counts as a shift / leap
+HAND_GAP_GEOMETRIC = 3.5           # semitones the uncalibrated hand estimate (reads 1-4 semitones off) must be away to count
+HAND_GAP_CALIBRATED = 1.5          # ... and when it was calibrated against the heard notes
 HIGH_MIDI = 81                     # A5: 4th position and above on the E string, where finger spacing is tight
 
 
@@ -67,10 +69,11 @@ def _causes(note, ctx, offset, drift, drift_r2, preceding_leap):
         out.append(cause("high_position", "The note is in a high position where the finger spacing is very small.",
                          0.4, midi=s["midi_pitch"]))
     gap = _visual_disagreement(ctx, s, ctx.notes[note["perf_idx"]]["onset"])
-    if gap is not None and gap >= 2.0:
+    calibrated = (ctx.assessment.get("visual_pitch") or {}).get("method") == "calibrated"
+    if gap is not None and gap >= (HAND_GAP_CALIBRATED if calibrated else HAND_GAP_GEOMETRIC):
         out.append(cause("hand_position_mismatch",
                          f"The left hand in the video is {gap:.1f} semitones away from where this note lies on any "
-                         "string.", min(0.7, gap / 5), visual_gap_semitones=gap))
+                         "string.", min(0.6, gap / 6), visual_gap_semitones=gap))
     if not out:
         out.append(cause("finger_placement", "No other pattern explains it: the finger was placed slightly off "
                          "the correct spot.", 0.3))

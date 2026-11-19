@@ -6,6 +6,12 @@
 # is more than MS_OK off the steady pulse, plus one for a tempo far from the written one, each with probable causes
 # read from the score (rests, leaps, short notes), the neighbouring errors (rushing/dragging) and, if a pose exists, the
 # bow stroke boundary nearest the onset (vision/motion_features.py). Legacy keys (notes, tempo_ratio, ...) are kept.
+#
+# Timing is judged against the player's LOCAL tempo, not one constant tempo: the score has a single tempo, but real
+# performances (and many scores) speed up and slow down, and a note is only early or late relative to the notes around it
+# (a line fitted to the neighbouring notes within LOCAL_WINDOW_S of score time, leaving the note itself out). Sustained
+# departures from the average tempo are reported separately as low-severity "tempo_change" events, since they are usually
+# musical (rubato, ritardando) rather than faults.
 import numpy as np
 
 from maestro.assessment.events import Context, cause, make_event, module_result, ramp
@@ -15,7 +21,10 @@ MS_SEVERE = 250                     # severity 1.0 from here
 TEMPO_OFF = 0.15                    # tempo this far from the written one (as a ratio) is reported
 FAST_NOTE_QUARTERS = 0.5            # notes this short or shorter are "fast passage" notes
 LEAP_SEMITONES = 5                  # a leap this large into the note may delay it (shift / string crossing)
-TREND_NOTES = 4                     # neighbours on each side that are compared to see rushing or dragging
+LOCAL_WINDOW_S = 4.0                # score seconds on each side of a note that define its local tempo
+MIN_LOCAL_NOTES = 4                 # fewer neighbours than this: fall back to the global line
+TEMPO_CHANGE = (0.8, 1.25)          # local / average tempo outside this band counts as a tempo change ...
+TEMPO_CHANGE_NOTES = 6              # ... when it lasts at least this many notes
 BOW_LAG_S = 0.08                    # the bow change lagging the onset by this much is itself a timing fault
 
 
@@ -25,27 +34,22 @@ def _causes(k, errors, items, score, ctx, onset):
     si = items[k]
     s, out = score[si], []
     prev = score[si - 1] if si > 0 else None
-    if prev is not None and s["onset"] - prev["offset"] > 0.1 and err > 0:
+    if prev is not None and s["onset"] - prev.get("offset", s["onset"]) > 0.1 and err > 0:
         out.append(cause("late_after_rest", f"The note comes after a {s['onset'] - prev['offset']:.2f}s rest and "
                          "enters late: the entry was not prepared.", 0.5, rest_seconds=s["onset"] - prev["offset"]))
     if prev is not None and abs(s["midi_pitch"] - prev["midi_pitch"]) >= LEAP_SEMITONES and err > 0:
         out.append(cause("late_after_leap", f"A {abs(s['midi_pitch'] - prev['midi_pitch'])}-semitone leap leads into "
                          "the note: the shift or string crossing took time.", 0.5,
                          leap_semitones=abs(s["midi_pitch"] - prev["midi_pitch"])))
-    if s["duration"] <= FAST_NOTE_QUARTERS:
+    if s.get("duration", 1.0) <= FAST_NOTE_QUARTERS:
         out.append(cause("fast_passage", "Short notes: finger and bow coordination is tightest here.", 0.35,
-                         duration_quarters=s["duration"]))
-    lo, hi = max(0, k - TREND_NOTES), min(len(errors), k + TREND_NOTES + 1)
-    window = errors[lo:hi]
-    if len(window) >= 4 and np.sign(np.mean(window)) == np.sign(err) and abs(np.mean(window)) > MS_GOOD / 1000:
-        out.append(cause("rushing" if err < 0 else "dragging",
-                         f"The neighbouring notes are also {'early' if err < 0 else 'late'} by "
-                         f"{abs(np.mean(window)) * 1000:.0f} ms on average: the passage {'rushes' if err < 0 else 'drags'}.",
-                         0.6, neighbour_mean_error_s=float(np.mean(window))))
+                         duration_quarters=s.get("duration")))
     boundary = _nearest_bow_change(ctx, onset)
-    if boundary is not None and boundary - onset > BOW_LAG_S and abs(boundary - onset) < 0.3:
-        out.append(cause("late_bow_change", f"The bow changes direction {boundary - onset:.2f}s after the note "
-                         "sounds: the bow arm is behind the left hand.", 0.5, bow_change_lag_s=boundary - onset))
+    if boundary is not None:
+        lag = boundary - onset - ctx.bow_sync_offset()          # video/audio latency removed (see Context)
+        if BOW_LAG_S < lag < 0.3:
+            out.append(cause("late_bow_change", f"The bow changes direction {lag:.2f}s after the note sounds: the "
+                             "bow arm is behind the left hand.", 0.5, bow_change_lag_s=lag))
     if not out:
         out.append(cause("uneven_pulse", "No local pattern: the pulse is simply uneven here.", 0.3))
     return out
@@ -55,6 +59,55 @@ def _nearest_bow_change(ctx, time):
     """Time of the bow direction change closest to `time` (video), or None without a pose."""
     ends = [s["end"] for s in ctx.strokes()]
     return min(ends, key=lambda t: abs(t - time)) if ends else None
+
+
+def _local_errors(so, po, slope, intercept):
+    """Timing error of every note against the pace of its neighbours (the note itself is left out), and the local tempo
+    as a ratio of the average tempo (1 = average).
+
+    The neighbours before the note, after it, and on both sides each give a line and a prediction; the best of the three
+    counts, so a note right after a tempo change is judged by the side it belongs to, while an isolated slip is off by
+    the same amount whichever side is used. Falls back to the global line where a note has too few neighbours."""
+    n = len(so)
+    err, tempo = po - (slope * so + intercept), np.ones(n)
+    for k in range(n):
+        dist, idx = so - so[k], np.arange(n)
+        near = (np.abs(dist) <= LOCAL_WINDOW_S) & (idx != k)
+        best = None
+        for side in (near & (dist < 0), near & (dist > 0), near):
+            sel = np.flatnonzero(side)
+            if len(sel) >= MIN_LOCAL_NOTES and np.ptp(so[sel]) > 0:
+                a, b = np.polyfit(so[sel], po[sel], 1)
+                e = po[k] - (a * so[k] + b)
+                if best is None or abs(e) < abs(best[0]):
+                    best = (e, slope / a if a > 0 else 1.0)
+        if best:
+            err[k], tempo[k] = best
+    return err, tempo
+
+
+def _tempo_changes(pairs, tempo, ctx):
+    """Runs of notes whose local tempo is far from the average -> low-severity events (often deliberate rubato)."""
+    outside = (tempo < TEMPO_CHANGE[0]) | (tempo > TEMPO_CHANGE[1])
+    events, k = [], 0
+    while k < len(pairs):
+        if not outside[k]:
+            k += 1
+            continue
+        j = k
+        while j < len(pairs) and outside[j] and (tempo[j] > 1) == (tempo[k] > 1):
+            j += 1
+        if j - k >= TEMPO_CHANGE_NOTES:
+            faster, mean = tempo[k] > 1, float(np.mean(tempo[k:j]))
+            events.append(make_event(
+                "rhythm", "tempo_change", pairs[k][3], pairs[j - 1][3], 0.15 + 0.2 * ramp(abs(mean - 1), 0.25, 0.6),
+                f"The tempo is {mean:.0%} of the average for {j - k} notes.",
+                [cause("rushing" if faster else "dragging", f"This passage is played {'faster' if faster else 'slower'} than "
+                       "the rest: rushing or dragging if unintended, rubato or a ritardando if musical (the score "
+                       "carries one tempo).", 0.4, local_tempo_ratio=mean)], ctx, pairs[k][0], pairs[k][1],
+                mean, 1.0, "ratio"))
+        k = max(j, k + 1)
+    return events
 
 
 def assess_rhythm(score_notes, perf_notes, alignment, wrong_note_semitones=1.0, ctx=None):
@@ -79,7 +132,7 @@ def assess_rhythm(score_notes, perf_notes, alignment, wrong_note_semitones=1.0, 
 
     so, po = np.array([p[2] for p in pairs]), np.array([p[3] for p in pairs])
     slope, intercept = np.polyfit(so, po, 1)
-    err = po - (slope * so + intercept)
+    err, local_tempo = _local_errors(so, po, slope, intercept)
     items = [p[0] for p in pairs]
     events = []
     for k, (si, pi, _, onset) in enumerate(pairs):
@@ -88,6 +141,7 @@ def assess_rhythm(score_notes, perf_notes, alignment, wrong_note_semitones=1.0, 
                 "rhythm", "late" if err[k] > 0 else "early", onset, onset, 0.2 + 0.8 * ramp(abs(err[k]) * 1000, MS_OK - 60, MS_SEVERE),
                 f"Onset is {abs(err[k]) * 1000:.0f} ms {'late' if err[k] > 0 else 'early'}.",
                 _causes(k, err, items, score_notes, ctx, onset), ctx, si, pi, float(err[k]), 0.0, "s"))
+    events += _tempo_changes(pairs, local_tempo, ctx)
     ratio = float(1 / slope)
     if abs(ratio - 1) > TEMPO_OFF:
         events.append(make_event("rhythm", "tempo", float(po[0]), float(po[-1]), ramp(abs(ratio - 1), TEMPO_OFF, 0.5),

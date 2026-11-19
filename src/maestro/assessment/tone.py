@@ -15,9 +15,10 @@ from maestro.audio.tone_quality import note_tone
 MIN_NOTE_S = 0.15                    # shorter notes have too few frames for stable descriptors
 HARMONIC_FLOOR = 0.55                # absolute: below this share of harmonic energy the tone is noisy
 HARMONIC_DROP = 0.2                  # relative: this far below the player's median is also noisy
-ATTACK_SLOW_S = 0.12                 # attack slower than this on a note of >= 0.4 s is unclear
-STABILITY_FLOOR = 0.75               # level stability (1 = steady) below this is an unsteady bow
-BRIGHT_Z = 2.0                       # brightness more than this many MADs from the median
+ATTACK_SLOW_S = 0.2                  # attack slower than this on a note of >= 0.4 s (and slow for this player) is unclear
+STABILITY_FLOOR = 0.5                # level stability (1 = steady) below this (and low for this player) is an unsteady bow
+OUTLIER_MADS = 2.5                   # ... and this many MADs beyond the player's median: shaping a note is not a fault
+BRIGHT_Z = 3.0                       # brightness more than this many MADs from the median
 NEURAL_BAD = 0.35                    # p(good tone) below this flags a window
 
 
@@ -52,6 +53,10 @@ def assess_tone(score_notes, perf_notes, alignment, ctx=None):
                 "summary": {"reason": "fewer than three notes long enough to measure"}, "events": []}
     med = {k: float(np.median([t[k] for t in tones.values()])) for k in ("harmonic_ratio", "brightness", "attack_s")}
     mad_bright = _mad([t["brightness"] for t in tones.values()])
+    att = np.array([t["attack_s"] for t in tones.values()])
+    stab = np.array([t["dynamic_stability"] for t in tones.values()])
+    slow_limit = max(ATTACK_SLOW_S, float(np.median(att) + OUTLIER_MADS * _mad(att)))        # relative to this player
+    unsteady_limit = min(STABILITY_FLOOR, float(np.median(stab) - OUTLIER_MADS * max(_mad(stab), 0.05)))
     events = []
     for i, t in tones.items():
         p = ctx._by_score[i]
@@ -70,22 +75,22 @@ def assess_tone(score_notes, perf_notes, alignment, ctx=None):
             make("noisy_tone", ramp(t["harmonic_ratio"], HARMONIC_FLOOR + 0.1, 0.2) * 0.8 + 0.2,
                  f"Only {t['harmonic_ratio']:.0%} of the energy sits at the harmonics (typical {med['harmonic_ratio']:.0%}).",
                  causes, t["harmonic_ratio"], med["harmonic_ratio"], "harmonic ratio")
-        if t["attack_s"] > ATTACK_SLOW_S and n["offset"] - n["onset"] >= 0.4:
-            make("slow_attack", ramp(t["attack_s"], ATTACK_SLOW_S, 0.3) * 0.7 + 0.2,
+        if t["attack_s"] > slow_limit and n["offset"] - n["onset"] >= 0.4:
+            make("slow_attack", ramp(t["attack_s"], slow_limit, slow_limit + 0.2) * 0.7 + 0.2,
                  f"The sound takes {t['attack_s'] * 1000:.0f} ms to reach full level.",
                  [cause("bow_not_prepared", "The bow starts moving or settles on the string only after the note "
                         "begins: not prepared on the string before the stroke.", 0.45, attack_s=t["attack_s"])],
-                 t["attack_s"], ATTACK_SLOW_S, "s")
-        if t["dynamic_stability"] < STABILITY_FLOOR:
+                 t["attack_s"], slow_limit, "s")
+        if t["dynamic_stability"] < unsteady_limit:
             wobble = _bow_wobble(ctx, *span)
-            make("unsteady_level", ramp(t["dynamic_stability"], STABILITY_FLOOR, 0.3) * 0.7 + 0.2,
+            make("unsteady_level", ramp(t["dynamic_stability"], unsteady_limit, 0.1) * 0.7 + 0.2,
                  f"The level fluctuates during the note (stability {t['dynamic_stability']:.2f}).",
                  [wobble] if wobble else [cause("uneven_bow", "The bow speed or weight changes during the stroke "
                                                 "(bow wobble or running out of bow).", 0.4,
                                                 stability=t["dynamic_stability"])],
-                 t["dynamic_stability"], STABILITY_FLOOR, "stability")
+                 t["dynamic_stability"], unsteady_limit, "stability")
         z = (t["brightness"] - med["brightness"]) / mad_bright
-        if abs(z) > BRIGHT_Z and abs(t["brightness"] - med["brightness"]) > 1.0:
+        if abs(z) > BRIGHT_Z and abs(t["brightness"] - med["brightness"]) > 1.5:
             bright = z > 0
             make("too_bright" if bright else "too_dull", ramp(abs(z), BRIGHT_Z, 2 * BRIGHT_Z) * 0.6 + 0.2,
                  f"The note is much {'brighter' if bright else 'duller'} than the rest (z={z:+.1f}).",

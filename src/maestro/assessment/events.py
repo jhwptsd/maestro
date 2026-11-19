@@ -110,6 +110,20 @@ class Context:
         bow = (self.motion or {}).get("bow")
         return bow["strokes"] if bow else []
 
+    def bow_sync_offset(self, window=0.3):
+        """Median lag (s) of the bow direction changes behind the note onsets they belong to. A constant offset is the
+        video/audio latency and pose smoothing, not a fault, so judging code subtracts it. 0 without a pose."""
+        if not hasattr(self, "_bow_offset"):
+            ends = np.array([s["end"] for s in self.strokes()])
+            lags = []
+            if len(ends):
+                for _, p in self.matches:
+                    lag = ends[np.argmin(np.abs(ends - self.notes[p]["onset"]))] - self.notes[p]["onset"]
+                    if abs(lag) <= window:
+                        lags.append(lag)
+            self._bow_offset = float(np.median(lags)) if len(lags) >= 5 else 0.0
+        return self._bow_offset
+
     def stroke_at(self, time):
         """The bow stroke sounding at `time`, or None."""
         return next((s for s in self.strokes() if s["start"] <= time <= s["end"]), None)
