@@ -111,16 +111,23 @@ class Context:
         return bow["strokes"] if bow else []
 
     def local_ioi(self, perf_idx):
-        """Typical gap (s) between the performed note and its neighbours: how fast the passage is. Thresholds that are
-        fixed in seconds mean different things in a slow melody and in running sixteenths, so judging code scales them
-        with this. 0.5 s when the note has no neighbour."""
-        if not hasattr(self, "_onsets"):
-            self._onsets = np.sort([self.notes[p]["onset"] for _, p in self.matches])
-        t = self.notes[perf_idx]["onset"]
-        k = int(np.searchsorted(self._onsets, t))
-        gaps = [g for g in (t - self._onsets[k - 1] if k > 0 else None,
-                            self._onsets[k + 1] - t if k + 1 < len(self._onsets) else None) if g and g > 0.02]
-        return float(np.median(gaps)) if gaps else 0.5
+        """Gap (s) between the note and its nearer neighbour: how little room it has. Thresholds fixed in seconds mean
+        different things for a long note and for a quick one, in any tempo, so judging code scales them with this. It is
+        per note, so a run of fast notes inside a slow piece is judged as fast, and so are the notes at its edges (the
+        tighter side counts). The gaps are the written ones scaled by the player's pace, not the performed onsets, so a
+        note that is itself early or late does not change its own tolerance. 0.5 s when the note has no neighbour."""
+        if not hasattr(self, "_gaps"):
+            order = sorted(self.matches, key=lambda m: self.score[m[0]]["onset"])
+            so = np.array([self.score[i]["onset"] for i, _ in order])
+            po = np.array([self.notes[p]["onset"] for _, p in order])
+            written = np.diff(so)
+            usable = written > 0.05
+            pace = float(np.median(np.diff(po)[usable] / written[usable])) if usable.any() else 1.0
+            self._gaps = {}
+            for k, (_, p) in enumerate(order):
+                near = [written[j] for j in (k - 1, k) if 0 <= j < len(written) and written[j] > 0.02]
+                self._gaps[p] = min(near) * pace if near else 0.5
+        return self._gaps.get(perf_idx, 0.5)
 
     def bow_change_pairs(self, window=0.25):
         """{perf_idx: lag in seconds} pairing bow direction changes with the note onsets they belong to (lag > 0: the

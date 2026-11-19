@@ -166,6 +166,23 @@ class Rhythm(unittest.TestCase):
         self.assertIn("possible_misalignment", [c["cause"] for c in fast[0]["causes"]])
         self.assertEqual(events(0.15, 0.05), [])                     # under the 70 ms floor onsets cannot be resolved
 
+    def test_fast_notes_inside_a_slow_piece_are_judged_as_fast(self):
+        # slow melody (1 s apart) with a run of 0.15 s notes in the middle (notes 6-13); score and performance on a grid
+        onsets = [0, 1, 2, 3, 4, 5] + [6 + 0.15 * k for k in range(8)] + [7.2, 8.2, 9.2, 10.2]
+        spec = [{"midi": 60 + i % 3, "dur": 0.12 if 6 <= i < 14 else 0.9} for i in range(len(onsets))]
+
+        def late(index, shift=0.09):
+            perf = scene(spec, spacing=1.0)
+            for i, (n, s_n) in enumerate(zip(perf.audio_features["notes"], perf.score_features)):
+                s_n["onset"] = n["onset"] = onsets[i]
+                n["offset"], s_n["offset"] = onsets[i] + spec[i]["dur"], onsets[i] + spec[i]["dur"]
+            perf.audio_features["notes"][index]["onset"] += shift
+            ev = assess_rhythm(*notes_of(perf), ctx=Context(perf))["events"]
+            return [e["score_idx"] for e in ev if e["category"] in ("early", "late")]
+        self.assertEqual(late(3), [])            # 90 ms on a slow note: fine
+        self.assertEqual(late(9), [9])           # 90 ms on a note of the run: 60% of its gap
+        self.assertEqual(late(14), [14])         # the first slow note after the run still has a 0.15 s neighbour behind it
+
     def test_tempo_far_from_the_written_one_is_an_event(self):
         perf = scene([{"midi": 60 + i % 3} for i in range(10)], spacing=0.5)
         for i, n in enumerate(perf.audio_features["notes"]):
