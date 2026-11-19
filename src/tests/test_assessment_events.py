@@ -91,6 +91,14 @@ class Intonation(unittest.TestCase):
         self.assertTrue(all(top_cause(e) == "global_tuning_offset" for e in r["events"]))
         self.assertAlmostEqual(r["tuning_offset_cents"], -30, delta=1)
 
+    def test_short_notes_get_a_wider_pitch_tolerance(self):
+        def events(dur):
+            spec = [{"midi": 60 + i % 3, "dur": dur, "cents": 33 if i == 4 else 0} for i in range(8)]
+            perf = scene(spec, spacing=0.3)
+            return assess_intonation(*notes_of(perf), ctx=Context(perf))["events"]
+        self.assertEqual(len(events(0.27)), 1)                        # 33 cents on a normal note is out of tune
+        self.assertEqual(events(0.1), [])                             # ... but not on a 100 ms note (limit 37.5 cents)
+
     def test_wrong_note_is_maximally_severe_and_in_tune_playing_is_clean(self):
         spec = [{"midi": 60 + i % 3} for i in range(8)]
         spec[3]["midi"] = 66
@@ -143,6 +151,20 @@ class Rhythm(unittest.TestCase):
         r = assess_rhythm(*notes_of(perf), ctx=Context(perf))
         self.assertEqual([(e["category"], e["score_idx"]) for e in r["events"] if e["category"] in ("early", "late")],
                          [("late", 12)])
+
+    def test_the_same_error_means_different_things_in_slow_and_fast_music(self):
+        def events(spacing, shift):
+            spec = [{"midi": 60 + i % 3, "dur": spacing * 0.9, "shift": shift if i == 8 else 0} for i in range(16)]
+            perf = scene(spec, spacing=spacing)
+            return [e for e in assess_rhythm(*notes_of(perf), ctx=Context(perf))["events"] if e["category"] in ("early", "late")]
+        self.assertEqual(events(0.5, 0.09), [])                      # 90 ms in a slow passage is within the 120 ms allowed
+        slow = events(0.5, 0.2)
+        self.assertEqual(len(slow), 1)
+        self.assertNotIn("possible_misalignment", [c["cause"] for c in slow[0]["causes"]])
+        fast = events(0.15, 0.09)                                    # 60% of a note: reported, but may be a wrong match
+        self.assertEqual(len(fast), 1)
+        self.assertIn("possible_misalignment", [c["cause"] for c in fast[0]["causes"]])
+        self.assertEqual(events(0.15, 0.05), [])                     # under the 70 ms floor onsets cannot be resolved
 
     def test_tempo_far_from_the_written_one_is_an_event(self):
         perf = scene([{"midi": 60 + i % 3} for i in range(10)], spacing=0.5)
@@ -263,6 +285,14 @@ class Bowing(unittest.TestCase):
         sp = strokes([100.0] * 10)                                  # a bow change every 0.5 s, so every second note is slurred
         perf = scene([{"midi": 60 + i % 3, "dur": 0.2} for i in range(20)], spacing=0.25, motion=stroke_motion(sp))
         self.assertEqual(assess_bowing(perf.motion_features, Context(perf))["events"], [])
+
+    def test_in_running_notes_a_far_away_bow_change_is_a_mispairing_not_a_fault(self):
+        sp = strokes([100.0] * 12)
+        for st in sp:
+            st["start"], st["end"] = st["start"] * 0.4, st["end"] * 0.4 + 0.08       # a bow change every 0.2 s, 80 ms after onsets
+        perf = scene([{"midi": 60 + i % 3, "dur": 0.1} for i in range(24)], spacing=0.2, motion=stroke_motion(sp))
+        ctx = Context(perf)
+        self.assertEqual(assess_bowing(perf.motion_features, ctx)["events"], [])   # constant offset removed, nothing left
 
     def test_a_constant_video_audio_offset_is_not_a_fault(self):
         sp = strokes([100.0] * 10)

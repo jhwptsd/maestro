@@ -110,6 +110,18 @@ class Context:
         bow = (self.motion or {}).get("bow")
         return bow["strokes"] if bow else []
 
+    def local_ioi(self, perf_idx):
+        """Typical gap (s) between the performed note and its neighbours: how fast the passage is. Thresholds that are
+        fixed in seconds mean different things in a slow melody and in running sixteenths, so judging code scales them
+        with this. 0.5 s when the note has no neighbour."""
+        if not hasattr(self, "_onsets"):
+            self._onsets = np.sort([self.notes[p]["onset"] for _, p in self.matches])
+        t = self.notes[perf_idx]["onset"]
+        k = int(np.searchsorted(self._onsets, t))
+        gaps = [g for g in (t - self._onsets[k - 1] if k > 0 else None,
+                            self._onsets[k + 1] - t if k + 1 < len(self._onsets) else None) if g and g > 0.02]
+        return float(np.median(gaps)) if gaps else 0.5
+
     def bow_change_pairs(self, window=0.25):
         """{perf_idx: lag in seconds} pairing bow direction changes with the note onsets they belong to (lag > 0: the
         bow changes after the note sounds). A pair needs both to be each other's nearest, within `window`: a note inside

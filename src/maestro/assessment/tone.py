@@ -12,6 +12,7 @@ import numpy as np
 from maestro.assessment.events import Context, cause, make_event, module_result, ramp
 from maestro.audio.tone_quality import note_tone
 
+MIN_STABILITY_S = 0.3                # the level of a shorter note has too few frames to be called unsteady
 MIN_NOTE_S = 0.15                    # shorter notes have too few frames for stable descriptors
 HARMONIC_FLOOR = 0.55                # absolute: below this share of harmonic energy the tone is noisy
 HARMONIC_DROP = 0.2                  # relative: this far below the player's median is also noisy
@@ -81,7 +82,7 @@ def assess_tone(score_notes, perf_notes, alignment, ctx=None):
                  [cause("bow_not_prepared", "The bow starts moving or settles on the string only after the note "
                         "begins: not prepared on the string before the stroke.", 0.45, attack_s=t["attack_s"])],
                  t["attack_s"], slow_limit, "s")
-        if t["dynamic_stability"] < unsteady_limit:
+        if t["dynamic_stability"] < unsteady_limit and n["offset"] - n["onset"] >= MIN_STABILITY_S:
             wobble = _bow_wobble(ctx, *span)
             make("unsteady_level", ramp(t["dynamic_stability"], unsteady_limit, 0.1) * 0.7 + 0.2,
                  f"The level fluctuates during the note (stability {t['dynamic_stability']:.2f}).",

@@ -23,7 +23,7 @@ WOBBLE_CV = 0.6          # speed CV inside a stroke beyond which it is jerky, an
 WOBBLE_MADS = 3.0
 BALANCE_MIN = 0.7        # shorter / longer mean stroke length across directions below this is unbalanced
 SYNC_WINDOW_S = 0.25     # a bow change this close to an onset (and mutually nearest, see Context.bow_change_pairs) is its bow change
-SYNC_LAG_S = 0.12        # ... and counts as misaligned when it is off by more than this after the constant video/audio offset is removed
+SYNC_LAG_S = 0.12        # ... and counts as misaligned when it is off by more than this (less in fast passages) after the constant video/audio offset is removed
 
 
 def _cv(values):
@@ -87,8 +87,10 @@ def _events(strokes, motion, ctx):
                                      ctx, value=float(balance), expected=1.0, unit="length ratio"))
     offset = ctx.bow_sync_offset()
     for p, raw in ctx.bow_change_pairs().items():
-        onset, lag = ctx.notes[p]["onset"], raw - offset
-        if abs(lag) > SYNC_LAG_S:
+        onset, lag, gap = ctx.notes[p]["onset"], raw - offset, ctx.local_ioi(p)
+        # scaled to the passage: in running notes the allowed lag shrinks, and a "lag" of more than half the gap to the
+        # next note is a mispairing, not a bow arm that far behind
+        if np.clip(0.4 * gap, 0.08, SYNC_LAG_S) < abs(lag) <= 0.5 * gap:
             late = lag > 0
             events.append(make_event(
                 "bowing", "bow_change_late" if late else "bow_change_early", onset, onset,

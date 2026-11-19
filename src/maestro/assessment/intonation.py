@@ -17,9 +17,17 @@ from maestro.utils.audio_math import cents_between
 CENTS_GOOD, CENTS_OK = 10, 25      # |pitch error| in cents: in tune / a bit off / out of tune (shared by every chart)
 CENTS_SEVERE = 50                  # severity 1.0 from here
 LEAP_SEMITONES = 3                 # an interval at least this large into the note counts as a shift / leap
+SHORT_NOTE_S, SHORTEST_NOTE_S = 0.25, 0.1   # notes shorter than the first get up to 1.5x the tolerance (pitch has no time to settle)
 HAND_GAP_GEOMETRIC = 3.5           # semitones the uncalibrated hand estimate (reads 1-4 semitones off) must be away to count
 HAND_GAP_CALIBRATED = 1.5          # ... and when it was calibrated against the heard notes
 HIGH_MIDI = 81                     # A5: 4th position and above on the E string, where finger spacing is tight
+
+
+def _short_note_factor(note):
+    """1 for notes of SHORT_NOTE_S or longer, rising to 1.5 at SHORTEST_NOTE_S: the median pitch of a very short note is
+    mostly its slide in."""
+    duration = note.get("offset", note["onset"] + SHORT_NOTE_S) - note["onset"]
+    return 1 + 0.5 * float(np.clip((SHORT_NOTE_S - duration) / (SHORT_NOTE_S - SHORTEST_NOTE_S), 0, 1))
 
 
 def _drift(notes, ctx):
@@ -110,7 +118,7 @@ def assess_intonation(score_notes, perf_notes, alignment, wrong_note_semitones=1
                                      [cause("wrong_note", "The pitch is over a semitone from the written note: a wrong "
                                             "finger or string, or a misread note.", 0.6)],
                                      ctx, n["score_idx"], n["perf_idx"], n["cents"], 0, "cents"))
-        elif abs(n["cents"]) > CENTS_OK:
+        elif abs(n["cents"]) > CENTS_OK * _short_note_factor(p):
             leap = (s["midi_pitch"] - score_notes[n["score_idx"] - 1]["midi_pitch"]) if n["score_idx"] > 0 else None
             events.append(make_event(
                 "intonation", "sharp" if n["cents"] > 0 else "flat", p["onset"], p.get("offset", p["onset"]),

@@ -18,6 +18,9 @@ from maestro.assessment.events import Context, cause, make_event, module_result,
 
 MS_GOOD, MS_OK = 40, 100            # |timing error| in milliseconds: on time / a bit off / off (shared by every chart)
 MS_SEVERE = 250                     # severity 1.0 from here
+TOL_FRACTION = 0.3                  # the allowed error is this fraction of the local gap between notes, clipped to
+TOL_MIN_S, TOL_MAX_S = 0.07, MS_OK / 1000   # [70 ms (onset detection and 30 fps video cannot resolve less), MS_OK]
+MISALIGNED_FRACTION = 0.4           # an error this large relative to the gap may be a note matched to the wrong onset
 TEMPO_OFF = 0.15                    # tempo this far from the written one (as a ratio) is reported
 FAST_NOTE_QUARTERS = 0.5            # notes this short or shorter are "fast passage" notes
 LEAP_SEMITONES = 5                  # a leap this large into the note may delay it (shift / string crossing)
@@ -129,11 +132,19 @@ def assess_rhythm(score_notes, perf_notes, alignment, wrong_note_semitones=1.0, 
     items = [p[0] for p in pairs]
     events = []
     for k, (si, pi, _, onset) in enumerate(pairs):
-        if abs(err[k]) * 1000 > MS_OK:
+        gap = ctx.local_ioi(pi)
+        tolerance = float(np.clip(TOL_FRACTION * gap, TOL_MIN_S, TOL_MAX_S))      # tighter in slow music, 70 ms floor in fast
+        if abs(err[k]) > tolerance:
+            causes = _causes(k, err, items, score_notes, ctx, pi)
+            if abs(err[k]) > MISALIGNED_FRACTION * gap:
+                causes.append(cause("possible_misalignment", f"The error is {abs(err[k]) / gap:.0%} of the gap between "
+                                    "notes here: in a fast passage the note may have been matched to a neighbouring onset.",
+                                    min(0.6, abs(err[k]) / gap - 0.2), error_over_gap=float(abs(err[k]) / gap)))
             events.append(make_event(
-                "rhythm", "late" if err[k] > 0 else "early", onset, onset, 0.2 + 0.8 * ramp(abs(err[k]) * 1000, MS_OK - 60, MS_SEVERE),
+                "rhythm", "late" if err[k] > 0 else "early", onset, onset,
+                0.2 + 0.8 * ramp(abs(err[k]) * 1000, tolerance * 500, MS_SEVERE),
                 f"Onset is {abs(err[k]) * 1000:.0f} ms {'late' if err[k] > 0 else 'early'}.",
-                _causes(k, err, items, score_notes, ctx, pi), ctx, si, pi, float(err[k]), 0.0, "s"))
+                causes, ctx, si, pi, float(err[k]), 0.0, "s"))
     events += _tempo_changes(pairs, local_tempo, ctx)
     ratio = float(1 / slope)
     if abs(ratio - 1) > TEMPO_OFF:
