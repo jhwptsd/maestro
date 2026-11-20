@@ -79,14 +79,22 @@ def _movement(perf):
     return out
 
 
+def _y_is_down(pose):
+    """True if the pose's y axis points down (image convention): the shoulders then have a smaller y than the pelvis or
+    the legs. False when y points up, and when no lower-body joint is tracked to tell."""
+    lower = next((j for j in ("l_pelvis", "r_pelvis", "l_knee", "r_knee", "l_ankle", "r_ankle") if pose.has(j)), None)
+    shoulders = [j for j in ("l_shoulder", "r_shoulder") if pose.has(j)]
+    if lower is None or not shoulders:
+        return False
+    return bool(np.nanmean([np.nanmean(pose.joint(j)[:, 1]) for j in shoulders]) < np.nanmean(pose.joint(lower)[:, 1]))
+
+
 def _pose(perf):
-    """Joints in centimetres, y up, for the skeleton view (None without a pose)."""
+    """Joints in centimetres, y up (flipped if the pose has y down), for the skeleton view (None without a pose)."""
     pose = perf.pose
     if pose is None:
         return None
-    xyz = pose.xyz / 10.0
-    if pose.has("l_shoulder", "l_pelvis") and np.nanmean(pose.joint("l_shoulder")[:, 1]) > np.nanmean(pose.joint("l_pelvis")[:, 1]):
-        xyz = xyz * np.array([1, -1, 1])                       # the shoulders are below the pelvis: y points down, flip it
+    xyz = pose.xyz / 10.0 * (np.array([1, -1, 1]) if _y_is_down(pose) else 1)
     return {"fps": pose.fps, "joints": list(pose.joints),
             "edges": [[a, b] for a, b in SKELETON if a in pose.joints and b in pose.joints],
             "xyz": [[None if np.isnan(j).any() else [round(float(c), 1) for c in j] for j in frame] for frame in xyz]}

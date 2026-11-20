@@ -12,6 +12,8 @@ import urllib.request
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
+
 from helpers import make_video, musicxml, synth, write_wav
 from minuet import minuet_musicxml, play_minuet
 from pose_fixture import minuet_notes, synth_pose, write_fake_viopose
@@ -116,6 +118,20 @@ class VisualPage(unittest.TestCase):
         self.assertEqual(len(d["pose"]["xyz"]), len(self.pose.xyz))                # one skeleton per video frame
         self.assertEqual(d["pose"]["fps"], self.pose.fps)
         self.assertTrue(all(a in d["pose"]["joints"] and b in d["pose"]["joints"] for a, b in d["pose"]["edges"]))
+
+    def test_the_skeleton_is_upright_whichever_way_the_pose_y_axis_points(self):
+        from maestro.gui.player import _pose
+        from maestro.utils.Performance import Performance
+        from maestro.vision.pose_io import Pose
+        joints = ["l_shoulder", "r_shoulder", "l_pelvis", "r_pelvis", "l_knee"]
+        up = np.array([[[-20, 150, 0], [20, 150, 0], [-10, 100, 0], [10, 100, 0], [-10, 50, 0]]] * 3, dtype=float) * 10   # mm
+        for name, xyz in (("y up", up), ("y down", up * np.array([1, -1, 1]))):      # the same person, both conventions
+            perf = Performance()
+            perf.pose = Pose(30.0, joints, xyz)
+            frame = _pose(perf)["xyz"][0]
+            self.assertGreater(frame[0][1], frame[2][1], name)                        # shoulders above the pelvis ...
+            self.assertGreater(frame[2][1], frame[4][1], name)                        # ... above the knee
+            self.assertEqual(frame[0][0], -20.0, name)                               # left stays left (x is not mirrored)
 
     def test_every_skill_with_a_result_has_a_score(self):
         self.assertTrue({"intonation", "rhythm", "expression", "tone", "bowing", "posture", "overall"} <= set(self.data["scores"]))
