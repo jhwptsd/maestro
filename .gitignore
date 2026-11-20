@@ -6,3 +6,5 @@ build/
 third_party/
 models/fusion/
 models/*.pt
+data/*
+!data/README.md

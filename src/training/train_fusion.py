@@ -8,8 +8,12 @@ reconstruction loss and `leakage` (R^2 of reading the analysis features back fro
 epoch (lowest validation loss) is saved to <out>/<kind>.pt, which maestro.analyze() picks up from models/fusion/.
 
     python src/training/train_fusion.py score --music21 --epochs 20
-    python src/training/train_fusion.py audio recordings/ --cache cache/ --epochs 30
-    python src/training/train_fusion.py video poses/ --epochs 40
+    python src/training/train_fusion.py audio --dataset musicnet --epochs 30      # after install_data.py audio
+    python src/training/train_fusion.py video --dataset youtube-cc --epochs 40    # after install_data.py video
+    python src/training/train_fusion.py audio recordings/ --cache cache/          # or any folder of your own files
+
+With --dataset the dataset's own train / val / test partitions in data/ are used (install_data.py); the test partition is scored
+once at the end and recorded in the checkpoint. Models are saved in models/fusion/.
 """
 import argparse
 import sys
@@ -20,6 +24,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
+import datasets  # noqa: E402
 import fusion_data  # noqa: E402
 from maestro.fusion import audio_encoder, score_encoder, video_encoder  # noqa: E402
 from maestro.fusion.embed import models_dir  # noqa: E402
@@ -94,6 +99,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("kind", choices=sorted(MODULES))
     p.add_argument("paths", nargs="*", help="files or folders (recursively) of the right kind")
+    p.add_argument("--dataset", help="an installed dataset (data/<kind>/<name>/, see install_data.py list) instead of PATHs")
     p.add_argument("--music21", action="store_true", help="(score) also use the scores bundled with music21")
     p.add_argument("--limit", type=int, help="use at most this many files")
     p.add_argument("--epochs", type=int, default=30)
@@ -110,25 +116,43 @@ def main(argv=None):
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = p.parse_args(argv)
 
-    files = [f for path in args.paths for f in fusion_data.find(path, args.kind)]
-    if args.music21 and args.kind == "score":
-        files += fusion_data.music21_scores()
-    files = files[:args.limit] if args.limit else files
-    if not files:
-        p.error(f"no {args.kind} files found (give PATHs{', or --music21' if args.kind == 'score' else ''})")
-    print(f"reading {len(files)} {args.kind} files ...")
-    xs, sides = fusion_data.load_windows(args.kind, files, cache_dir=args.cache, pitch_backend=args.pitch_backend, fps=args.fps)
-    train, val = fusion_data.split(xs, sides, args.val)
-    print(f"{len(train[0])} training windows, {len(val[0])} validation windows from {len(xs)} files")
+    test = None
+    options = dict(cache_dir=args.cache, pitch_backend=args.pitch_backend, fps=args.fps)
+    if args.dataset:
+        if args.kind == "score":
+            p.error("--dataset is for audio and video; scores use PATHs or --music21")
+        parts = fusion_data.dataset_windows(args.kind, args.dataset, **{k: v for k, v in options.items() if v is not None})
+        train, val, test = parts["train"], parts["val"], parts["test"]
+        n_files = len(datasets.files(args.kind, args.dataset, "train"))
+        if val is None:                                              # a dataset too small to have a validation split
+            train, val = fusion_data.split([train[0]], [train[1]], args.val)
+    else:
+        files = [f for path in args.paths for f in fusion_data.find(path, args.kind)]
+        if args.music21 and args.kind == "score":
+            files += fusion_data.music21_scores()
+        files = files[:args.limit] if args.limit else files
+        if not files:
+            p.error(f"no {args.kind} files found (give PATHs{', or --music21' if args.kind == 'score' else ', or --dataset NAME'})")
+        print(f"reading {len(files)} {args.kind} files ...")
+        xs, sides = fusion_data.load_windows(args.kind, files, **options)
+        train, val = fusion_data.split(xs, sides, args.val)
+        n_files = len(xs)
+    print(f"{len(train[0])} training windows, {len(val[0])} validation windows" + (f", {len(test[0])} test windows" if test else ""))
 
     module = MODULES[args.kind]
     model = module.build(z_dim=args.z_dim)
     history = fit(model, train, val, module.reconstruction_loss, args.epochs, args.batch, args.lr, args.beta, args.leak, args.device)
     out = Path(args.out) if args.out else models_dir()
     out.mkdir(parents=True, exist_ok=True)
+    test_stats = {}
+    if test is not None:                                             # touched once, after the best epoch was chosen
+        t_parts, t_leak = evaluate(model, torch.as_tensor(test[0], device=args.device), torch.as_tensor(test[1], device=args.device),
+                                   module.reconstruction_loss, args.beta, args.leak)
+        test_stats = {"test_recon": t_parts["recon"], "test_xcov": t_parts["xcov"], "test_leakage": t_leak, "test_windows": len(test[0])}
+        print(f"test: recon {t_parts['recon']:.4f}  xcov {t_parts['xcov']:.4f}  leakage {t_leak:.3f}")
     best = min((h for h in history if "val_recon" in h), key=lambda h: h["val_recon"] + args.beta * h["val_kl"] + args.leak * h["val_xcov"],
                default=history[-1])
-    save_checkpoint(model, out / f"{args.kind}.pt", {"files": len(xs), "train_windows": len(train[0]), "epochs": args.epochs,
+    save_checkpoint(model, out / f"{args.kind}.pt", {"dataset": args.dataset or "paths", **test_stats, "files": n_files, "train_windows": len(train[0]), "epochs": args.epochs,
                                                        "best_epoch": best["epoch"], **{k: v for k, v in best.items() if k.startswith(("val_", "leak"))}})
     print(f"saved {out / (args.kind + '.pt')}")
 

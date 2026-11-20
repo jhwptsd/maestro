@@ -121,6 +121,29 @@ def load_windows(kind, paths, log=print, **options):
 LOADER_OPTIONS = {"audio": {"cache_dir", "pitch_backend"}, "video": {"fps"}, "score": set()}
 
 
+def stack(xs, sides):
+    """Per-file window lists -> one (x, side) pair of arrays (None, None if there are no files)."""
+    return (np.concatenate(xs), np.concatenate(sides)) if xs else (None, None)
+
+
+def dataset_windows(kind, name, log=print, **options):
+    """Windows of an installed dataset (see datasets.py), by its own partitions -> {"train": (x, side), "val": ..., "test": ...}
+    (a split with no readable file is None). The audio features are cached in data/cache/audio."""
+    import datasets
+    if kind == "audio":
+        options.setdefault("cache_dir", datasets.data_dir() / "cache" / "audio")
+    out = {}
+    for split in datasets.SPLITS:
+        paths = datasets.files(kind, name, split)
+        log(f"{name}/{split}: {len(paths)} files")
+        pair = stack(*load_windows(kind, paths, log=log, **options)) if paths else (None, None)
+        out[split] = pair if pair[0] is not None else None
+    if out["train"] is None:
+        raise SystemExit(f"{name} has no {kind} files in {datasets.dataset_dir(kind, name) / 'train'}: install it first "
+                         f"(python src/training/install_data.py {kind})")
+    return out
+
+
 def split(xs, sides, val_fraction=0.15, seed=0):
     """Per-file window lists -> ((x_train, side_train), (x_val, side_val)) split by file (at least one file each way
     when there are two or more; with one file the last windows are validation)."""
