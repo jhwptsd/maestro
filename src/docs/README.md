@@ -49,3 +49,34 @@ strings. It is used by default (`analyze(..., visual_audio=True)`) when at least
 
 References: VioPose (above); Bowing gestures: Dalmazzo & Ramirez, 2019 (a gesture classifier is future work, once audio
 is integrated).
+
+
+## Fusion encoders and training (`maestro/fusion/`, `src/training/`)
+Three residual autoencoders (audio, video, score) learn what the rule-based analysis does not capture. Each is a variational
+autoencoder whose decoder receives, besides the latent `z` (16 numbers), the analysis features of the same segment
+(`residual_autoencoder.py`):
+
+    x -> encoder -> z --+
+                        +-> decoder -> x_hat ~ x        loss = reconstruction + beta * KL + leak * crosscov(z, side)
+    side (analysis) ----+
+
+What the side features explain the decoder gets for free, so `z` is left with the rest; the KL term and the cross-covariance
+penalty keep it from copying them, and `leakage_r2` (a ridge regression z -> side, scored on held-out windows) measures what is left
+(`tests/test_fusion.py` shows an ordinary autoencoder keeping the known factors, this one moving them out while keeping the
+hidden ones). Per modality (feature builders, encoder and decoder live in one file each):
+
+| file | input window | side information | embedding use |
+|---|---|---|---|
+| `audio_encoder.py` | 86 frames (~1 s) of 64-band log-mel, frame grid identical to `audio/features.py` | voiced, pitch, confidence, RMS level, centroid, onset strength | `embed()`: one z per 0.5 s |
+| `video_encoder.py` | 60 frames (2 s, 30 fps) of 20 joints, centred on the window's mean mid-shoulder and in shoulder widths | bow position/speed, left-hand distance and speed, right-hand speed, elbow angles, shoulder tilt | one z per second |
+| `score_encoder.py` | 16 notes of 6 categorical tokens (pitch, duration, bar position, articulation, dynamic, hairpin) | pitch-class profile, range, density, step/skip/leap shares, articulation share, dynamic level, key, metre | one z per 8 notes, timed through the alignment |
+
+`embed.py` loads `models/fusion/{audio,video,score}.pt`, embeds a Performance (`perf.embeddings`: per modality `t`, `z`,
+`recon_error`) and is called by `analyze()` when checkpoints exist. Checkpoints are plain tensors and dicts, loaded with
+`weights_only=True`.
+
+**Training data** (see `src/training/datasets.py` for licences): audio from the violin recordings of MusicNet (Zenodo 5120004, CC BY 4.0,
+downloaded and extracted by `install_data.py audio`); video from Creative Commons violin videos found with yt-dlp and run through
+VioPose (`install_data.py video`); scores from the music21 corpus. The request-only sets (VioDat, SyncViolinist, MOSA) are
+added with `install_data.py ingest`. Recordings are partitioned by a hash of their id into `data/<kind>/<dataset>/{train,val,test}/`, so a
+recording is in exactly one split, and reinstalling never moves it. Commands: root README, "Train the models".

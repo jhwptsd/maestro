@@ -1,6 +1,7 @@
 # Data
 Training data, all of it git-ignored. Installed and partitioned by `src/training/install_data.py` (move this folder with the
-`MAESTRO_DATA` environment variable); trained models go to `models/` (`models/fusion/audio.pt`, `video.pt`, `score.pt`).
+`MAESTRO_DATA` environment variable); trained models go to `models/` (`models/fusion/audio.pt`, `video.pt`, `score.pt`). The
+whole workflow (install, train, use) is in the root README under "Train the models" and in `src/training/README.md`.
 
     downloads/<dataset>/               archives and videos as downloaded (safe to delete once installed)
     audio/<dataset>/train|val|test/    wav files;                 manifest.json: id, split, source, licence, attribution

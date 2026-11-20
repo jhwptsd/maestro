@@ -134,7 +134,7 @@ class Installer(unittest.TestCase):
         recorder = Recorder()
         config = self.setup(recorder)
         steps = [("clone" if c[0] == "git" else "pip" if "pip" in c else "gdown" if vs.GDOWN_CODE in c else "check" if "-c" in c else "?") for c, _ in recorder.calls]
-        self.assertEqual(steps, ["clone", "pip", "check", "gdown", "gdown", "gdown"])
+        self.assertEqual(steps, ["clone", "pip", "check", "pip", "gdown", "gdown", "gdown"])
         pip = recorder.commands("pip")[0]
         self.assertEqual(pip[:4], [sys.executable, "-m", "pip", "install"])
         self.assertTrue(pip[-1].endswith("requirements.txt"))
@@ -150,7 +150,7 @@ class Installer(unittest.TestCase):
         self.assertEqual(len(recorder.calls), before)                # everything already done
         (self.tp / "VioPose/requirements.txt").write_text("tensorflow==2.14.0\n")
         self.setup(recorder)
-        self.assertEqual(len(recorder.commands("pip")), 2)           # only the requirements step ran again
+        self.assertEqual(len(recorder.commands("pip")), 3)           # (requirements, gdown) + only the requirements step again
         self.assertEqual(len(recorder.calls), before + 2)            # pip + the import check
 
     def test_only_the_pins_of_imported_packages_are_installed(self):

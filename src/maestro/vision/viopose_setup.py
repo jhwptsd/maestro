@@ -11,8 +11,9 @@
 #      (tensorrt, triton, jaxlib 0.4.13, wurlitzer ...), so only the pins of the imported packages plus the few that
 #      keep TensorFlow consistent are installed (COMPAT_PINS) and pip resolves everything else for the platform. The
 #      result is accepted only if each of inference.py's imports works in the environment (checked one by one)
-#   4. the model weights, by carrying out VioPose's own download.sh in Python (cd / mkdir / gdown / unzip / rm), so it
-#      works on Windows too and follows upstream if the file ids change; the demo data it also fetches is skipped
+#   4. gdown (which download.sh needs) and the model weights, by carrying out VioPose's own download.sh in Python (cd /
+#      mkdir / gdown / unzip / rm), so it works on Windows too and follows upstream if the file ids change; the demo data
+#      it also fetches is skipped
 #   5. third_party/viopose.json {"dir", "python"}: what `load_config()` reads, so vision/pose_estimation.py finds it.
 # Every step is skipped when already done, so re-running only repairs what is missing. `load_config()` also honours the
 # environment variables VIOPOSE_DIR / VIOPOSE_PYTHON, which win over the file, and falls back to the default checkout.
@@ -282,6 +283,10 @@ def setup_viopose(directory=None, python=None, skip_weights=False, dry_run=False
     else:
         script = directory / "download.sh"
         if not dry_run:
+            # download.sh calls gdown, which inference.py never imports, so the requirements step above does not install it
+            gdown = next((l.strip() for l in original.read_text().splitlines() if l.lower().startswith("gdown")), "gdown") \
+                if original.is_file() else "gdown"
+            execute([str(interpreter), "-m", "pip", "install", gdown])
             run_download_script(script.read_text(), directory, interpreter, lambda c, cwd=None: execute(c, cwd))
             marker("weights").write_text("ok")
         else:
