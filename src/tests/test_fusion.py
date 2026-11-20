@@ -149,9 +149,12 @@ class Video(unittest.TestCase):
         x, side, t = self.windows(self.pose)
         self.assertEqual(x.shape[1:], (video_encoder.WINDOW, video_encoder.N_IN))
         self.assertEqual(side.shape[1:], (video_encoder.WINDOW, video_encoder.SIDE_DIM))
-        moved = Pose(self.pose.fps, self.pose.joints, self.pose.xyz * 2.0 + np.array([500.0, -300.0, 900.0]))
+        tracked = (self.pose.xyz != 0).any(axis=(0, 2))                 # the fixture marks untracked joints with zeros
+        moved = Pose(self.pose.fps, self.pose.joints,
+                     np.where(tracked[None, :, None], self.pose.xyz * 2.0 + np.array([500.0, -300.0, 900.0]), 0.0))
         x2, side2, _ = self.windows(moved)                              # twice as large, somewhere else
-        np.testing.assert_allclose(x2, x, atol=1e-4)
+        cols = np.repeat(tracked[[self.pose.joints.index(j) for j in video_encoder.JOINTS]], 3)
+        np.testing.assert_allclose(x2[..., cols], x[..., cols], atol=1e-4)
         np.testing.assert_allclose(side2, side, atol=1e-3)
         self.assertEqual(t[1] - t[0], video_encoder.STRIDE / video_encoder.FPS)
 
