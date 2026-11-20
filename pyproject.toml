@@ -17,6 +17,8 @@ dev = ["pytest"]
 crepe = ["torch>=2.0", "torchcrepe>=0.0.23"]
 pyin = ["librosa>=0.10.2"]
 basic-pitch = ["basic-pitch>=0.3.0"]
+fusion = ["torch>=2.0"]
+training = ["torch>=2.0", "music21>=9"]       # music21 only for its bundled scores (train_fusion.py score --music21)
 neural = ["torch>=2.0", "transformers>=4.40"]
 audio = ["torch>=2.0", "torchcrepe>=0.0.23", "librosa>=0.10.2", "basic-pitch>=0.3.0"]
 

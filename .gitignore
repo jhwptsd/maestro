@@ -4,3 +4,5 @@ out/
 build/
 *.egg-info/
 third_party/
+models/fusion/
+models/*.pt

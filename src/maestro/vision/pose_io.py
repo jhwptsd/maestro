@@ -75,9 +75,16 @@ def viopose_result_to_pose(path):
         fps = float(result["fps"])
     except (OSError, ValueError, KeyError, AttributeError, TypeError) as e:
         raise InputError(f"{Path(path).name} is not a VioPose result.npy: {e}")
+    return pose_from_array(pred, fps)
+
+
+def pose_from_array(pred, fps):
+    """(frames, 18, 3) millimetres in VIOPOSE_JOINTS order (a VioPose output, or motion capture mapped to those joints)
+    -> Pose with the derived hands added."""
+    pred = np.asarray(pred, dtype=float)
     pred = pred.reshape((-1,) + pred.shape[-2:])        # (frames, joints, 3), whatever batch dims were kept
     if pred.shape[1:] != (len(VIOPOSE_JOINTS), 3) or not fps > 0:
-        raise InputError(f"Unexpected VioPose output shape {pred.shape} (expected frames x {len(VIOPOSE_JOINTS)} x 3).")
+        raise InputError(f"Unexpected pose shape {pred.shape} (expected frames x {len(VIOPOSE_JOINTS)} x 3).")
     hands = [np.mean([pred[:, VIOPOSE_JOINTS.index(f"{side}_{part}")] for part in ("index", "pinky", "thumb")], axis=0)
              for side in ("l", "r")]
     return Pose(fps, VIOPOSE_JOINTS + ["l_hand", "r_hand"], np.concatenate([pred, np.stack(hands, axis=1)], axis=1))

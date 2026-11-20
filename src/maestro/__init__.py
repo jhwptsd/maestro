@@ -65,6 +65,22 @@ def analyze_visual(perf, pose_file=None, save_dir=None, use_audio=True):
     return perf
 
 
+def _embed(perf, embeddings):
+    """Fill perf.embeddings with the fusion encoders' output (see `analyze`)."""
+    if embeddings is False:
+        return
+    try:
+        from maestro.fusion.embed import available, embed_performance
+    except ImportError:                                      # torch is optional
+        if embeddings:
+            raise
+        return
+    if available():
+        embed_performance(perf)
+    elif embeddings:
+        raise FileNotFoundError("No trained fusion encoders in models/fusion/: run src/training/train_fusion.py first.")
+
+
 def _write_audio(perf, directory):
     """The performance's audio as a wav for VioPose's audio model (in `directory`, else a temp file) -> path."""
     from scipy.io import wavfile
@@ -74,7 +90,7 @@ def _write_audio(perf, directory):
 
 
 def analyze(video_path, score_path, out_dir=None, denoise=True,
-            pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None, pose_file=None, neural=None, visual_audio=True):
+            pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None, pose_file=None, neural=None, visual_audio=True, embeddings=None):
     """Analyze a performance against a score and return the filled Performance.
 
     video_path: any video or audio file ffmpeg reads; score_path: MusicXML, .mxl, MIDI, PDF or image.
@@ -85,6 +101,8 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     for CREPE. Optional backends are loaded only when selected.
     The movement analysis needs VioPose (installed by the project setup); it runs automatically and its pose is saved as
     work/pose.json. pose_file (a saved pose.json) skips VioPose.
+    embeddings: learned per-window descriptions of the audio, video and score (fusion/, perf.embeddings): None (default)
+    computes them when trained checkpoints exist in models/fusion/ and torch is installed, True requires them, False skips.
     visual_audio (default True): the visual models use the audio where they can (VioPose's audio model, visual-pitch
     calibration against the heard notes); False keeps the visual analysis audio-free.
 
@@ -128,6 +146,7 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
             perf.assessment["neural"] = analyze_windows(y, sr, backend)
     except NeuralUnavailable as e:
         perf.assessment["neural"] = {"error": str(e)}
+    _embed(perf, embeddings)
     ctx = Context(perf)
     a = perf.assessment
     a["intonation"] = assess_intonation(perf.score_features, notes, perf.alignment, ctx=ctx)

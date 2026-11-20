@@ -124,6 +124,29 @@ inside each window, never by the network alone. It is zero-shot and coarse: trea
 returns `p_first(windows, sr, prompts)` can be swapped in (`assessment/neural.py`); trained heads (e.g. on a frozen MERT
 encoder with the VioTech labels) would plug in the same way.
 
+## Fusion encoders: learning what the analysis misses
+
+`maestro/fusion/` holds three autoencoders, one per modality (`audio_encoder.py`, `video_encoder.py`, `score_encoder.py`) built
+on one idea (`residual_autoencoder.py`): the **decoder also receives the analysis features** (pitch, loudness, bow position,
+key, ... everything the rule-based modules already measure), so the small latent `z` (16 numbers per window) is pushed to hold
+only what they do not explain. A KL term and a cross-covariance penalty between `z` and the analysis features keep it from
+copying them; `leakage_r2` measures how much can still be read back (a test checks that an ordinary autoencoder keeps the known
+factors in `z` and this one moves them out while keeping the hidden ones).
+
+| model | x (encoded) | side information (given to the decoder) | z should hold |
+|---|---|---|---|
+| audio | 1 s log-mel patch | pitch, voicing, loudness, centroid, onsets per frame | timbre, bow noise and texture beyond those |
+| video | 2 s of 3D pose, body-size and position independent | bow position/speed, hand distance, elbow angles, shoulder tilt | posture, wrist/finger style, carriage of the bow arm |
+| score | 16 notes as tokens | pitch-class profile, range, density, intervals, key, metre | note order, contour, motifs, rhythmic pattern |
+
+Training needs no labels (`pip install -e ".[training]"`): `python src/training/train_fusion.py score --music21` uses the
+scores bundled with music21; audio takes any folder of violin recordings or videos, video takes `pose.json` files or
+(frames, 18, 3) motion-capture arrays. `src/training/fusion_data.py` lists suggested public data and licences (MusicNet,
+URMP, VioDat, SyncViolinist, PDMX, the Violin MIDI dataset ...). Checkpoints go to `models/fusion/`; when they exist
+`analyze()` stores `perf.embeddings` (one `z` per window on the performance's clock, plus a reconstruction error that is high where
+the playing is unlike the training data even given its pitch and loudness). Combining the three streams (`fusion.py`) and
+prediction heads are still to do.
+
 ## Status
 
 Implemented: audio extraction, selectable pitch/transcription backends, score conversion, score-audio alignment, pitch-deviation and timing assessment, and score visualization. Movement analysis from VioPose poses (bowing, posture, visual pitch) is implemented; VioPose and the visual pitch use the audio by default (`visual_audio=False` turns that off) and the assessment events combine both; multimodal fusion and LLM feedback remain in development.
