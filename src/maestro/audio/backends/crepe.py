@@ -18,6 +18,7 @@ Speed and accuracy notes (measured on a 4-core CPU, 30 s of audio):
    job in ~25 ms, so the audio is brought to 16 kHz here first.
 """
 import math
+import warnings
 
 import numpy as np
 
@@ -77,26 +78,57 @@ def _resample(y, sr, target):
 
 
 def _run_network(y, sr, hop_length, fmin, fmax, model, batch_size, device):
-    """Resample to 16 kHz and run torchcrepe -> (f0 Hz, periodicity) per CREPE frame, plus the CREPE hop in samples."""
+    """Resample to 16 kHz and run torchcrepe -> (f0 Hz, periodicity) per CREPE frame, plus the CREPE hop in samples and
+    the runtime that ran the network ("torch:cuda:0", "onnx:DmlExecutionProvider", "torch:cpu" ...).
+
+    Where the network runs (utils/device.py): a PyTorch accelerator, else ONNX Runtime on a GPU (DirectML on Windows covers
+    AMD and Intel) or on the CPU (about 2x PyTorch's speed), else PyTorch on the CPU. If the ONNX path cannot be set up (no
+    `onnx` to export the model, a provider that fails) the CPU PyTorch path runs instead, with a warning."""
     import torch
     import torchcrepe
 
-    if device is None or device == "auto":
-        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    from maestro.audio.backends import crepe_onnx
+    from maestro.utils.device import choose, is_accelerated
+
+    kind, target = choose(device)
     if model == "auto":                         # full CREPE is only cheap on an accelerator
-        model = "full" if str(device).startswith(("cuda", "mps")) else "tiny"
+        model = "full" if is_accelerated(kind, target) else "tiny"
+    infer = None
+    if kind == "onnx":
+        try:
+            infer = crepe_onnx.make_infer(model, target)
+        except Exception as e:                  # missing onnx, export or provider problems: PyTorch on the CPU still works
+            warnings.warn(f"CREPE via ONNX Runtime ({target}) is unavailable ({type(e).__name__}: {e}); using PyTorch on the CPU")
+            kind, target = "torch", "cpu"
     rate = torchcrepe.SAMPLE_RATE
     crepe_hop = int(hop_length * rate / sr)     # torchcrepe truncates the hop to whole 16 kHz samples
     audio = torch.from_numpy(np.clip(_resample(y, sr, rate) if sr != rate else y, -1.0, 1.0)).unsqueeze(0)
+
+    def predict(torch_device):
+        return torchcrepe.predict(audio, rate, hop_length=crepe_hop, fmin=fmin, fmax=fmax, model=model, decoder=_decode,
+                                  batch_size=batch_size, device=torch_device, return_periodicity=True)
+
     with torch.inference_mode():
-        pitch, periodicity = torchcrepe.predict(
-            audio, rate, hop_length=crepe_hop, fmin=fmin, fmax=fmax, model=model, decoder=_decode,
-            batch_size=batch_size, device=device, return_periodicity=True)
-    return pitch[0].cpu().numpy().astype(float), periodicity[0].cpu().numpy().astype(float), crepe_hop
+        if infer is not None:
+            original = torchcrepe.core.infer
+            torchcrepe.core.infer = infer       # framing and decoding stay torchcrepe's / ours; only the network is swapped
+            try:
+                pitch, periodicity = predict("cpu")
+            except Exception as e:              # a provider that fails mid-run: redo it on PyTorch's CPU
+                warnings.warn(f"CREPE via ONNX Runtime ({target}) failed ({type(e).__name__}: {e}); redoing it on the CPU")
+                torchcrepe.core.infer = original
+                kind, target = "torch", "cpu"
+                pitch, periodicity = predict("cpu")
+            finally:
+                torchcrepe.core.infer = original
+        else:
+            pitch, periodicity = predict(target)
+    runtime = f"{kind}:{target}"
+    return pitch[0].cpu().numpy().astype(float), periodicity[0].cpu().numpy().astype(float), crepe_hop, runtime
 
 
 def estimate(y, sr, frame_length=1024, hop_length=256, fmin=None, fmax=None,
-             model="auto", batch_size=1024, device=None, rms_floor_db=60.0, **_):
+             model="auto", batch_size=1024, device=None, rms_floor_db=60.0, **_):   # device: "auto"/None, "cpu", "cuda:0", "mps", "onnx"
     try:
         import torchcrepe
     except ImportError as exc:
@@ -119,7 +151,7 @@ def estimate(y, sr, frame_length=1024, hop_length=256, fmin=None, fmax=None,
         empty = np.zeros(0)
         return PitchTrack(empty, empty, empty, "crepe")
 
-    f0, confidence, crepe_hop = _run_network(y, sr, hop_length, fmin, fmax, model, batch_size, device)
+    f0, confidence, crepe_hop, runtime = _run_network(y, sr, hop_length, fmin, fmax, model, batch_size, device)
 
     # CREPE's frame spacing (and count) differs slightly from Maestro's `hop_length / sr` timeline, so map
     # each Maestro frame to the nearest CREPE frame in time: every backend then shares one timeline.
@@ -133,4 +165,4 @@ def estimate(y, sr, frame_length=1024, hop_length=256, fmin=None, fmax=None,
         silent = rms <= rms.max() * 10.0 ** (-float(rms_floor_db) / 20.0)
         confidence[:len(rms)][silent] = 0.0
         f0[:len(rms)][silent] = 0.0
-    return PitchTrack(times, f0, confidence, "crepe")
+    return PitchTrack(times, f0, confidence, "crepe", runtime=runtime)

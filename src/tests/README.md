@@ -11,6 +11,8 @@ pose model, and a local HTTP server with range support stands in for Zenodo.
 | file | covers |
 |---|---|
 | `test_audio.py`, `test_crepe_backend.py`, `test_pitch_speed.py` | pitch backends, transcription, onsets |
+| `test_device.py` | device choice (any GPU, else CPU), CREPE through ONNX Runtime (matches PyTorch, falls back cleanly) |
+| `test_ffmpeg.py` | finding ffmpeg/ffprobe and the readable error when they are missing |
 | `test_score.py`, `test_preprocessing.py`, `test_denoise.py` | score parsing (repeats, dynamics), file conversion, denoising |
 | `test_alignment_assessment.py`, `test_assessment_events.py` | alignment, the assessment modules and their events, causes and synthesis |
 | `test_vision.py`, `test_viopose_setup.py` | pose, motion features, visual pitch, the VioPose runner and its installer |

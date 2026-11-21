@@ -14,7 +14,7 @@ Contents: [Install](#install) · [Use the app](#use-the-app) · [Train the model
 **One command** installs everything the app needs, including those programs where it can:
 
 ```bash
-.\setup.ps1 [-SkipViopose] [-Training] [-Neural] [-NoVenv]     # Windows (ffmpeg, Audiveris, git through winget)
+.\setup.ps1 [-SkipViopose] [-Training] [-Neural] [-NoVenv] [-NoGpu]     # Windows (ffmpeg, Audiveris, git through winget)
 ./setup.sh  [--skip-viopose] [--training] [--neural] [--no-venv] # Linux / macOS (ffmpeg, git through apt or brew)
 ```
 
@@ -39,7 +39,8 @@ use one too (`python -m venv .venv`), or delete the leftover file it names and a
 | extra | adds | needed for |
 |---|---|---|
 | *(core)* | numpy, scipy | everything (the YIN pitch backend needs nothing more) |
-| `crepe` | torch, torchcrepe, librosa | the default pitch backend |
+| `crepe` | torch, torchcrepe, librosa, onnx, onnxruntime | the default pitch backend (ONNX Runtime runs its network about twice as fast as PyTorch on the CPU) |
+| `directml` | onnxruntime-directml | Windows: runs that network on any DirectX 12 GPU (AMD, Intel, NVIDIA). Replaces `onnxruntime` (`pip uninstall onnxruntime` first; `setup.ps1` does this for you when it finds a GPU) |
 | `pyin`, `basic-pitch`, `audio` | librosa / basic-pitch / all four backends | the other pitch backends |
 | `fusion` | torch | running the trained fusion encoders (`perf.embeddings`) |
 | `training` | torch, music21, yt-dlp | training the models and installing their datasets |
@@ -83,6 +84,21 @@ neural=None, visual_audio=True, embeddings=None)`:
 `neural="clap"` adds the CLAP judgement; `visual_audio=False` keeps the visual models audio-free; `embeddings` is `None`
 (use trained encoders if they exist), `True` (require them) or `False`. Errors for unusable input are
 `maestro.utils.errors.InputError`; a score that does not match the recording raises its subclass `MismatchError`.
+
+### Speed and GPUs
+
+`analyze()` prints nothing, but `perf.timings` (and `analyze.py`, and the server's log) report the seconds per stage, so you can see
+where the time goes. What runs where (`maestro/utils/device.py`; `MAESTRO_DEVICE=cpu|cuda:0|mps|xpu|onnx` overrides the automatic choice):
+
+| work | runs on | notes |
+|---|---|---|
+| CREPE pitch network (the main neural cost of the audio analysis) | a PyTorch GPU (NVIDIA CUDA, AMD ROCm on Linux, Intel XPU, Apple MPS), else ONNX Runtime on a GPU (**DirectML: any AMD, Intel or NVIDIA GPU on Windows**), else ONNX Runtime on the CPU, else PyTorch on the CPU | with a GPU the larger, more accurate CREPE model is used; on the CPU the tiny one. The network is exported once to `models/onnx/` (about 10 s, 90 MB for the full model); a GPU path that fails falls back to the CPU with a warning. `audio_features["pitch_runtime"]` says which ran |
+| fusion encoders, CLAP, training | the best PyTorch accelerator, else the CPU | PyTorch cannot use an AMD or Intel GPU on Windows (ROCm PyTorch is Linux-only for most cards), so on such a machine these stay on the CPU; train on Linux with a ROCm build of PyTorch, or on an NVIDIA GPU |
+| pose (VioPose: TensorFlow 2.13 and MediaPipe) | the CPU | TensorFlow has had no GPU support on native Windows since 2.10, and MediaPipe's pose model runs on the CPU here. It is the slowest step (minutes), so it runs **in the background while the audio is analysed** and is cancelled if the analysis fails |
+| ffmpeg conversion, alignment, assessment | the CPU | |
+
+A faster CPU speeds up the pose and conversion steps; a GPU speeds up the pitch network. `MAESTRO_DEVICE=cpu` is the escape hatch if a GPU
+driver misbehaves.
 
 ### Audio pitch backends
 

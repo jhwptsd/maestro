@@ -29,6 +29,7 @@ import fusion_data  # noqa: E402
 from maestro.fusion import audio_encoder, score_encoder, video_encoder  # noqa: E402
 from maestro.fusion.embed import models_dir  # noqa: E402
 from maestro.fusion.residual_autoencoder import leakage_r2, save_checkpoint  # noqa: E402
+from maestro.utils.device import torch_device  # noqa: E402
 
 MODULES = {"audio": audio_encoder, "video": video_encoder, "score": score_encoder}
 
@@ -113,7 +114,7 @@ def main(argv=None):
     p.add_argument("--pitch-backend", default="yin", help="(audio) pitch backend for the side features (default yin: fast)")
     p.add_argument("--fps", type=float, default=30.0, help="(video) frame rate of .npy motion-capture arrays")
     p.add_argument("--out", help="checkpoint folder (default: models/fusion)")
-    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--device", default=torch_device(), help="torch device (default: the best PyTorch accelerator, else cpu; see maestro/utils/device.py)")
     args = p.parse_args(argv)
 
     test = None

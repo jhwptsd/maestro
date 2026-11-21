@@ -47,7 +47,8 @@ def main():
     (out / "report.html").write_text(build_page(perf, copy_media(perf, out)), encoding="utf-8")
     (out / "assessment.json").write_text(json.dumps(perf.assessment["synthesis"], indent=1), encoding="utf-8")
     print(f"report: {out / 'report.html'}\nassessment events (JSON): {out / 'assessment.json'}")
-    print(f"pitch backend: {perf.audio_features['pitch_backend']}")
+    print(f"pitch backend: {perf.audio_features['pitch_backend']} ({perf.audio_features.get('pitch_runtime') or 'n/a'})")
+    print("seconds per stage: " + ", ".join(f"{k} {v:.1f}" for k, v in perf.timings.items()) + "  (pose runs alongside the audio stages)")
     intonation, rhythm = perf.assessment["intonation"], perf.assessment["rhythm"]
     print(
         f"intonation: mean |dev| {intonation['mean_abs_cents']} cents, "

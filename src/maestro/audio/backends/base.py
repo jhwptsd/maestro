@@ -18,6 +18,7 @@ class PitchTrack:
     confidence: np.ndarray
     backend: str
     notes: list[dict] | None = None
+    runtime: str = ""                 # what ran the network, e.g. "onnx:DmlExecutionProvider" (informational)
 
     def __post_init__(self):
         self.times = np.asarray(self.times, dtype=float).reshape(-1)

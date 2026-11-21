@@ -13,6 +13,7 @@ class Performance:
         self.score  = None
         self.reference = None
         
+        self.timings = {}            # seconds per stage of analyze() (the pose stage runs concurrently with the audio stages)
         self.preprocessing_report = {}  # denoising summaries: {"audio": {...}, "score": {...}, "video": bool}
         self.pose  = None            # vision/pose_io.Pose (3D joints per frame), or None when no pose source is available
         self.motion_features = None  # vision/motion_features.extract_motion output (hands, bow strokes, angles)

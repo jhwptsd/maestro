@@ -8,3 +8,4 @@ models/fusion/
 models/*.pt
 data/*
 !data/README.md
+models/onnx/

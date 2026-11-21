@@ -19,7 +19,7 @@ from maestro.vision import viopose_setup
 from maestro.vision.pose_io import VIOPOSE_JOINTS, Pose, body_scale, load_pose, save_pose, viopose_result_to_pose
 from maestro.vision.visual_pitch import (FIRST_POSITION_MM, OPEN_STRINGS, calibrate_from_audio, calibrate_visual_pitch, distance_from_nut_mm,
                                          estimate_visual_pitch, semitones_above_open)
-from pose_fixture import (fingerboard_truth, last_call, minuet_notes, save_viopose_result, steady_mask, synth_pose,
+from pose_fixture import (FAKE_INFERENCE, fingerboard_truth, last_call, minuet_notes, save_viopose_result, steady_mask, synth_pose,
                           write_fake_viopose, write_malicious_npy)
 
 NOTES = minuet_notes()
@@ -155,6 +155,19 @@ class VioPoseRunner(unittest.TestCase):
             run_viopose(self.d / "v.mp4")
         with mock.patch.dict(os.environ, {"VIOPOSE_PYTHON": "/no/such/python"}):
             self.assertRaises(PoseUnavailableError, run_viopose, self.d / "v.mp4", None, self.root)
+
+    def test_a_cancelled_run_is_killed_and_frees_the_lock(self):
+        import threading
+        import time
+        (self.root / "inference.py").write_text("import time\ntime.sleep(60)\n")                 # a run that would take a minute
+        cancel = threading.Event()
+        threading.Timer(1.0, cancel.set).start()
+        started = time.time()
+        with self.assertRaisesRegex(PoseUnavailableError, "cancelled"):
+            run_viopose(self.d / "v.mp4", cancel=cancel)
+        self.assertLess(time.time() - started, 10)
+        (self.root / "inference.py").write_text(FAKE_INFERENCE)                                # the next run is not blocked
+        self.assertEqual(len(run_viopose(self.d / "v.mp4")), len(self.pose))
 
     def test_a_failing_run_reports_its_last_line(self):
         with mock.patch.dict(os.environ, {"FAKE_VIOPOSE_FAIL": "CUDA out of memory"}):

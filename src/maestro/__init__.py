@@ -1,5 +1,9 @@
 # Main entry point for Maestro analysis.
 import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 
 from maestro.alignment.align_audio_score import align_audio_score
@@ -29,7 +33,30 @@ from maestro.vision.pose_io import save_pose
 from maestro.vision.visual_pitch import calibrate_from_audio, estimate_visual_pitch
 
 
-def analyze_visual(perf, pose_file=None, save_dir=None, use_audio=True):
+@contextmanager
+def _timed(perf, stage):
+    """Add the seconds spent in the block to perf.timings[stage]."""
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        perf.timings[stage] = round(perf.timings.get(stage, 0.0) + time.perf_counter() - start, 3)
+
+
+def _generate_pose(perf, pose_file, save_dir, use_audio, cancel=None):
+    """The pose of perf's video (see analyze_visual): from `pose_file`, else VioPose, with the audio as a wav if asked.
+    Runs in a background thread during analyze(). Raises PoseUnavailableError."""
+    start = time.perf_counter()
+    wav = _write_audio(perf, save_dir) if use_audio and perf.audio and not pose_file else None
+    try:
+        return estimate_pose(perf.video, wav, pose_file, cancel)
+    finally:
+        if wav and not save_dir:
+            Path(wav).unlink(missing_ok=True)
+        perf.timings["pose"] = round(time.perf_counter() - start, 3)
+
+
+def analyze_visual(perf, pose_file=None, save_dir=None, use_audio=True, pose_job=None):
     """Visual stage: VioPose pose -> motion features -> bowing, posture and visual pitch.
 
     The pose is generated automatically by the installed VioPose (vision/pose_estimation.py) and used straight away;
@@ -39,17 +66,15 @@ def analyze_visual(perf, pose_file=None, save_dir=None, use_audio=True):
     (when at least 6 are aligned). The motion, bowing and posture metrics themselves are pose geometry and have no audio
     input. Fills perf.pose, perf.motion_features and assessment["visual_status"|"bowing"|"posture"|"visual_pitch"].
     Without VioPose (not installed, or an audio-only upload) the stage is skipped and visual_status says why.
+    `pose_job`: a Future of `_generate_pose` started earlier (analyze() does, so the pose is estimated while the audio is
+    analysed); without it the pose is generated here.
     """
     result = perf.assessment
-    wav = _write_audio(perf, save_dir) if use_audio and perf.audio and not pose_file else None
     try:
-        perf.pose = estimate_pose(perf.video, wav, pose_file)
+        perf.pose = pose_job.result() if pose_job is not None else _generate_pose(perf, pose_file, save_dir, use_audio)
     except PoseUnavailableError as e:
         result["visual_status"] = {"available": False, "reason": str(e)}
         return perf
-    finally:
-        if wav and not save_dir:
-            Path(wav).unlink(missing_ok=True)
     if save_dir and not pose_file:
         save_pose(perf.pose, Path(save_dir) / "pose.json")
     perf.motion_features = motion = extract_motion(perf.pose)
@@ -98,9 +123,12 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     denoise: clean noise from the audio, video and score first (preprocessing/denoise.py).
     pitch_backend selects ``crepe`` (default), ``yin``, ``pyin`` or ``basic_pitch``.
     pitch_options is a dict of backend-specific settings, e.g. ``{"device": "cpu"}``
-    for CREPE. Optional backends are loaded only when selected.
+    for CREPE: "cpu", "cuda:0", "mps", or "onnx" for ONNX Runtime's GPU provider (DirectML = AMD/Intel on Windows). The default
+    "auto" picks the best available (utils/device.py; MAESTRO_DEVICE overrides) and audio_features["pitch_runtime"] says what
+    ran. Optional backends are loaded only when selected.
     The movement analysis needs VioPose (installed by the project setup); it runs automatically and its pose is saved as
-    work/pose.json. pose_file (a saved pose.json) skips VioPose.
+    work/pose.json. pose_file (a saved pose.json) skips VioPose. The pose is estimated in the background while the audio
+    is analysed (and cancelled if the analysis fails); perf.timings has the seconds per stage.
     embeddings: learned per-window descriptions of the audio, video and score (fusion/, perf.embeddings): None (default)
     computes them when trained checkpoints exist in models/fusion/ and torch is installed, True requires them, False skips.
     visual_audio (default True): the visual models use the audio where they can (VioPose's audio model, visual-pitch
@@ -116,47 +144,75 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     work = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="maestro_"))
     work.mkdir(parents=True, exist_ok=True)
     perf = Performance()
-    preprocess_video(perf, video_path, work, denoise)
-    preprocess_audio(perf, denoise=denoise)
-    preprocess_score(perf, score_path, work, denoise)
+    with _timed(perf, "preprocess"):
+        preprocess_video(perf, video_path, work, denoise)
+        preprocess_audio(perf, denoise=denoise)
+        preprocess_score(perf, score_path, work, denoise)
 
+    # The pose (VioPose, minutes of CPU) does not depend on the audio analysis, so it runs in the background while the audio,
+    # score and alignment are analysed, and is cancelled if the analysis fails (e.g. wrong score) so that nothing keeps running.
+    cancel = threading.Event()
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pose")
+    pose_job = pool.submit(_generate_pose, perf, pose_file, work, visual_audio, cancel)
+    try:
+        _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend, pitch_options, neural, embeddings, pose_job)
+    except BaseException:
+        cancel.set()
+        raise
+    finally:
+        pool.shutdown(wait=False)
+    if out_dir:
+        score_to_svg(perf.score, perf.assessment["intonation"], work / "score.svg")
+    return perf
+
+
+def _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend, pitch_options, neural, embeddings, pose_job):
+    """The stages of analyze() that follow preprocessing (split out so the pose job can be cancelled around them)."""
     y, sr = perf.audio["samples"], perf.audio["sr"]
     perf.score_features = extract_symbolic_features(perf.score)
 
     # Estimate once and share the track between transcription and frame features.
-    track = estimate_pitch(y, sr, backend=pitch_backend, **(pitch_options or {}))
-    notes = transcribe(y, sr, pitch_track=track)
-    frames = extract_features(y, sr, pitch_track=track)
+    with _timed(perf, "pitch"):
+        track = estimate_pitch(y, sr, backend=pitch_backend, **(pitch_options or {}))
+    with _timed(perf, "transcribe"):
+        notes = transcribe(y, sr, pitch_track=track)
+    with _timed(perf, "features"):
+        frames = extract_features(y, sr, pitch_track=track)
     perf.audio_features = {
         "frames": frames,
         "notes": notes,
         "pitch_backend": track.backend,
+        "pitch_runtime": track.runtime,
     }
 
-    perf.alignment = align_audio_score(perf.score_features, notes)
-    corr = check_correspondence(perf.score_features, notes, perf.alignment)
+    with _timed(perf, "align"):
+        perf.alignment = align_audio_score(perf.score_features, notes)
+        corr = check_correspondence(perf.score_features, notes, perf.alignment)
     perf.assessment = {
         "correspondence": corr,
         "section": played_section(perf.score_features, perf.alignment),
     }
-    analyze_visual(perf, pose_file, work, visual_audio)                  # pose first: its results are evidence for audio-side causes
-    try:
-        backend = load_backend(neural)
-        if backend:
-            perf.assessment["neural"] = analyze_windows(y, sr, backend)
-    except NeuralUnavailable as e:
-        perf.assessment["neural"] = {"error": str(e)}
-    _embed(perf, embeddings)
-    ctx = Context(perf)
-    a = perf.assessment
-    a["intonation"] = assess_intonation(perf.score_features, notes, perf.alignment, ctx=ctx)
-    a["rhythm"] = assess_rhythm(perf.score_features, notes, perf.alignment, ctx=ctx)
-    a["expression"] = assess_expression(perf.score_features, notes, perf.alignment, ctx=ctx)
-    a["tone"] = assess_tone(perf.score_features, notes, perf.alignment, ctx=ctx)
-    a["synthesis"] = synthesize_assessment(a)
-    if out_dir:
-        score_to_svg(perf.score, perf.assessment["intonation"], work / "score.svg")
-    return perf
+    with _timed(perf, "pose_wait"):                      # how long the analysis had to wait for the pose after the audio was done
+        pose_job.exception()
+    with _timed(perf, "visual"):
+        analyze_visual(perf, pose_file, work, visual_audio, pose_job)    # pose first: its results are evidence for audio-side causes
+    with _timed(perf, "neural"):
+        try:
+            backend = load_backend(neural)
+            if backend:
+                perf.assessment["neural"] = analyze_windows(y, sr, backend)
+        except NeuralUnavailable as e:
+            perf.assessment["neural"] = {"error": str(e)}
+    with _timed(perf, "embeddings"):
+        _embed(perf, embeddings)
+    with _timed(perf, "assess"):
+        ctx = Context(perf)
+        a = perf.assessment
+        a["intonation"] = assess_intonation(perf.score_features, notes, perf.alignment, ctx=ctx)
+        a["rhythm"] = assess_rhythm(perf.score_features, notes, perf.alignment, ctx=ctx)
+        a["expression"] = assess_expression(perf.score_features, notes, perf.alignment, ctx=ctx)
+        a["tone"] = assess_tone(perf.score_features, notes, perf.alignment, ctx=ctx)
+        a["synthesis"] = synthesize_assessment(a)
 
 
 __all__ = ["analyze", "DEFAULT_PITCH_BACKEND"]

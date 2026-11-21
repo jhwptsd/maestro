@@ -52,6 +52,15 @@ if [ "$use_venv" -eq 1 ]; then
 fi
 "$PY" -m pip install -e ".[$extras]"
 
+# GPU hints (nothing is installed automatically: the right PyTorch build depends on the card and driver)
+if command -v nvidia-smi >/dev/null 2>&1; then
+    echo "NVIDIA GPU found: the default PyTorch wheels on Linux include CUDA, so CREPE and the other networks use it."
+elif [ "$(uname)" = "Darwin" ]; then
+    echo "macOS: PyTorch uses the Apple GPU (MPS) automatically."
+elif command -v lspci >/dev/null 2>&1 && lspci | grep -qiE "(vga|3d|display).*(amd|advanced micro|radeon)"; then
+    echo "AMD GPU found: install the ROCm build of PyTorch into this environment to use it, see https://pytorch.org/get-started/locally/ (choose ROCm)."
+fi
+
 if [ "$skip_viopose" -eq 1 ]; then
     echo "Skipping VioPose: the movement analysis stays unavailable until you run: python3 src/scripts/setup_viopose.py"
 elif ! "$PY" src/scripts/setup_viopose.py; then
@@ -70,6 +79,9 @@ Training the models (see README.md): data goes to data/, trained models to model
 EOF
 fi
 
+echo
+echo "Compute devices Maestro will use:"
+"$PY" -c "from maestro.utils.device import describe; print('  ' + describe())"
 if [ "$use_venv" -eq 1 ]; then
     echo
     echo "Done. Activate the environment in every new terminal before using Maestro:  source .venv/bin/activate"

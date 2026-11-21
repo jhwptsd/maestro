@@ -6,3 +6,6 @@ This folder establishes checkpoints for all trained models used in this project.
 
 Other weights are not kept here: VioPose and its weights live in `third_party/` (`src/scripts/setup_viopose.py`), the optional CLAP
 model is cached by `transformers` (the Hugging Face cache) on first use, and torchcrepe ships its own.
+
+## onnx/
+`crepe-tiny.onnx`, `crepe-full.onnx`: torchcrepe's networks exported once for ONNX Runtime (`maestro/audio/backends/crepe_onnx.py`), created on first use.

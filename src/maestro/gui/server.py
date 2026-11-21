@@ -113,6 +113,8 @@ class Handler(BaseHTTPRequestHandler):
                 paths[field].write_bytes(data)
             perf = analyze(paths["video"], paths["score"], folder / "work")
             RUNS[run_id] = {"page": build_page(perf, "media"), "media": media_source(perf)[0]}
+            print(f"analysis {run_id[:8]}: " + ", ".join(f"{k} {v:.1f}s" for k, v in perf.timings.items()) +
+                  f" (pitch on {perf.audio_features.get('pitch_runtime') or 'n/a'})", file=sys.stderr)
             self._json(200, {"url": f"/run/{run_id}/"})
         except (InputError, ToolMissingError) as e:
             self._json(400, {"error": str(e)})

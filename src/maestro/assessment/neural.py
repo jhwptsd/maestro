@@ -34,10 +34,12 @@ class NeuralUnavailable(RuntimeError):
 class ClapBackend:
     """LAION CLAP zero-shot scorer, loaded on first use."""
 
-    def __init__(self, model_name=MODEL, device="cpu"):
+    def __init__(self, model_name=MODEL, device=None):
         try:
             import torch
             from transformers import ClapModel, ClapProcessor
+            from maestro.utils.device import torch_device
+            device = torch_device(device)
             self.torch = torch
             self.model = ClapModel.from_pretrained(model_name).to(device).eval()
             self.processor = ClapProcessor.from_pretrained(model_name)

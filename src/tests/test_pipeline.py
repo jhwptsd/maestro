@@ -1,14 +1,74 @@
 """End to end: synthetic performance (video + MusicXML score) through maestro.analyze."""
 import json
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from helpers import make_video, musicxml, synth, write_wav
 from minuet import minuet_musicxml, play_minuet
 from test_gui import page_data
+import maestro
 from maestro import analyze
-from maestro.utils.errors import InputError, MismatchError
+from maestro.utils.errors import InputError, MismatchError, PoseUnavailableError
+
+
+class Concurrency(unittest.TestCase):
+    """The pose is estimated while the audio is analysed, and cancelled if the analysis fails."""
+    midis = [69, 71, 72, 74, 76, 74, 72, 71]
+
+    def files(self, d, score=None):
+        (d / "s.musicxml").write_text(musicxml(score or self.midis))
+        write_wav(d / "a.wav", synth([(m, 0.3 + 0.5 * i, 0.4) for i, m in enumerate(self.midis)]))
+        make_video(d / "v.mp4", d / "a.wav", 5)
+
+    def test_the_pose_runs_in_the_background_and_the_stages_are_timed(self):
+        events = []
+
+        def fake_pose(video, audio, pose_file=None, cancel=None):
+            events.append(("pose started", threading.current_thread().name))
+            time.sleep(1.0)
+            raise PoseUnavailableError("fake: no pose")
+
+        real_transcribe = maestro.transcribe
+
+        def transcribe(*a, **k):
+            events.append(("transcribe", threading.current_thread().name))
+            return real_transcribe(*a, **k)
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(maestro, "estimate_pose", fake_pose), \
+                mock.patch.object(maestro, "transcribe", transcribe):
+            d = Path(tmp)
+            self.files(d)
+            perf = analyze(d / "v.mp4", d / "s.musicxml", pitch_backend="yin")
+        names = [e[0] for e in events]
+        self.assertEqual(names, ["pose started", "transcribe"])                        # the pose started first, did not block the audio
+        self.assertTrue(events[0][1].startswith("pose"))                                # ... in its own thread
+        self.assertFalse(perf.assessment["visual_status"]["available"])
+        self.assertGreaterEqual(perf.timings["pose"], 1.0)
+        for stage in ("preprocess", "pitch", "transcribe", "features", "align", "pose_wait", "visual", "assess"):
+            self.assertIn(stage, perf.timings)
+
+    def test_a_failed_analysis_cancels_the_pose(self):
+        seen = {}
+
+        def fake_pose(video, audio, pose_file=None, cancel=None):
+            seen["cancelled"] = cancel.wait(20)                                        # blocks like VioPose until told to stop
+            raise PoseUnavailableError("VioPose was cancelled")
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(maestro, "estimate_pose", fake_pose):
+            d = Path(tmp)
+            self.files(d, score=[60, 62, 64, 65, 55, 57, 59, 60])                      # the wrong score
+            started = time.time()
+            with self.assertRaises(MismatchError):
+                analyze(d / "v.mp4", d / "s.musicxml", pitch_backend="yin")
+            self.assertLess(time.time() - started, 15)                                 # the error did not wait for the pose
+            deadline = time.time() + 5
+            while "cancelled" not in seen and time.time() < deadline:
+                time.sleep(0.05)
+        self.assertTrue(seen.get("cancelled"))
 
 
 class Pipeline(unittest.TestCase):

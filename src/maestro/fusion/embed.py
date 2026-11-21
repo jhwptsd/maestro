@@ -9,11 +9,12 @@
 # "score": {"t", "notes", "z", "recon_error"}}, one z (16 numbers) per window on the performance's clock. A modality with
 # no checkpoint or no input (no pose, say) is simply absent. maestro.analyze(embeddings=...) calls this; fusion/fusion.py
 # is where the three streams are to be combined.
-import os
 from pathlib import Path
 
 from maestro.fusion import audio_encoder, score_encoder, video_encoder
 from maestro.fusion.residual_autoencoder import load_checkpoint
+from maestro.utils.device import torch_device
+from maestro.utils.paths import models_root
 
 MODULES = {"audio": audio_encoder, "video": video_encoder, "score": score_encoder}
 BUILDERS = {kind: module.build for kind, module in MODULES.items()}
@@ -21,8 +22,7 @@ BUILDERS = {kind: module.build for kind, module in MODULES.items()}
 
 def models_dir():
     """Folder with the checkpoints: $MAESTRO_MODELS/fusion, else <repo>/models/fusion."""
-    base = os.environ.get("MAESTRO_MODELS") or Path(__file__).resolve().parents[3] / "models"
-    return Path(base) / "fusion"
+    return models_root() / "fusion"
 
 
 def available(directory=None):
@@ -37,8 +37,10 @@ def _inputs(perf):
             "score": bool(perf.score_features) and perf.score is not None and bool(perf.alignment)}
 
 
-def embed_performance(perf, directory=None, device="cpu"):
-    """Run every available encoder on `perf` -> the dict above (also stored in perf.embeddings)."""
+def embed_performance(perf, directory=None, device=None):
+    """Run every available encoder on `perf` -> the dict above (also stored in perf.embeddings). `device` defaults to the best
+    PyTorch accelerator (utils/device.py), else the CPU."""
+    device = torch_device(device)
     directory, have = Path(directory or models_dir()), _inputs(perf)
     out = {}
     for kind in available(directory):
