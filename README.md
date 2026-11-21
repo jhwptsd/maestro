@@ -14,15 +14,22 @@ Contents: [Install](#install) · [Use the app](#use-the-app) · [Train the model
 **One command** installs everything the app needs, including those programs where it can:
 
 ```bash
-.\setup.ps1 [-SkipViopose] [-Training] [-Neural]     # Windows (ffmpeg, Audiveris, git through winget)
-./setup.sh  [--skip-viopose] [--training] [--neural] # Linux / macOS (ffmpeg, git through apt or brew)
+.\setup.ps1 [-SkipViopose] [-Training] [-Neural] [-NoVenv]     # Windows (ffmpeg, Audiveris, git through winget)
+./setup.sh  [--skip-viopose] [--training] [--neural] [--no-venv] # Linux / macOS (ffmpeg, git through apt or brew)
 ```
 
-It installs Maestro with the default CREPE pitch backend and torch (`pip install -e ".[crepe,fusion,dev]"`) and VioPose
+It installs Maestro into its own virtual environment (`.venv` in the folder, or `%LOCALAPPDATA%\maestro\venv` on Windows when the
+folder is inside OneDrive; `-NoVenv` / `--no-venv` skips this), with the default CREPE pitch backend and torch
+(`pip install -e ".[crepe,fusion,dev]"`), and VioPose
 (see [Movement analysis](#movement-analysis-viopose); a large download, skipped with `-SkipViopose`). `-Training`
 adds what training needs (music21, yt-dlp) and `-Neural` adds `transformers` for the optional CLAP judgement. Install the
-CUDA build of PyTorch first if you want GPU acceleration. If VioPose does not finish, everything else still works; re-run
+CUDA build of PyTorch into that environment if you want GPU acceleration. **Activate the environment in every new terminal**
+before using Maestro (the script prints the command: `& ".venv\Scripts\Activate.ps1"` on Windows, `source .venv/bin/activate` elsewhere). If VioPose does not finish, everything else still works; re-run
 `python src/scripts/setup_viopose.py` (safe to re-run, finished steps are skipped).
+
+*Troubleshooting:* `pip ... WinError 2 / 5 ... Scripts\xxx.exe -> xxx.exe.deleteme` means pip tried to replace a package that is
+already in your global Python (typically an older torch) and could not. The virtual environment avoids it; if you install by hand,
+use one too (`python -m venv .venv`), or delete the leftover file it names and any `~orch` folder in `site-packages`.
 
 **By hand**, pick the extras you need (`pyproject.toml` is the source of truth; `requirements.txt` lists the default set):
 
