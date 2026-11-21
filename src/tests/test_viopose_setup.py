@@ -125,6 +125,9 @@ class Installer(unittest.TestCase):
             patcher = mock.patch.object(vs, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(vs, "environment_problem", return_value=None)      # the interpreter is "a working 3.9"
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.log = []
 
     def setup(self, recorder, **kw):
@@ -222,6 +225,97 @@ class Config(unittest.TestCase):
                 (d / "viopose.json").write_text("{corrupt")
                 os.environ.pop("VIOPOSE_DIR")
                 self.assertEqual(vs.load_config()["dir"], str(d / "VioPose"))                        # a damaged file is ignored
+
+
+class EnvironmentChecks(unittest.TestCase):
+    """The VioPose environment must really be a working Python 3.9 with pip: checked, and rebuilt when it is not."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tp = Path(self._tmp.name) / "third_party"
+        self.addCleanup(self._tmp.cleanup)
+        for name, value in (("CONFIG_PATH", self.tp / "viopose.json"), ("DEFAULT_DIR", self.tp / "VioPose")):
+            patcher = mock.patch.object(vs, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.log = []
+
+    def test_what_is_wrong_is_named(self):
+        for info, expected in (({"version": (3, 9), "pip": True}, None), ({"version": (3, 13), "pip": True}, "Python 3.13"),
+                               ({"version": None, "pip": False}, "cannot be run"), ({"version": (3, 9), "pip": False}, "pip")):
+            with mock.patch.object(vs, "inspect_interpreter", return_value=info):
+                problem = vs.environment_problem("py")
+                self.assertTrue(problem is None if expected is None else expected in problem, problem)
+        self.assertEqual(vs.inspect_interpreter(self.tp / "no" / "python"), {"version": None, "pip": False})   # never raises
+        self.assertEqual(vs.inspect_interpreter(sys.executable)["version"], sys.version_info[:2])
+
+    def fake_env(self):
+        env = self.tp / "viopose-env"
+        python = vs.env_python(env)
+        python.parent.mkdir(parents=True)
+        python.write_text("stub")
+        return env
+
+    def test_an_existing_environment_of_the_wrong_python_is_rebuilt(self):
+        env = self.fake_env()
+        (self.tp / ".viopose-requirements").write_text("stale")
+        problems = iter(["it is Python 3.13", None])                    # before the rebuild, after it
+        recorder = Recorder()
+        with mock.patch.object(vs, "environment_problem", side_effect=lambda p: next(problems)), \
+                mock.patch.object(vs, "environment_command", return_value=["makeenv", str(env)]):
+            vs.setup_viopose(self.tp / "VioPose", skip_weights=True, run=recorder, log=self.log.append)
+        self.assertTrue(any("rebuilding" in m and "Python 3.13" in m for m in self.log))
+        self.assertEqual(len(recorder.commands("makeenv")), 1)
+        self.assertFalse(vs.env_python(env).exists())                   # the old environment was removed first
+        self.assertEqual([c for c, _ in recorder.calls if c[:2] == ["git", "clone"]] != [], True)
+        self.assertNotEqual((self.tp / ".viopose-requirements").read_text(), "stale")   # reinstalled into the new one
+
+    def test_a_good_environment_is_kept(self):
+        env = self.fake_env()
+        recorder = Recorder()
+        with mock.patch.object(vs, "environment_problem", return_value=None):
+            vs.setup_viopose(self.tp / "VioPose", skip_weights=True, run=recorder, log=self.log.append)
+        self.assertTrue(any("already created" in m for m in self.log))
+        self.assertEqual(recorder.commands("makeenv") + recorder.commands("venv"), [])
+        self.assertTrue(vs.env_python(env).exists())
+
+    def test_if_the_first_way_gives_a_wrong_python_uv_fetches_3_9(self):
+        env = self.tp / "viopose-env"
+        problems = iter(["it is Python 3.13", None])                    # after conda/venv, after uv
+        recorder = Recorder()
+        with mock.patch.object(vs, "environment_problem", side_effect=lambda p: next(problems)), \
+                mock.patch.object(vs, "environment_command", return_value=["makeenv", str(env)]):
+            vs.create_environment(env, lambda c, cwd=None: recorder(c, cwd), self.log.append)
+        sequence = [c[:3] for c, _ in recorder.calls]
+        self.assertEqual(sequence[0][0], "makeenv")
+        self.assertIn(["-m", "pip", "install"], [c[1:4] for c, _ in recorder.calls])          # uv was installed ...
+        self.assertTrue(any(c[1:3] == ["-m", "uv"] and "3.9" in c for c, _ in recorder.calls))  # ... and asked for 3.9
+
+    def test_nothing_working_is_a_clear_error_not_a_later_import_failure(self):
+        class Failing(Recorder):
+            def __call__(self, cmd, cwd=None):
+                super().__call__(cmd, cwd)
+                if "makeenv" in cmd or "uv" in cmd and "venv" in cmd:
+                    raise subprocess.CalledProcessError(101, cmd)
+
+        recorder = Failing()
+        with mock.patch.object(vs, "environment_command", return_value=["makeenv", "x"]):
+            with self.assertRaisesRegex(vs.SetupError, "working Python 3.9 environment"):
+                vs.create_environment(self.tp / "viopose-env", lambda c, cwd=None: recorder(c, cwd), self.log.append)
+
+    def test_an_unusable_python_argument_is_refused(self):
+        with mock.patch.object(vs, "environment_problem", return_value="it is Python 3.13"):
+            with self.assertRaisesRegex(vs.SetupError, "must be a working Python 3.9"):
+                vs.setup_viopose(self.tp / "VioPose", python="/opt/py313", skip_weights=True, run=Recorder(), log=self.log.append)
+
+    def test_a_failing_repair_reports_the_import_failure_not_the_pip_error(self):
+        env = self.fake_env()
+        with mock.patch.object(vs, "environment_problem", return_value=None), \
+                mock.patch.object(vs, "check_imports", side_effect=vs.SetupError("importing keras fails")), \
+                mock.patch.object(vs, "repair_tensorflow", side_effect=subprocess.CalledProcessError(101, ["pip"])):
+            with self.assertRaisesRegex(vs.SetupError, "importing keras fails"):
+                vs.setup_viopose(self.tp / "VioPose", skip_weights=True, run=Recorder(), log=self.log.append)
+        self.assertTrue(env.exists())
 
 
 if __name__ == "__main__":

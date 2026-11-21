@@ -106,7 +106,7 @@ Bow movement, arm angles, posture and the pitch implied by the left hand's posit
 [VioPose](https://github.com/SeongJong-Yoo/VioPose) (MIT) estimates from the video, automatically, for every analysis that has
 a video; the pose is saved as `pose.json`. VioPose pins TensorFlow 2.13 (Python 3.9), so the setup installs it separately: cloned
 into `third_party/` with its own Python 3.9 environment (conda, uv, or a `python3.9` venv; uv is installed if none is found),
-only the packages `inference.py` really imports (pip resolves the rest for your platform), gdown, and its weights (Google
+the interpreter is verified to be a working Python 3.9 with pip (a wrong or broken existing environment is rebuilt; if conda, uv and `py -3.9` fail, uv fetches Python 3.9 itself), only the packages `inference.py` really imports (pip resolves the rest for your platform), gdown, and its weights (Google
 Drive). `python src/scripts/setup_viopose.py` does just that step and takes `--dry-run`, `--skip-weights`, `--python PATH` (an
 existing environment) and `--dir`. The result is recorded in `third_party/viopose.json`; `VIOPOSE_DIR` and `VIOPOSE_PYTHON`
 override it, `VIOPOSE_AUDIO=0` runs VioPose without the recording's audio (by default its audio model is used, falling back to

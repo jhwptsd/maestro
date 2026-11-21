@@ -2,11 +2,13 @@
 
 Usage: python src/scripts/setup_viopose.py [--dir DIR] [--python PATH] [--skip-weights] [--dry-run]
 
-Clones VioPose into third_party/, creates its own Python 3.9 environment (conda, uv or python3.9), installs its
+Clones VioPose into third_party/, creates its own Python 3.9 environment (conda, uv or python3.9; the interpreter is checked, and a wrong or broken
+existing environment is rebuilt), installs its
 requirements, downloads the weights and records where everything is (third_party/viopose.json). Safe to re-run: finished
 steps are skipped. setup.ps1 / setup.sh call this; see maestro/vision/viopose_setup.py for the details.
 """
 import argparse
+import subprocess
 import sys
 
 from maestro.vision.viopose_setup import SetupError, setup_viopose
@@ -22,4 +24,6 @@ if __name__ == "__main__":
         config = setup_viopose(args.dir, args.python, args.skip_weights, args.dry_run)
     except SetupError as e:
         sys.exit(f"VioPose setup: {e}")
+    except subprocess.CalledProcessError as e:
+        sys.exit(f"VioPose setup: `{' '.join(str(c) for c in e.cmd[:4])} ...` failed with exit code {e.returncode} (see its output above)")
     print(f"VioPose ready: {config['dir']}" if not args.dry_run else "dry run complete")

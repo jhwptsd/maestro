@@ -6,6 +6,9 @@
 #   2. a Python 3.9 environment for it (it pins TensorFlow 2.13, mediapipe, OpenCV: they cannot share Maestro's
 #      environment) via conda, else uv, else a python3.9 venv; if none of those exists, `pip install uv` (uv fetches
 #      Python 3.9 itself)                                     -> third_party/viopose-env
+#      The interpreter is then CHECKED (it must run, be Python 3.9 and have pip); an existing environment that fails the check
+#      (left over from another Python, or broken) is deleted and rebuilt, and if the first way gives something unusable uv
+#      is tried, so a wrong Python is reported here and not later as a wall of failed imports.
 #   3. pip install what inference.py really imports, at the versions VioPose's requirements.txt pins (several GB;
 #      skipped if already installed). requirements.txt is an exported environment of ~140 pins, many Linux/CUDA-only
 #      (tensorrt, triton, jaxlib 0.4.13, wurlitzer ...), so only the pins of the imported packages plus the few that
@@ -86,6 +89,64 @@ def environment_command(env_dir, which=shutil.which, run=subprocess.run):
             return cmd + ["-m", "venv", str(env_dir)]
     raise SetupError(f"VioPose needs Python {PYTHON_VERSION}. Install Miniconda (conda), uv, or Python {PYTHON_VERSION}, "
                      "then re-run the setup.")
+
+
+def inspect_interpreter(interpreter, timeout=120):
+    """What an interpreter is: {"version": (major, minor) or None if it cannot be run, "pip": whether `-m pip` works}."""
+    try:
+        probe = subprocess.run([str(interpreter), "-c", "import sys; print(sys.version_info[0], sys.version_info[1])"],
+                               capture_output=True, text=True, timeout=timeout)
+        if probe.returncode != 0:
+            return {"version": None, "pip": False}
+        pip = subprocess.run([str(interpreter), "-m", "pip", "--version"], capture_output=True, timeout=timeout)
+        return {"version": tuple(int(x) for x in probe.stdout.split()), "pip": pip.returncode == 0}
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {"version": None, "pip": False}
+
+
+def environment_problem(interpreter):
+    """None if `interpreter` is a working Python PYTHON_VERSION with pip; else what is wrong, in words."""
+    info = inspect_interpreter(interpreter)
+    if info["version"] is None:
+        return "its interpreter cannot be run"
+    if "%d.%d" % info["version"] != PYTHON_VERSION:
+        return "it is Python %d.%d" % info["version"]
+    return None if info["pip"] else "pip does not work in it"
+
+
+def create_environment(env_dir, execute, log, verify=True):
+    """Create the Python PYTHON_VERSION environment at env_dir: the first way that is available (conda, uv, python3.9, `py
+    -3.9`), then, if that fails or gives something that is not a working Python 3.9 (checked), uv installed with pip, which
+    fetches Python 3.9 itself. Raises SetupError if nothing works. With verify=False (a dry run) only the first way is shown."""
+    attempts = []
+    try:
+        attempts.append(environment_command(env_dir))
+    except SetupError:
+        pass
+    attempts.append(None)                                       # last resort: uv, fetching Python itself
+    problem = "no way to create it worked"
+    for command in attempts:
+        if command is None:
+            if attempts[:-1]:
+                log(f"  that did not give a working Python {PYTHON_VERSION}; installing uv, which can fetch it itself")
+            else:
+                log(f"  no conda, uv or Python {PYTHON_VERSION} found: installing uv, which can fetch Python {PYTHON_VERSION} itself")
+            execute([sys.executable, "-m", "pip", "install", "uv"])
+            command = [sys.executable, "-m", "uv", "venv", "--seed", "--python", PYTHON_VERSION, str(env_dir)]
+        try:
+            execute(command)
+        except subprocess.CalledProcessError as e:
+            problem = f"`{' '.join(str(c) for c in command[:3])} ...` failed (exit {e.returncode})"
+        else:
+            if not verify:
+                return
+            problem = environment_problem(env_python(env_dir))
+            if problem is None:
+                return
+        log(f"  the environment is not usable: {problem}")
+        shutil.rmtree(env_dir, ignore_errors=True)
+    raise SetupError(f"Could not create a working Python {PYTHON_VERSION} environment at {env_dir} ({problem}). Install Miniconda, "
+                     f"or Python {PYTHON_VERSION} from python.org, and re-run the setup.")
 
 
 def core_requirements(text, imports):
@@ -240,18 +301,22 @@ def setup_viopose(directory=None, python=None, skip_weights=False, dry_run=False
     if python:
         interpreter = Path(python)
         log(f"  using {interpreter}")
+        problem = None if dry_run else environment_problem(interpreter)
+        if problem:
+            raise SetupError(f"--python {interpreter} cannot be used for VioPose: {problem}. It must be a working Python "
+                             f"{PYTHON_VERSION} with pip.")
     else:
         interpreter = env_python(env_dir)
-        if interpreter.is_file():
+        exists = interpreter.is_file()
+        problem = environment_problem(interpreter) if exists and not dry_run else None
+        if exists and problem is None:
             log(f"  already created: {env_dir}")
         else:
-            try:
-                command = environment_command(env_dir)
-            except SetupError:
-                log(f"  no conda, uv or Python {PYTHON_VERSION} found: installing uv, which can fetch Python {PYTHON_VERSION} itself")
-                execute([sys.executable, "-m", "pip", "install", "uv"])
-                command = [sys.executable, "-m", "uv", "venv", "--seed", "--python", PYTHON_VERSION, str(env_dir)]
-            execute(command)
+            if exists:                                          # left over from an earlier run on another Python, or broken
+                log(f"  the existing environment {env_dir} is not usable ({problem}); rebuilding it")
+                shutil.rmtree(env_dir, ignore_errors=True)
+                marker("requirements").unlink(missing_ok=True)   # nothing is installed in the new one
+            create_environment(env_dir, execute, log, verify=not dry_run)
 
     log("[3/5] VioPose requirements (TensorFlow, mediapipe, OpenCV: several GB)")
     original = directory / "requirements.txt"
@@ -269,9 +334,13 @@ def setup_viopose(directory=None, python=None, skip_weights=False, dry_run=False
         if not dry_run:
             try:
                 check_imports(interpreter, modules, failed, execute)
-            except SetupError:
-                if not repair_tensorflow(interpreter, wanted, execute, log):
-                    raise
+            except SetupError as broken:
+                try:
+                    repaired = repair_tensorflow(interpreter, wanted, execute, log)
+                except subprocess.CalledProcessError:           # the repair itself failed: the first error is the useful one
+                    repaired = False
+                if not repaired:
+                    raise broken
                 check_imports(interpreter, modules, failed, execute)
             marker("requirements").write_text(digest)
 
