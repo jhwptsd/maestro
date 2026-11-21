@@ -15,6 +15,7 @@ import numpy as np
 
 from maestro.preprocessing.denoise import denoise_audio
 from maestro.utils.errors import InputError
+from maestro.utils.ffmpeg import tool
 
 DEFAULT_SR = 22050  # sample rate used throughout the audio pipeline
 
@@ -24,7 +25,7 @@ def extract_audio(video_path, sr=DEFAULT_SR):
     with tempfile.TemporaryDirectory() as tmp:
         wav = Path(tmp) / "audio.wav"
         # -vn: drop video; -ac 1: mono; -ar: resample; pcm_s16le: plain 16-bit WAV
-        cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(video_path),
+        cmd = [tool("ffmpeg"), "-y", "-loglevel", "error", "-i", str(video_path),
                "-vn", "-ac", "1", "-ar", str(sr), "-c:a", "pcm_s16le", str(wav)]
         if subprocess.run(cmd, capture_output=True).returncode != 0:
             raise InputError(f"Could not extract audio from {Path(video_path).name}.")

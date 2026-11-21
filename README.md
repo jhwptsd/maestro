@@ -27,7 +27,10 @@ CUDA build of PyTorch into that environment if you want GPU acceleration. **Acti
 before using Maestro (the script prints the command: `& ".venv\Scripts\Activate.ps1"` on Windows, `source .venv/bin/activate` elsewhere). If VioPose does not finish, everything else still works; re-run
 `python src/scripts/setup_viopose.py` (safe to re-run, finished steps are skipped).
 
-*Troubleshooting:* `pip ... WinError 2 / 5 ... Scripts\xxx.exe -> xxx.exe.deleteme` means pip tried to replace a package that is
+*Troubleshooting:* `The system cannot find the file specified` from `ffprobe`/`ffmpeg` (or a message "ffprobe was not found") means ffmpeg is installed but
+not on the PATH of the terminal Maestro runs in: winget only updates the PATH of *new* terminals, so open a new terminal (and reload VS
+Code). Maestro also looks in the usual install places and in the PATH as stored in the Windows registry, so a restart of the
+server is usually enough. `pip ... WinError 2 / 5 ... Scripts\xxx.exe -> xxx.exe.deleteme` means pip tried to replace a package that is
 already in your global Python (typically an older torch) and could not. The virtual environment avoids it; if you install by hand,
 use one too (`python -m venv .venv`), or delete the leftover file it names and any `~orch` folder in `site-packages`.
 

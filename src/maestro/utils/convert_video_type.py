@@ -12,6 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from maestro.utils.errors import InputError
+from maestro.utils.ffmpeg import tool
 
 
 def probe(path):
@@ -21,7 +22,7 @@ def probe(path):
     """
     if not Path(path).is_file():
         raise InputError(f"File not found: {path}")
-    r = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", "-show_format",
+    r = subprocess.run([tool("ffprobe"), "-v", "error", "-print_format", "json", "-show_streams", "-show_format",
                         str(path)], capture_output=True, text=True)
     if r.returncode != 0:
         raise InputError(f"Cannot read {Path(path).name} as audio or video.")
@@ -39,7 +40,7 @@ def probe(path):
 
 @lru_cache(maxsize=1)
 def _video_encoder():
-    out = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
+    out = subprocess.run([tool("ffmpeg"), "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
     return "libx264" if " libx264 " in out else "mpeg4"
 
 
@@ -56,7 +57,7 @@ def to_common_video(path, out_dir=None, fps=30, max_height=720, filters=()):
     out = out_dir / f"{path.stem}_common.mp4"
     # -2 keeps the aspect ratio with an even width; min() never upscales small videos
     vf = ",".join([f"fps={fps}", f"scale=-2:'min({max_height},ih)'", *filters, "format=yuv420p"])
-    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(path), "-vf", vf,
+    cmd = [tool("ffmpeg"), "-y", "-loglevel", "error", "-i", str(path), "-vf", vf,
            "-c:v", _video_encoder(), "-c:a", "aac", "-movflags", "+faststart", str(out)]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:

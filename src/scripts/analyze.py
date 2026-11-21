@@ -6,7 +6,7 @@ from pathlib import Path
 from maestro import analyze
 from maestro.audio.pitch import DEFAULT_PITCH_BACKEND, list_pitch_backends
 from maestro.gui.report import build_page, copy_media
-from maestro.utils.errors import InputError, OMRUnavailableError
+from maestro.utils.errors import InputError, ToolMissingError
 
 
 def main():
@@ -41,7 +41,7 @@ def main():
             pitch_options=pitch_options,
             neural=args.neural,
         )
-    except (InputError, OMRUnavailableError, ImportError, ValueError) as exc:
+    except (InputError, ToolMissingError, ImportError, ValueError) as exc:
         parser.exit(2, f"error: {exc}\n")
 
     (out / "report.html").write_text(build_page(perf, copy_media(perf, out)), encoding="utf-8")

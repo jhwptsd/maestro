@@ -305,6 +305,13 @@ class Server(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("does not appear to match", data["error"])
 
+    def test_a_missing_ffmpeg_is_a_readable_error_not_a_crash(self):
+        from maestro.utils.errors import ToolMissingError
+        with mock.patch("maestro.gui.server.analyze", side_effect=ToolMissingError("ffprobe was not found. install it")):
+            status, data = self.upload(MIDIS)
+        self.assertEqual(status, 400)
+        self.assertIn("ffprobe was not found", data["error"])
+
     def test_missing_file_and_unknown_route(self):
         status, data = self.post({"score": ("s.musicxml", musicxml([69]).encode())})
         self.assertEqual(status, 400)

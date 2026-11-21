@@ -23,7 +23,7 @@ from pathlib import Path
 
 from maestro import analyze
 from maestro.gui.report import build_page, media_source
-from maestro.utils.errors import InputError, OMRUnavailableError
+from maestro.utils.errors import InputError, ToolMissingError
 
 MAX_UPLOAD = 1 << 30  # 1 GiB
 FIELDS = ("video", "score")                   # the upload form's file inputs; anything else a client sends is ignored
@@ -114,7 +114,7 @@ class Handler(BaseHTTPRequestHandler):
             perf = analyze(paths["video"], paths["score"], folder / "work")
             RUNS[run_id] = {"page": build_page(perf, "media"), "media": media_source(perf)[0]}
             self._json(200, {"url": f"/run/{run_id}/"})
-        except (InputError, OMRUnavailableError) as e:
+        except (InputError, ToolMissingError) as e:
             self._json(400, {"error": str(e)})
         except Exception as e:  # unexpected: log for the developer, short message for the user
             traceback.print_exc()
