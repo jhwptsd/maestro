@@ -71,9 +71,11 @@ def write_config(directory, python):
 
 
 def env_python(env_dir):
-    """The interpreter inside a virtual/conda environment directory."""
+    """The interpreter inside a virtual/conda environment directory: venvs keep it in Scripts/ (Windows) or bin/, conda
+    environments on Windows keep it at the top; whichever exists (else the venv location)."""
     env_dir = Path(env_dir)
-    return env_dir / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    candidates = [env_dir / "Scripts" / "python.exe", env_dir / "python.exe"] if sys.platform == "win32" else [env_dir / "bin" / "python"]
+    return next((c for c in candidates if c.is_file()), candidates[0])
 
 
 def environment_command(env_dir, which=shutil.which, run=subprocess.run):
@@ -92,51 +94,79 @@ def environment_command(env_dir, which=shutil.which, run=subprocess.run):
 
 
 def inspect_interpreter(interpreter, timeout=120):
-    """What an interpreter is: {"version": (major, minor) or None if it cannot be run, "pip": whether `-m pip` works}."""
+    """What an interpreter is: {"version": (major, minor) or None if it cannot be run, "pip": whether `-m pip` works,
+    "error": what went wrong running it (first line), or ""}."""
     try:
         probe = subprocess.run([str(interpreter), "-c", "import sys; print(sys.version_info[0], sys.version_info[1])"],
                                capture_output=True, text=True, timeout=timeout)
         if probe.returncode != 0:
-            return {"version": None, "pip": False}
+            lines = (probe.stderr or probe.stdout).strip().splitlines()
+            return {"version": None, "pip": False, "error": f"exit {probe.returncode}" + (f": {lines[-1]}" if lines else "")}
         pip = subprocess.run([str(interpreter), "-m", "pip", "--version"], capture_output=True, timeout=timeout)
-        return {"version": tuple(int(x) for x in probe.stdout.split()), "pip": pip.returncode == 0}
-    except (OSError, subprocess.TimeoutExpired, ValueError):
-        return {"version": None, "pip": False}
+        return {"version": tuple(int(x) for x in probe.stdout.split()), "pip": pip.returncode == 0, "error": ""}
+    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+        return {"version": None, "pip": False, "error": f"{type(e).__name__}: {e}"}
 
 
 def environment_problem(interpreter):
     """None if `interpreter` is a working Python PYTHON_VERSION with pip; else what is wrong, in words."""
     info = inspect_interpreter(interpreter)
     if info["version"] is None:
-        return "its interpreter cannot be run"
+        return f"its interpreter {interpreter} cannot be run ({info.get('error') or 'unknown error'})"
     if "%d.%d" % info["version"] != PYTHON_VERSION:
         return "it is Python %d.%d" % info["version"]
     return None if info["pip"] else "pip does not work in it"
 
 
+def find_uv_python(version=PYTHON_VERSION):
+    """Path of the uv-managed Python `version` (after `uv python install`), or None."""
+    try:
+        out = subprocess.run([sys.executable, "-m", "uv", "python", "find", version], capture_output=True, text=True, timeout=120)
+        path = out.stdout.strip().splitlines()[-1] if out.returncode == 0 and out.stdout.strip() else ""
+        return path if path and Path(path).is_file() else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def create_environment(env_dir, execute, log, verify=True):
     """Create the Python PYTHON_VERSION environment at env_dir: the first way that is available (conda, uv, python3.9, `py
-    -3.9`), then, if that fails or gives something that is not a working Python 3.9 (checked), uv installed with pip, which
-    fetches Python 3.9 itself. Raises SetupError if nothing works. With verify=False (a dry run) only the first way is shown."""
-    attempts = []
+    -3.9`), then, if that fails or gives something that is not a working Python 3.9 (checked), uv installed with pip: first
+    uv's own Python 3.9 with the standard `venv` module (no launcher shim), then `uv venv`. Raises SetupError if nothing
+    works. With verify=False (a dry run) only the first way is shown."""
+    first = None
     try:
-        attempts.append(environment_command(env_dir))
+        first = environment_command(env_dir)
     except SetupError:
         pass
-    attempts.append(None)                                       # last resort: uv, fetching Python itself
-    problem = "no way to create it worked"
-    for command in attempts:
-        if command is None:
-            if attempts[:-1]:
-                log(f"  that did not give a working Python {PYTHON_VERSION}; installing uv, which can fetch it itself")
-            else:
-                log(f"  no conda, uv or Python {PYTHON_VERSION} found: installing uv, which can fetch Python {PYTHON_VERSION} itself")
+    uv_ready = []
+
+    def need_uv():                                              # pip install uv, once, only if a uv attempt is reached
+        if not uv_ready:
+            log(f"  installing uv, which can fetch Python {PYTHON_VERSION} itself")
             execute([sys.executable, "-m", "pip", "install", "uv"])
-            command = [sys.executable, "-m", "uv", "venv", "--seed", "--python", PYTHON_VERSION, str(env_dir)]
+            uv_ready.append(True)
+
+    def uv_managed():
+        need_uv()
+        execute([sys.executable, "-m", "uv", "python", "install", PYTHON_VERSION])
+        found = find_uv_python() if verify else "<uv python>"
+        return [found, "-m", "venv", str(env_dir)] if found else None
+
+    def uv_venv():
+        need_uv()
+        return [sys.executable, "-m", "uv", "venv", "--seed", "--python", PYTHON_VERSION, str(env_dir)]
+
+    attempts = ([lambda: first] if first else []) + [uv_managed, uv_venv]
+    problem = "no way to create it worked"
+    for attempt in attempts:
         try:
+            command = attempt()
+            if command is None:
+                problem = "uv could not provide Python " + PYTHON_VERSION
+                continue
             execute(command)
         except subprocess.CalledProcessError as e:
-            problem = f"`{' '.join(str(c) for c in command[:3])} ...` failed (exit {e.returncode})"
+            problem = f"`{' '.join(str(c) for c in e.cmd[:4])} ...` failed (exit {e.returncode})"
         else:
             if not verify:
                 return
@@ -317,6 +347,7 @@ def setup_viopose(directory=None, python=None, skip_weights=False, dry_run=False
                 shutil.rmtree(env_dir, ignore_errors=True)
                 marker("requirements").unlink(missing_ok=True)   # nothing is installed in the new one
             create_environment(env_dir, execute, log, verify=not dry_run)
+            interpreter = env_python(env_dir)                   # where it ended up (conda keeps python.exe at the top)
 
     log("[3/5] VioPose requirements (TensorFlow, mediapipe, OpenCV: several GB)")
     original = directory / "requirements.txt"

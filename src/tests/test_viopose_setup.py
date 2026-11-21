@@ -204,7 +204,8 @@ class Installer(unittest.TestCase):
                 mock.patch.object(vs, "THIRD_PARTY", self.tp):
             vs.setup_viopose(self.tp / "Other", run=recorder, log=self.log.append, skip_weights=True)
         self.assertEqual(recorder.commands("uv")[0][:4], [sys.executable, "-m", "pip", "install"])           # pip install uv
-        self.assertIn("venv", recorder.calls[2][0])                                                          # then uv makes the venv
+        self.assertEqual(recorder.calls[2][0][1:6], ["-m", "uv", "python", "install", "3.9"])                # uv fetches Python 3.9 ...
+        self.assertTrue(any(c[1:4] == ["-m", "uv", "venv"] for c, _ in recorder.calls))                      # ... (here: uv venv, as no uv exists)
 
 
 class Config(unittest.TestCase):
@@ -246,7 +247,9 @@ class EnvironmentChecks(unittest.TestCase):
             with mock.patch.object(vs, "inspect_interpreter", return_value=info):
                 problem = vs.environment_problem("py")
                 self.assertTrue(problem is None if expected is None else expected in problem, problem)
-        self.assertEqual(vs.inspect_interpreter(self.tp / "no" / "python"), {"version": None, "pip": False})   # never raises
+        missing = vs.inspect_interpreter(self.tp / "no" / "python")                       # never raises
+        self.assertEqual((missing["version"], missing["pip"]), (None, False))
+        self.assertIn("FileNotFoundError", missing["error"])
         self.assertEqual(vs.inspect_interpreter(sys.executable)["version"], sys.version_info[:2])
 
     def fake_env(self):
@@ -290,6 +293,32 @@ class EnvironmentChecks(unittest.TestCase):
         self.assertEqual(sequence[0][0], "makeenv")
         self.assertIn(["-m", "pip", "install"], [c[1:4] for c, _ in recorder.calls])          # uv was installed ...
         self.assertTrue(any(c[1:3] == ["-m", "uv"] and "3.9" in c for c, _ in recorder.calls))  # ... and asked for 3.9
+
+    def test_a_conda_style_environment_is_found_and_failures_explain_themselves(self):
+        env = self.tp / "conda-env"
+        env.mkdir(parents=True)
+        with mock.patch.object(sys, "platform", "win32"):
+            self.assertEqual(vs.env_python(env), env / "Scripts" / "python.exe")          # nothing there yet: the venv place
+            (env / "python.exe").write_text("stub")
+            self.assertEqual(vs.env_python(env), env / "python.exe")                      # conda keeps it at the top
+            (env / "Scripts").mkdir()
+            (env / "Scripts" / "python.exe").write_text("stub")
+            self.assertEqual(vs.env_python(env), env / "Scripts" / "python.exe")
+        problem = vs.environment_problem(self.tp / "missing" / "python")
+        self.assertIn("cannot be run", problem)
+        self.assertIn("missing", problem)                                                  # the path and the OS error are in it
+
+    def test_uv_s_own_python_with_the_standard_venv_is_tried_before_uv_venv(self):
+        env = self.tp / "viopose-env"
+        problems = iter(["it is Python 3.13", None])                                       # first way is wrong; uv-managed works
+        recorder = Recorder()
+        with mock.patch.object(vs, "environment_problem", side_effect=lambda p: next(problems)), \
+                mock.patch.object(vs, "environment_command", return_value=["makeenv", str(env)]), \
+                mock.patch.object(vs, "find_uv_python", return_value="/uv/python3.9"):
+            vs.create_environment(env, lambda c, cwd=None: recorder(c, cwd), self.log.append)
+        commands = [c for c, _ in recorder.calls]
+        self.assertIn(["/uv/python3.9", "-m", "venv", str(env)], commands)
+        self.assertFalse([c for c in commands if c[1:4] == ["-m", "uv", "venv"]])           # the shim-based `uv venv` was not needed
 
     def test_nothing_working_is_a_clear_error_not_a_later_import_failure(self):
         class Failing(Recorder):
