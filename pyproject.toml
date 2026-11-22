@@ -18,8 +18,6 @@ crepe = ["torch>=2.0", "torchcrepe>=0.0.23", "librosa>=0.10.2", "onnx", "onnxrun
 directml = ["onnxruntime-directml"]           # Windows: runs the CREPE network on any DirectX 12 GPU (AMD, Intel, NVIDIA); REPLACES onnxruntime (pip uninstall onnxruntime first; setup.ps1 does)
 pyin = ["librosa>=0.10.2"]
 basic-pitch = ["basic-pitch>=0.3.0"]
-fusion = ["torch>=2.0"]                       # run the trained fusion encoders (models/fusion/)
-training = ["torch>=2.0", "music21>=9", "yt-dlp"]   # train them: music21 = bundled scores, yt-dlp = the youtube-cc video dataset
 neural = ["torch>=2.0", "transformers>=4.40"]   # the optional CLAP tone/expression judgement (analyze(neural="clap"))
 audio = ["torch>=2.0", "torchcrepe>=0.0.23", "librosa>=0.10.2", "basic-pitch>=0.3.0"]   # all four pitch backends
 

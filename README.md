@@ -14,15 +14,15 @@ Contents: [Install](#install) · [Use the app](#use-the-app) · [Train the model
 **One command** installs everything the app needs, including those programs where it can:
 
 ```bash
-.\setup.ps1 [-SkipViopose] [-Training] [-Neural] [-NoVenv] [-NoGpu]     # Windows (ffmpeg, Audiveris, git through winget)
-./setup.sh  [--skip-viopose] [--training] [--neural] [--no-venv] # Linux / macOS (ffmpeg, git through apt or brew)
+.\setup.ps1 [-SkipViopose] [-Neural] [-NoVenv] [-NoGpu]     # Windows (ffmpeg, Audiveris, git through winget)
+./setup.sh  [--skip-viopose] [--neural] [--no-venv] # Linux / macOS (ffmpeg, git through apt or brew)
 ```
 
 It installs Maestro into its own virtual environment (`.venv` in the folder, or `%LOCALAPPDATA%\maestro\venv` on Windows when the
 folder is inside OneDrive; `-NoVenv` / `--no-venv` skips this), with the default CREPE pitch backend and torch
-(`pip install -e ".[crepe,fusion,dev]"`), and VioPose
-(see [Movement analysis](#movement-analysis-viopose); a large download, skipped with `-SkipViopose`). `-Training`
-adds what training needs (music21, yt-dlp) and `-Neural` adds `transformers` for the optional CLAP judgement. Install the
+(`pip install -e ".[crepe,dev]"`), and VioPose
+(see [Movement analysis](#movement-analysis-viopose); a large download, skipped with `-SkipViopose`). `-Neural`
+adds `transformers` for the optional CLAP judgement. Install the
 CUDA build of PyTorch into that environment if you want GPU acceleration. **Activate the environment in every new terminal**
 before using Maestro (the script prints the command: `& ".venv\Scripts\Activate.ps1"` on Windows, `source .venv/bin/activate` elsewhere). If VioPose does not finish, everything else still works; re-run
 `python src/scripts/setup_viopose.py` (safe to re-run, finished steps are skipped).
@@ -42,20 +42,17 @@ use one too (`python -m venv .venv`), or delete the leftover file it names and a
 | `crepe` | torch, torchcrepe, librosa, onnx, onnxruntime | the default pitch backend (ONNX Runtime runs its network about twice as fast as PyTorch on the CPU) |
 | `directml` | onnxruntime-directml | Windows: runs that network on any DirectX 12 GPU (AMD, Intel, NVIDIA). Replaces `onnxruntime` (`pip uninstall onnxruntime` first; `setup.ps1` does this for you when it finds a GPU) |
 | `pyin`, `basic-pitch`, `audio` | librosa / basic-pitch / all four backends | the other pitch backends |
-| `fusion` | torch | running the trained fusion encoders (`perf.embeddings`) |
-| `training` | torch, music21, yt-dlp | training the models and installing their datasets |
 | `neural` | torch, transformers | the optional CLAP tone/expression judgement |
 | `dev` | pytest | running the tests |
 
 ```bash
-pip install -e ".[crepe,fusion,dev]"          # what the setup scripts install
-pip install -e ".[audio,training,neural,dev]" # everything except VioPose (which has its own environment)
+pip install -e ".[crepe,dev]"                 # what the setup scripts install
+pip install -e ".[audio,neural,dev]"          # everything except VioPose (which has its own environment)
 ```
 
 ## Use the app
 
-Normal use needs no training: the rule-based analysis works as soon as the package is installed. Trained fusion encoders
-and the CLAP judgement are optional extras on top.
+The rule-based analysis works as soon as the package is installed; the CLAP judgement is an optional extra on top.
 
 **Web GUI**: `python src/scripts/serve.py [PORT]` (or `maestro-gui`), open http://127.0.0.1:8000, upload a recording (video or
 audio) and the score. The report is a player: the recording plays with a skeleton of the estimated pose beside it (front and
@@ -75,14 +72,12 @@ intermediate files (`pose.json`, converted video, ...).
 from maestro import analyze
 perf = analyze("performance.mp4", "score.musicxml", out_dir="out/")
 perf.assessment["synthesis"]      # every event, ranked causes, per-bar summary, scores (plain JSON)
-perf.embeddings                   # learned per-window descriptions, if trained models exist (see Train the models)
 ```
 
 `analyze(video_path, score_path, out_dir=None, denoise=True, pitch_backend="crepe", pitch_options=None, pose_file=None,
-neural=None, visual_audio=True, embeddings=None)`:
+neural=None, visual_audio=True)`:
 `denoise` cleans audio, video and score first (vibrato and bow noise are kept); `pose_file` (a saved `pose.json`) skips VioPose;
-`neural="clap"` adds the CLAP judgement; `visual_audio=False` keeps the visual models audio-free; `embeddings` is `None`
-(use trained encoders if they exist), `True` (require them) or `False`. Errors for unusable input are
+`neural="clap"` adds the CLAP judgement; `visual_audio=False` keeps the visual models audio-free. Errors for unusable input are
 `maestro.utils.errors.InputError`; a score that does not match the recording raises its subclass `MismatchError`.
 
 ### Speed and GPUs
@@ -93,7 +88,7 @@ where the time goes. What runs where (`maestro/utils/device.py`; `MAESTRO_DEVICE
 | work | runs on | notes |
 |---|---|---|
 | CREPE pitch network (the main neural cost of the audio analysis) | a PyTorch GPU (NVIDIA CUDA, AMD ROCm on Linux, Intel XPU, Apple MPS), else ONNX Runtime on a GPU (**DirectML: any AMD, Intel or NVIDIA GPU on Windows**), else ONNX Runtime on the CPU, else PyTorch on the CPU | with a GPU the larger, more accurate CREPE model is used; on the CPU the tiny one. The network is exported once to `models/onnx/` (about 10 s, 90 MB for the full model); a GPU path that fails falls back to the CPU with a warning. `audio_features["pitch_runtime"]` says which ran |
-| fusion encoders, CLAP, training | the best PyTorch accelerator, else the CPU | PyTorch cannot use an AMD or Intel GPU on Windows (ROCm PyTorch is Linux-only for most cards), so on such a machine these stay on the CPU; train on Linux with a ROCm build of PyTorch, or on an NVIDIA GPU |
+| CLAP (optional) | the best PyTorch accelerator, else the CPU | PyTorch cannot use an AMD or Intel GPU on Windows (ROCm PyTorch is Linux-only for most cards), so on such a machine it stays on the CPU |
 | pose (VioPose: TensorFlow 2.13 and MediaPipe) | the CPU | TensorFlow has had no GPU support on native Windows since 2.10, and MediaPipe's pose model runs on the CPU here. It is the slowest step (minutes), so it runs **in the background while the audio is analysed** and is cancelled if the analysis fails |
 | ffmpeg conversion, alignment, assessment | the CPU | |
 
@@ -157,80 +152,27 @@ descriptions such as "a warm, smooth violin tone" vs "a harsh, scratchy violin t
 causes come from the measured features inside each window. It is zero-shot and coarse: a second opinion. A backend that returns
 `p_first(windows, sr, prompts)` can be swapped in (`assessment/neural.py`).
 
-## Train the models
-
-Training is optional and separate from normal use. The models that learn from data are the three **fusion encoders**
-(`maestro/fusion/`), residual autoencoders for audio, video and score. The **decoder also receives the analysis features**
-(pitch, loudness, bow position, key, ... everything the rule-based modules already measure), so the small latent `z`
-(16 numbers per window) is pushed to hold only what they do not explain. A KL term and a cross-covariance penalty between `z`
-and the analysis features keep it from copying them; `leakage_r2` measures how much can still be read back.
-
-| model | x (encoded) | side information (given to the decoder) | z should hold |
-|---|---|---|---|
-| audio | 1 s log-mel patch | pitch, voicing, loudness, centroid, onsets per frame | timbre, bow noise and texture beyond those |
-| video | 2 s of 3D pose, body-size and position independent | bow position/speed, hand distance, elbow angles, shoulder tilt | posture, wrist/finger style, carriage of the bow arm |
-| score | 16 notes as tokens | pitch-class profile, range, density, intervals, key, metre | note order, contour, motifs, rhythmic pattern |
-
-Everything is unsupervised (no labels). Where things live: **data in `data/`, trained models in `models/`**.
-
-**1. Install the training extras**: `./setup.sh --training` / `.\setup.ps1 -Training`, or `pip install -e ".[training]"`. The
-video dataset also needs ffmpeg and a working VioPose (the normal setup).
-
-**2. Install a dataset** (`python src/training/install_data.py list` shows what is installed):
-
-| dataset | for | command |
-|---|---|---|
-| `musicnet` | audio | `python src/training/install_data.py audio`: the violin recordings of MusicNet (Zenodo, CC BY 4.0). Downloads the large archive (resumable, checksum-verified), keeps only violin `.wav` files, honours MusicNet's own test folder |
-| `youtube-cc` | video (and audio) | `python src/training/install_data.py video [--count 60] [--query "..."]`: Creative Commons violin videos found with yt-dlp, each run through VioPose to a `pose.json`; uploader, title and URL kept for attribution |
-| the music21 corpus | score | nothing to install (`pip install music21`): `train_fusion.py score --music21` |
-| VioDat, SyncViolinist, MOSA | video, audio | need a request form and are research-only: request access, convert to wav or `(frames, 18, 3)` mm `.npy` arrays, then `install_data.py ingest NAME audio\|video FOLDER` |
-
-Data is partitioned per recording (hash of its id: 80 % train, 10 % val, 10 % test; MusicNet's own test folder is the test
-split) into `data/<audio|video>/<dataset>/{train,val,test}/` with a `manifest.json` (source, licence, attribution); downloads
-sit in `data/downloads/` (safe to delete) and analysed audio windows are cached in `data/cache/`. `MAESTRO_DATA` moves the folder.
-
-**3. Train**:
-
-```bash
-python src/training/train_fusion.py audio --dataset musicnet --epochs 30
-python src/training/train_fusion.py video --dataset youtube-cc --epochs 40
-python src/training/train_fusion.py score --music21 --epochs 40
-python src/training/train_fusion.py audio recordings/ --cache cache/      # or any folder of your own files
-```
-
-Options: `--z-dim`, `--beta` (KL weight), `--leak` (cross-covariance weight), `--batch`, `--lr`, `--val`, `--limit`, `--device`,
-`--out`. Each epoch prints the validation reconstruction loss and `leakage` (lower = `z` repeats less of what the analysis knows).
-The best epoch is saved to `models/fusion/<audio|video|score>.pt` (override the folder with `--out` or `MAESTRO_MODELS`), with
-the dataset, validation scores and, when a dataset has a test split, the test scores scored once at the end. `src/training/fusion_data.py` has
-the loaders and the list of suggested public datasets; `src/training/datasets.py` the installers.
-
-**4. Use the trained models**: nothing to configure. When checkpoints exist in `models/fusion/` (and torch is installed),
-`analyze()` stores `perf.embeddings`: per modality, one `z` per window on the performance's clock plus a reconstruction
-error that is high where the playing is unlike the training data even given its pitch and loudness. Combining the three streams
-(`fusion/fusion.py`) and prediction heads are still to do.
-
 ## Folders
 
 | folder | contents |
 |---|---|
-| `src/maestro/` | the package: `preprocessing`, `audio`, `score`, `alignment`, `vision`, `assessment`, `fusion`, `gui`, `utils` (see the header comment of each file) |
+| `src/maestro/` | the package: `preprocessing`, `audio`, `score`, `alignment`, `vision`, `assessment`, `fusion` (outlined, not implemented yet), `gui`, `utils` (see the header comment of each file) |
 | `src/scripts/` | command-line tools: `analyze.py`, `serve.py`, `setup_viopose.py`, `convert_viopose.py`, `bench_pitch.py`, `tune_denoise.py` |
-| `src/training/` | `install_data.py`, `train_fusion.py`, and their data code |
+| `src/training/` | (reserved for training scripts) |
 | `src/tests/` | the tests (`pytest`) |
 | `src/docs/` | longer documentation (visual analysis, VioPose, visual pitch) |
-| `data/` | datasets, partitions, caches (git-ignored; see `data/README.md`) |
-| `models/` | trained models (git-ignored; see `models/README.md`) |
+| `data/` | training data (git-ignored; see `data/README.md`) |
+| `models/` | trained and exported models (git-ignored; see `models/README.md`) |
 | `third_party/` | VioPose and its environment (git-ignored) |
 
 ## Tests
 
-`pytest` (or `PYTHONPATH=src python -m unittest discover -s src/tests`) runs everything without network access or downloads:
-datasets are served by a local stand-in server and VioPose by a fake. The fusion and dataset tests need torch (`.[fusion]`) and
-are skipped without it; one test drives the report page in headless Chromium and is skipped without `node` + `playwright`.
+`pytest` (or `PYTHONPATH=src python -m unittest discover -s src/tests`) runs everything without network access or downloads
+(VioPose is replaced by a fake). One test drives the report page in headless Chromium and is skipped without `node` + `playwright`.
 
 ## Status
 
 Implemented: audio extraction, selectable pitch/transcription backends, score conversion, score-audio alignment, assessment of
 pitch, timing, expression, tone, bowing and posture as quantitative events with causes, denoising, the player GUI, VioPose
-movement analysis, and the three trained-from-data fusion encoders with their dataset installers and training code.
-Multimodal fusion (combining the encoder outputs), prediction heads and LLM feedback remain in development.
+movement analysis, and GPU-aware pitch estimation. The `fusion/` folder (learned encoders, multimodal fusion, prediction heads) and
+LLM feedback are outlined but not implemented yet.

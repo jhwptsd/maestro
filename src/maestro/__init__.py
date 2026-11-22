@@ -90,22 +90,6 @@ def analyze_visual(perf, pose_file=None, save_dir=None, use_audio=True, pose_job
     return perf
 
 
-def _embed(perf, embeddings):
-    """Fill perf.embeddings with the fusion encoders' output (see `analyze`)."""
-    if embeddings is False:
-        return
-    try:
-        from maestro.fusion.embed import available, embed_performance
-    except ImportError:                                      # torch is optional
-        if embeddings:
-            raise
-        return
-    if available():
-        embed_performance(perf)
-    elif embeddings:
-        raise FileNotFoundError("No trained fusion encoders in models/fusion/: run src/training/train_fusion.py first.")
-
-
 def _write_audio(perf, directory):
     """The performance's audio as a wav for VioPose's audio model (in `directory`, else a temp file) -> path."""
     from scipy.io import wavfile
@@ -115,7 +99,7 @@ def _write_audio(perf, directory):
 
 
 def analyze(video_path, score_path, out_dir=None, denoise=True,
-            pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None, pose_file=None, neural=None, visual_audio=True, embeddings=None):
+            pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None, pose_file=None, neural=None, visual_audio=True):
     """Analyze a performance against a score and return the filled Performance.
 
     video_path: any video or audio file ffmpeg reads; score_path: MusicXML, .mxl, MIDI, PDF or image.
@@ -129,8 +113,6 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     The movement analysis needs VioPose (installed by the project setup); it runs automatically and its pose is saved as
     work/pose.json. pose_file (a saved pose.json) skips VioPose. The pose is estimated in the background while the audio
     is analysed (and cancelled if the analysis fails); perf.timings has the seconds per stage.
-    embeddings: learned per-window descriptions of the audio, video and score (fusion/, perf.embeddings): None (default)
-    computes them when trained checkpoints exist in models/fusion/ and torch is installed, True requires them, False skips.
     visual_audio (default True): the visual models use the audio where they can (VioPose's audio model, visual-pitch
     calibration against the heard notes); False keeps the visual analysis audio-free.
 
@@ -155,7 +137,7 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pose")
     pose_job = pool.submit(_generate_pose, perf, pose_file, work, visual_audio, cancel)
     try:
-        _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend, pitch_options, neural, embeddings, pose_job)
+        _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend, pitch_options, neural, pose_job)
     except BaseException:
         cancel.set()
         raise
@@ -166,7 +148,7 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     return perf
 
 
-def _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend, pitch_options, neural, embeddings, pose_job):
+def _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend, pitch_options, neural, pose_job):
     """The stages of analyze() that follow preprocessing (split out so the pose job can be cancelled around them)."""
     y, sr = perf.audio["samples"], perf.audio["sr"]
     perf.score_features = extract_symbolic_features(perf.score)
@@ -203,8 +185,6 @@ def _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend
                 perf.assessment["neural"] = analyze_windows(y, sr, backend)
         except NeuralUnavailable as e:
             perf.assessment["neural"] = {"error": str(e)}
-    with _timed(perf, "embeddings"):
-        _embed(perf, embeddings)
     with _timed(perf, "assess"):
         ctx = Context(perf)
         a = perf.assessment

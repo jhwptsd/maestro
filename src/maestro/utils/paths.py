@@ -1,7 +1,7 @@
 # Where trained models and downloaded models are kept (new file).
 #
-# models/ at the repository root holds everything trained or exported by Maestro (models/fusion/*.pt, models/onnx/*.onnx);
-# the MAESTRO_MODELS environment variable moves it. data/ (datasets) is handled by src/training/datasets.py.
+# models/ at the repository root holds everything trained or exported by Maestro (models/onnx/*.onnx, and trained models if any are added);
+# the MAESTRO_MODELS environment variable moves it. 
 import os
 from pathlib import Path
 

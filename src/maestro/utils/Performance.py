@@ -20,7 +20,6 @@ class Performance:
         self.audio_features = None
         self.score_features = None
         
-        self.embeddings = None       # fusion/embed.py: learned per-window descriptions {audio, video, score} -> {t, z, recon_error}
         self.alignment = None
         self.assessment = None
         self.feedback = None

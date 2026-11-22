@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Project setup for Linux and macOS: installs ffmpeg and git if missing, Maestro with the default CREPE backend and the
-# fusion encoders' runtime (torch), and VioPose (the 3D pose model behind the movement analysis, in its own Python 3.9
+# Project setup for Linux and macOS: installs ffmpeg and git if missing, Maestro with the default CREPE backend (torch, ONNX
+# Runtime), and VioPose (the 3D pose model behind the movement analysis, in its own Python 3.9
 # environment under third_party/).
-# Usage: ./setup.sh [--skip-viopose] [--training] [--neural] [--no-venv]
-#   --training   also install what training the models needs (music21, yt-dlp) and show the data / training commands
+# Usage: ./setup.sh [--skip-viopose] [--neural] [--no-venv]
 #   --neural     also install transformers for the optional CLAP tone/expression judgement (analyze(neural="clap"))
 #   --no-venv    install into the Python you ran this with instead of a virtual environment (not recommended)
 # Maestro is installed into its own virtual environment (.venv in this folder), which keeps it apart from packages already
@@ -14,15 +13,13 @@ cd "$(dirname "$0")"
 
 skip_viopose=0
 use_venv=1
-extras="crepe,fusion,dev"
-training=0
+extras="crepe,dev"
 for arg in "$@"; do
     case "$arg" in
         --skip-viopose) skip_viopose=1 ;;
-        --training) extras="$extras,training"; training=1 ;;
         --neural) extras="$extras,neural" ;;
         --no-venv) use_venv=0 ;;
-        *) echo "Unknown option $arg (use --skip-viopose, --training, --neural, --no-venv)" >&2; exit 1 ;;
+        *) echo "Unknown option $arg (use --skip-viopose, --neural, --no-venv)" >&2; exit 1 ;;
     esac
 done
 
@@ -67,17 +64,6 @@ elif ! "$PY" src/scripts/setup_viopose.py; then
     echo "WARNING: VioPose setup did not finish (see above). Everything else works; re-run: python3 src/scripts/setup_viopose.py" >&2
 fi
 
-if [ "$training" -eq 1 ]; then
-    cat <<'EOF'
-
-Training the models (see README.md): data goes to data/, trained models to models/.
-  python3 src/training/install_data.py audio            # MusicNet violin recordings (large download)
-  python3 src/training/install_data.py video            # Creative Commons violin videos -> VioPose poses (needs VioPose)
-  python3 src/training/train_fusion.py audio --dataset musicnet
-  python3 src/training/train_fusion.py video --dataset youtube-cc
-  python3 src/training/train_fusion.py score --music21
-EOF
-fi
 
 echo
 echo "Compute devices Maestro will use:"

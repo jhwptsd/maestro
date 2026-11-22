@@ -1,7 +1,6 @@
 # Choose where the neural networks run: any GPU, else the CPU (new file).
 #
-# Used by the CREPE pitch backend (audio/backends/crepe.py), the CLAP judgement (assessment/neural.py), the fusion encoders
-# (fusion/embed.py) and training (src/training/train_fusion.py). Preference order for "auto":
+# Used by the CREPE pitch backend (audio/backends/crepe.py), and the CLAP judgement (assessment/neural.py). Preference order for "auto":
 #   1. PyTorch's own accelerator: NVIDIA CUDA, AMD ROCm (its PyTorch builds also answer to "cuda"), Intel XPU or Apple MPS
 #   2. ONNX Runtime's GPU provider: DirectML (any DirectX 12 GPU on Windows, which is how an AMD or Intel GPU is used there
 #      since ROCm PyTorch is not generally available on Windows), CUDA, ROCm or CoreML. Only the convolutional CREPE model is

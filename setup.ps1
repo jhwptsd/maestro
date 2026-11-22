@@ -1,8 +1,7 @@
-# Project setup for Windows: installs ffmpeg (if missing), Maestro with the default CREPE backend and the fusion encoders'
-# runtime (torch), and VioPose (the 3D pose model behind the movement analysis, in its own Python 3.9 environment under
+# Project setup for Windows: installs ffmpeg (if missing), Maestro with the default CREPE backend (torch, ONNX Runtime),
+# and VioPose (the 3D pose model behind the movement analysis, in its own Python 3.9 environment under
 # third_party\).
-# Usage: .\setup.ps1 [-SkipViopose] [-Training] [-Neural] [-NoVenv] [-NoGpu]
-#   -Training   also install what training the models needs (music21, yt-dlp) and show the data / training commands
+# Usage: .\setup.ps1 [-SkipViopose] [-Neural] [-NoVenv] [-NoGpu]
 #   -Neural     also install transformers for the optional CLAP tone/expression judgement (analyze(neural="clap"))
 #   -NoVenv     install into the Python you ran this with instead of a virtual environment (not recommended)
 #   -NoGpu      do not install the GPU runtime (ONNX Runtime with DirectML, which runs the CREPE pitch network on any
@@ -12,7 +11,7 @@
 # your global Python (an old torch there makes pip fail with "WinError 2 ... .exe.deleteme"). Activate it afterwards with the
 # command printed at the end.
 # Install the CUDA-specific PyTorch build first if GPU acceleration is desired.
-param([switch]$SkipViopose, [switch]$Training, [switch]$Neural, [switch]$NoVenv, [switch]$NoGpu)
+param([switch]$SkipViopose, [switch]$Neural, [switch]$NoVenv, [switch]$NoGpu)
 $ErrorActionPreference = "Stop"
 
 function Test-Ffmpeg {            # both programs exist AND run (a stale or half-installed copy on the PATH does not count)
@@ -77,8 +76,7 @@ if (-not $NoVenv) {
     $activate = Join-Path $venv "Scripts\Activate.ps1"
 }
 
-$extras = "crepe,fusion,dev"
-if ($Training) { $extras += ",training" }
+$extras = "crepe,dev"
 if ($Neural) { $extras += ",neural" }
 & $python -m pip install -e ".[$extras]"
 if ($LASTEXITCODE -ne 0) {
@@ -102,7 +100,7 @@ if ($NoGpu) {
         & $python -m pip install onnxruntime
     }
     if ($gpus -match "NVIDIA") {
-        Write-Host "NVIDIA GPU: for the other networks (CLAP, training) also install the CUDA build of PyTorch into this environment: https://pytorch.org/get-started/locally/"
+        Write-Host "NVIDIA GPU: for the other network (CLAP) also install the CUDA build of PyTorch into this environment: https://pytorch.org/get-started/locally/"
     }
 }
 
@@ -125,15 +123,6 @@ if ($SkipViopose) {
     }
 }
 
-if ($Training) {
-    Write-Host ""
-    Write-Host "Training the models (see README.md): data goes to data\, trained models to models\."
-    Write-Host "  python src/training/install_data.py audio     # MusicNet violin recordings (large download)"
-    Write-Host "  python src/training/install_data.py video     # Creative Commons violin videos -> VioPose poses (needs VioPose)"
-    Write-Host "  python src/training/train_fusion.py audio --dataset musicnet"
-    Write-Host "  python src/training/train_fusion.py video --dataset youtube-cc"
-    Write-Host "  python src/training/train_fusion.py score --music21"
-}
 
 Write-Host ""
 Write-Host "Compute devices Maestro will use:"

@@ -5,4 +5,3 @@ Scripts (run from the repository root; training scripts are in `src/training/`)
 - convert_viopose.py RESULT.npy OUT.json: converts a VioPose result.npy you produced yourself to Maestro's pose JSON (for `analyze(..., pose_file=...)`).
 - bench_pitch.py [FILE]: times every installed pitch backend (first call vs steady state, x real time) so you can compare CREPE, pYIN, YIN and Basic Pitch on your hardware.
 - tune_denoise.py: picks the audio-denoising defaults from synthetic noisy/clean pairs, rejecting any setting that dulls vibrato, bow noise or pitch (run with PYTHONPATH=src:src/tests).
-- Training: `src/training/install_data.py` (datasets into data/) and `src/training/train_fusion.py` (models into models/); see src/training/README.md.
