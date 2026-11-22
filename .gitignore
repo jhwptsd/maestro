@@ -9,3 +9,5 @@ models/*.pt
 data/*
 !data/README.md
 models/onnx/
+.venv/
+venv/
