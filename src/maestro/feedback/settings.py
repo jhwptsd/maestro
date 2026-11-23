@@ -56,7 +56,10 @@ def _known(provider):
 
 
 def get_key(provider):
-    """The saved key for `provider`, else the first of its environment variables that is set, else None."""
+    """The saved key for `provider`, else the first of its environment variables that is set, else None. (A provider that needs no key,
+    the local model, always has one: a placeholder.)"""
+    if not _known(provider).needs_key:
+        return provider
     saved = load()["keys"].get(provider)
     if saved:
         return saved
@@ -116,5 +119,6 @@ def status():
                      "model": data["models"].get(name) or p.default_model, "key_url": p.key_url,
                      "suggested": list(getattr(p, "SUGGESTED", ()))}
     saved = out.get(data["provider"])                                  # (a provider that no longer exists, e.g. Gemini, is ignored)
-    chosen = data["provider"] if saved and saved["connected"] else next((n for n, s in out.items() if s["connected"]), None)
+    chosen = data["provider"] if saved and saved["connected"] else next(
+        (n for n, v in out.items() if v["connected"] and v["needs_key"]), "local")      # else the local model: nothing to set up
     return {"provider": chosen, "providers": out}

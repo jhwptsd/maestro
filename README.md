@@ -129,11 +129,13 @@ override it, `VIOPOSE_AUDIO=0` runs VioPose without the recording's audio (by de
 the video-only weights). Without VioPose the audio analysis works as before and the report omits the movement parts. Details
 and the visual pitch method are in `src/docs/README.md`.
 
-### Written feedback and chat (local model, OpenRouter or Groq)
+### Written feedback and chat (local model by default)
 
 The analysis gives numbers; an AI model turns them into feedback a student can use: a short summary, up to three priorities (the bars
 involved, what is probably going wrong, one concrete practice suggestion each) and what is going well, and then answers follow-up
-questions in a chat (`maestro/feedback/`). It is optional, uses **your own** connection, and runs on services with **free tiers**:
+questions in a chat (`maestro/feedback/`). **By default a small model runs on your own computer through Ollama: nothing to connect.** Install
+[Ollama](https://ollama.com/download), start it and download a model once (a button on the start page, or `ollama pull llama3.2:3b`); a model you already
+have (e.g. `qwen3.5:4b`) is used as it is. "Thinking" models are run with thinking off so they answer directly. Online services are an optional extra:
 
 | way to connect | service | cost |
 |---|---|---|

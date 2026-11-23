@@ -59,13 +59,18 @@ def resolve(provider=None, model=None, key=None, base_url=None):
     """The provider to call -> (Provider, key, model, name). Anything not given comes from the saved settings; LLMError (readable)
     if nothing is connected or the model is unknown."""
     chosen = provider or settings.status()["provider"]
-    if not chosen:
-        raise providers.LLMError("No AI provider is connected: connect a local model, add an API key for Groq or OpenRouter, or sign in to OpenRouter first.")
     p = providers.get(chosen, base_url)
     key = key or settings.get_key(chosen)
     if not key:
         raise providers.LLMError(f"{p.label} is not connected: add its API key first.")
-    model = model or settings.load()["models"].get(chosen) or p.default_model
+    model = model or settings.load()["models"].get(chosen)
+    if not model and not p.needs_key:                           # local: use what is installed (the default if it is), else say what to do
+        installed = p.list_models()
+        model = p.pick_model(installed)
+        if not model:
+            raise providers.LLMError("No local model is downloaded yet: open the start page, \"Written feedback\", and press Download and use "
+                                     f"(or run: ollama pull {p.default_model}).")
+    model = model or p.default_model
     if not model:
         raise providers.LLMError(f"Choose a model for {p.label} first.")
     return p, key, model, chosen

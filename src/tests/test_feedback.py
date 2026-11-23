@@ -249,7 +249,7 @@ class BusyAndMissingModels(WithConfig):
 
 class SavedSettings(WithConfig):
     def test_keys_are_saved_privately_masked_and_overridable_by_the_environment(self):
-        self.assertEqual(settings.status()["provider"], None)
+        self.assertEqual(settings.status()["provider"], "local")                                  # the default
         settings.set_key("groq", KEY, "llama-3.3-70b-versatile")
         path = Path(self._tmp.name) / "llm.json"
         if sys.platform != "win32":
@@ -278,7 +278,7 @@ class SavedSettings(WithConfig):
 
     def test_a_corrupt_file_is_treated_as_nothing_saved(self):
         (Path(self._tmp.name) / "llm.json").write_text("{not json")
-        self.assertEqual(settings.status()["provider"], None)
+        self.assertEqual(settings.status()["provider"], "local")                                  # the default
 
 
 def sample_perf():
@@ -350,7 +350,8 @@ class Generator(WithConfig):
         self.assertTrue(result["warnings"])
 
     def test_missing_connection_is_explained(self):
-        with self.assertRaisesRegex(providers.LLMError, "No AI provider is connected"):
+        with mock.patch.object(providers.PROVIDERS["local"], "base_url", "http://127.0.0.1:1"), \
+                self.assertRaisesRegex(providers.LLMError, "Ollama is not running"):         # the default is the local model
             generator.feedback_from_digest(self.digest)
         with self.assertRaisesRegex(providers.LLMError, "not connected"):
             generator.feedback_from_digest(self.digest, provider="openrouter")
@@ -828,6 +829,18 @@ class LocalModel(unittest.TestCase):
         self.assertEqual((body["format"], body["options"]["num_ctx"], body["options"]["num_predict"], body["stream"]), ("json", 8192, 300, False))
         self.assertEqual(body["messages"][0], {"role": "system", "content": "S"})
         self.assertEqual(out["usage"], {"input": 5, "output": 7})
+
+    def test_thinking_is_switched_off_so_a_thinking_model_still_answers(self):
+        self.local.complete("local", "qwen3.5:4b", "S", [{"role": "user", "content": "hi"}])
+        self.assertIs(self.fake.requests[-1]["body"]["think"], False)
+
+    def test_default_uses_an_installed_model_without_any_setup(self):
+        self.fake.models = ["qwen3.5:4b"]
+        result = generator.feedback_from_digest(self.digest)
+        self.assertEqual((result["provider"], result["model"]), ("local", "qwen3.5:4b"))
+        self.fake.models = []
+        with self.assertRaisesRegex(providers.LLMError, "No local model is downloaded"):
+            generator.feedback_from_digest(self.digest)
 
     def test_not_running_says_how_to_install(self):
         with mock.patch.object(self.local, "base_url", "http://127.0.0.1:1"), self.assertRaisesRegex(providers.LLMError, "ollama.com/download"):

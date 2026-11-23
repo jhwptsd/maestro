@@ -141,7 +141,7 @@ class Local(Provider):
     key_url = "https://ollama.com/download"
     env_vars = ()
     default_model = "llama3.2:3b"
-    prefer = ("llama3.2", "qwen2.5", "gemma2", "phi3", "llama3", "mistral")
+    prefer = ("llama3.2", "qwen", "gemma", "phi3", "llama3", "mistral")
     needs_key = False
     small_context = True
     timeout = 900                      # a small model on a CPU writes slowly, and the first call also loads it
@@ -149,6 +149,7 @@ class Local(Provider):
     SUGGESTED = (                      # (id, what it is): small enough for phones as well
         {"id": "llama3.2:1b", "label": "Llama 3.2 1B (1.3 GB; fits any recent phone, fastest, simplest feedback)"},
         {"id": "llama3.2:3b", "label": "Llama 3.2 3B (2 GB; phones with 6 GB+ of memory, best balance)"},
+        {"id": "qwen3.5:4b", "label": "Qwen 3.5 4B (about 3 GB; phones with 8 GB of memory)"},
         {"id": "qwen2.5:1.5b", "label": "Qwen 2.5 1.5B (1 GB; small and good at following instructions)"},
         {"id": "gemma2:2b", "label": "Gemma 2 2B (1.6 GB)"},
         {"id": "phi3.5", "label": "Phi 3.5 mini 3.8B (2.2 GB; strong for its size)"},
@@ -195,10 +196,17 @@ class Local(Provider):
                 "options": {"num_ctx": self.CONTEXT, "num_predict": max_tokens, "temperature": 0.4}}
         if json_mode:
             body["format"] = "json"                                # Ollama then only produces valid JSON
-        data = self._call("/api/chat", body)
+        # "Thinking" models (Qwen 3.x, ...) would spend the whole token budget reasoning and return an empty answer: switch that off.
+        # (An Ollama or model without the option rejects it: then ask again without.)
+        try:
+            data = self._call("/api/chat", {**body, "think": False})
+        except LLMError as e:
+            if e.status != 400 or "think" not in str(e).lower():
+                raise
+            data = self._call("/api/chat", body)
         text = (data.get("message") or {}).get("content", "")
         if not text:
-            raise LLMError("The local model returned no answer.")
+            raise LLMError("The local model returned no answer. Try a different model, or update Ollama (https://ollama.com/download).")
         return {"text": text, "usage": {"input": data.get("prompt_eval_count", 0), "output": data.get("eval_count", 0)}}
 
     def pull(self, model, on_progress):
