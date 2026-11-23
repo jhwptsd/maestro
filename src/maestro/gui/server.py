@@ -2,10 +2,11 @@
 #
 # Run `python src/scripts/serve.py` (or `maestro-gui` after `pip install -e .`) and open
 # http://127.0.0.1:8000. GET / serves index.html (upload form); POST /api/analyze receives the
-# recording + score as multipart form data, runs maestro.analyze() and answers {"url": "/run/<id>/"}, the report page
-# built by gui/report.py (or {"error": message} with HTTP 400 for unusable input: InputError, MismatchError, missing
-# Audiveris). The page plays the recording, which is served from /run/<id>/media with HTTP range support (browsers need it
-# to seek). Runs live in a temporary folder that is removed when the server exits. Binds to localhost only: it is meant
+# recording + score as multipart form data, checks it, starts maestro.analyze() in a background thread and answers {"job": id} at
+# once (HTTP 202; {"error": message} with 400 for a missing file); GET /api/job/<id> then reports {state: running | done | error,
+# label, fraction, ceiling, ...} for the progress bar of the start page (utils/progress.py), and when it is done {url: "/run/<id>/"}, the
+# report page built by gui/report.py, or {error: message} for unusable input (InputError, MismatchError, missing ffmpeg or Audiveris).
+# The page plays the recording, which is served from /run/<id>/media with HTTP range support (browsers need it to seek). Runs live in a temporary folder that is removed when the server exits. Binds to localhost only: it is meant
 # for personal use.
 #
 # AI feedback (feedback/): GET /api/llm and POST /api/llm/{connect,models,select,disconnect} manage which provider (OpenRouter or
@@ -23,6 +24,8 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import traceback
 import urllib.parse
 import uuid
@@ -34,6 +37,7 @@ from pathlib import Path
 from maestro import analyze
 from maestro.feedback import chat, generator, oauth, prompts, providers, settings
 from maestro.gui.report import build_page, media_source
+from maestro.utils.progress import Tracker
 from maestro.utils.errors import InputError, ToolMissingError
 
 MAX_UPLOAD = 1 << 30  # 1 GiB
@@ -41,8 +45,10 @@ FIELDS = ("video", "score")                   # the upload form's file inputs; a
 INDEX = (Path(__file__).parent / "index.html").read_text(encoding="utf-8")
 RUNS_DIR = Path(tempfile.mkdtemp(prefix="maestro_runs_"))     # one folder per analysis, deleted when the server exits
 atexit.register(shutil.rmtree, RUNS_DIR, ignore_errors=True)
+JOBS = {}                                                     # id -> status of an analysis (see run_analysis): state running | done | error
 RUNS = {}                                                     # id -> {"page": html, "media": path, "digest": dict, "feedback": dict once written}
 CHUNK = 1 << 20
+MAX_JOBS_KEPT = 50                                           # finished analyses whose status stays available
 MAX_CHAT_EXCHANGES = 20                                      # questions per analysis (each is a paid call)
 
 
@@ -51,6 +57,30 @@ def parse_multipart(content_type, body):
     msg = BytesParser(policy=HTTP).parsebytes(b"Content-Type: " + content_type.encode() + b"\r\n\r\n" + body)
     return {part.get_param("name", header="content-disposition"): (part.get_filename() or "", part.get_payload(decode=True))
             for part in msg.iter_parts()}
+
+
+def run_analysis(job_id, paths, folder):
+    """Analyse the upload in a background thread, keeping JOBS[job_id] up to date for the progress bar of the start page, and, when
+    it succeeds, register the report in RUNS (the same id is the report's address)."""
+    job = JOBS[job_id]
+
+    def update(info):
+        if info["stage"] != "done":                  # (analyze's own "done"; the report still has to be built)
+            job.update(stage=info["stage"], label=info["label"], fraction=info["fraction"], ceiling=info["ceiling"], stage_started=time.monotonic())
+
+    tracker = Tracker(update)
+    try:
+        perf = analyze(paths["video"], paths["score"], folder / "work", progress=tracker)
+        tracker("report")
+        RUNS[job_id] = {"page": build_page(perf, "media", job_id), "media": media_source(perf)[0], "digest": prompts.build_digest(perf)}
+        print(f"analysis {job_id[:8]}: " + ", ".join(f"{k} {v:.1f}s" for k, v in perf.timings.items()) +
+              f" (pitch on {perf.audio_features.get('pitch_runtime') or 'n/a'})", file=sys.stderr)
+        job.update(state="done", stage="done", label="Done", fraction=1.0, ceiling=1.0, url=f"/run/{job_id}/")
+    except (InputError, ToolMissingError) as e:
+        job.update(state="error", error=str(e))
+    except Exception as e:  # unexpected: log for the developer, short message for the user
+        traceback.print_exc()
+        job.update(state="error", error=f"Unexpected error: {e}")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -190,7 +220,23 @@ class Handler(BaseHTTPRequestHandler):
         except providers.LLMError as e:
             self._redirect("/?ai_error=" + urllib.parse.quote(str(e)) + "#ai")
 
+    def _job_status(self, job_id):
+        """GET /api/job/<id> -> the state of an analysis: {state, stage, label, fraction, ceiling, seconds, seconds_in_stage, url | error}."""
+        if not self._local_request():
+            return
+        job = JOBS.get(job_id)
+        if job is None:
+            return self._json(404, {"error": "Unknown analysis."})
+        now = time.monotonic()
+        out = {k: job[k] for k in ("state", "stage", "label", "fraction", "ceiling") if k in job}
+        out.update(seconds=round(now - job["started"], 1), seconds_in_stage=round(now - job["stage_started"], 1))
+        out.update({k: job[k] for k in ("url", "error") if k in job})
+        self._json(200, out)
+
     def do_GET(self):
+        job = re.fullmatch(r"/api/job/([0-9a-f]{32})", self.path)
+        if job:
+            return self._job_status(job[1])
         if self.path.startswith("/auth/openrouter/"):
             return self._openrouter_sign_in()
         if self.path == "/api/llm":
@@ -247,16 +293,17 @@ class Handler(BaseHTTPRequestHandler):
                 # only the known field name plus the extension of the user's file name reach the path
                 paths[field] = folder / (field + Path(name).suffix[:10])
                 paths[field].write_bytes(data)
-            perf = analyze(paths["video"], paths["score"], folder / "work")
-            RUNS[run_id] = {"page": build_page(perf, "media", run_id), "media": media_source(perf)[0], "digest": prompts.build_digest(perf)}
-            print(f"analysis {run_id[:8]}: " + ", ".join(f"{k} {v:.1f}s" for k, v in perf.timings.items()) +
-                  f" (pitch on {perf.audio_features.get('pitch_runtime') or 'n/a'})", file=sys.stderr)
-            self._json(200, {"url": f"/run/{run_id}/"})
-        except (InputError, ToolMissingError) as e:
-            self._json(400, {"error": str(e)})
+        except InputError as e:
+            return self._json(400, {"error": str(e)})
         except Exception as e:  # unexpected: log for the developer, short message for the user
             traceback.print_exc()
-            self._json(500, {"error": f"Unexpected error: {e}"})
+            return self._json(500, {"error": f"Unexpected error: {e}"})
+        JOBS[run_id] = {"state": "running", "stage": "upload", "label": "Starting", "fraction": 0.0, "ceiling": 0.0, "started": time.monotonic(),
+                        "stage_started": time.monotonic()}
+        for old in [j for j, v in JOBS.items() if v["state"] != "running"][:-MAX_JOBS_KEPT]:       # keep the list short
+            del JOBS[old]
+        threading.Thread(target=run_analysis, args=(run_id, paths, folder), daemon=True).start()
+        self._json(202, {"job": run_id})
 
     def log_message(self, fmt, *args):
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))

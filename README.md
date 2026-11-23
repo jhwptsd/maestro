@@ -55,7 +55,9 @@ pip install -e ".[audio,neural,dev]"          # everything except VioPose (which
 The rule-based analysis works as soon as the package is installed; the CLAP judgement is an optional extra on top.
 
 **Web GUI**: `python src/scripts/serve.py [PORT]` (or `maestro-gui`), open http://127.0.0.1:8000, upload a recording (video or
-audio) and the score. The report is a player: the recording plays with a skeleton of the estimated pose beside it (front and
+audio) and the score. A progress bar follows the upload and then the analysis stage by stage (converting the video, finding the pitch,
+waiting for the body-movement analysis, which is the slowest step, ...; how far a stage has got is not known, so the bar eases
+towards the end of the current stage). The report is a player: the recording plays with a skeleton of the estimated pose beside it (front and
 side view; VioPose gives 3D joints without a camera calibration, so the pose cannot be drawn over the picture itself), and live
 charts trace out as it plays: pitch against the written notes, loudness, timing error per note, bow position and speed,
 shoulder tilt, elbow angles and left-hand position, each shading the problems of its own skills. Below are a score per
@@ -75,9 +77,9 @@ perf.assessment["synthesis"]      # every event, ranked causes, per-bar summary,
 ```
 
 `analyze(video_path, score_path, out_dir=None, denoise=True, pitch_backend="crepe", pitch_options=None, pose_file=None,
-neural=None, visual_audio=True)`:
+neural=None, visual_audio=True, progress=None)`:
 `denoise` cleans audio, video and score first (vibrato and bow noise are kept); `pose_file` (a saved `pose.json`) skips VioPose;
-`neural="clap"` adds the CLAP judgement; `visual_audio=False` keeps the visual models audio-free. Errors for unusable input are
+`neural="clap"` adds the CLAP judgement; `visual_audio=False` keeps the visual models audio-free; `progress` is called with the name of each stage as it starts. Errors for unusable input are
 `maestro.utils.errors.InputError`; a score that does not match the recording raises its subclass `MismatchError`.
 
 ### Speed and GPUs

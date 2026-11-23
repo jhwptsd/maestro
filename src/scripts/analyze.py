@@ -1,6 +1,7 @@
 """CLI: python src/scripts/analyze.py VIDEO SCORE [OUT_DIR] [--pitch-backend NAME]."""
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from maestro import analyze
@@ -8,6 +9,7 @@ from maestro.audio.pitch import DEFAULT_PITCH_BACKEND, list_pitch_backends
 from maestro.gui.report import build_page, copy_media
 from maestro.feedback.generator import generate_feedback
 from maestro.feedback import settings
+from maestro.utils.progress import Tracker
 from maestro.feedback.providers import PROVIDERS as PROVIDER_NAMES, LLMError
 from maestro.utils.errors import InputError, ToolMissingError
 
@@ -48,6 +50,8 @@ def main():
             pitch_backend=args.pitch_backend,
             pitch_options=pitch_options,
             neural=args.neural,
+            progress=Tracker(lambda info: print(f"[{info['fraction']:4.0%}] {info['label']}", file=sys.stderr, flush=True),
+                             skip=() if args.neural else ("neural",)),
         )
     except (InputError, ToolMissingError, ImportError, ValueError) as exc:
         parser.exit(2, f"error: {exc}\n")

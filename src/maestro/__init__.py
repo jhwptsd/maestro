@@ -99,7 +99,7 @@ def _write_audio(perf, directory):
 
 
 def analyze(video_path, score_path, out_dir=None, denoise=True,
-            pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None, pose_file=None, neural=None, visual_audio=True):
+            pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None, pose_file=None, neural=None, visual_audio=True, progress=None):
     """Analyze a performance against a score and return the filled Performance.
 
     video_path: any video or audio file ffmpeg reads; score_path: MusicXML, .mxl, MIDI, PDF or image.
@@ -116,6 +116,8 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     visual_audio (default True): the visual models use the audio where they can (VioPose's audio model, visual-pitch
     calibration against the heard notes); False keeps the visual analysis audio-free.
 
+    progress: optional callable, called with the name of each stage as it starts ("video", "audio", "score", "pitch", "notes", "align",
+    "pose", "visual", "neural", "assess") and with "done" at the end (utils/progress.Tracker turns these into a progress bar).
     neural: None (default) or "clap" to add the pretrained CLAP tone/expression judgement (assessment/neural.py; needs
     transformers + torch and downloads ~600 MB once; if it cannot load, the analysis continues without it).
     assessment["synthesis"] is the single JSON report built from every module (assessment/synthesize.py).
@@ -126,9 +128,13 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     work = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="maestro_"))
     work.mkdir(parents=True, exist_ok=True)
     perf = Performance()
+    step = progress or (lambda stage: None)
     with _timed(perf, "preprocess"):
+        step("video")
         preprocess_video(perf, video_path, work, denoise)
+        step("audio")
         preprocess_audio(perf, denoise=denoise)
+        step("score")
         preprocess_score(perf, score_path, work, denoise)
 
     # The pose (VioPose, minutes of CPU) does not depend on the audio analysis, so it runs in the background while the audio,
@@ -137,7 +143,7 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pose")
     pose_job = pool.submit(_generate_pose, perf, pose_file, work, visual_audio, cancel)
     try:
-        _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend, pitch_options, neural, pose_job)
+        _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend, pitch_options, neural, pose_job, step)
     except BaseException:
         cancel.set()
         raise
@@ -145,17 +151,20 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
         pool.shutdown(wait=False)
     if out_dir:
         score_to_svg(perf.score, perf.assessment["intonation"], work / "score.svg")
+    step("done")
     return perf
 
 
-def _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend, pitch_options, neural, pose_job):
+def _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend, pitch_options, neural, pose_job, step):
     """The stages of analyze() that follow preprocessing (split out so the pose job can be cancelled around them)."""
     y, sr = perf.audio["samples"], perf.audio["sr"]
     perf.score_features = extract_symbolic_features(perf.score)
 
     # Estimate once and share the track between transcription and frame features.
+    step("pitch")
     with _timed(perf, "pitch"):
         track = estimate_pitch(y, sr, backend=pitch_backend, **(pitch_options or {}))
+    step("notes")
     with _timed(perf, "transcribe"):
         notes = transcribe(y, sr, pitch_track=track)
     with _timed(perf, "features"):
@@ -167,6 +176,7 @@ def _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend
         "pitch_runtime": track.runtime,
     }
 
+    step("align")
     with _timed(perf, "align"):
         perf.alignment = align_audio_score(perf.score_features, notes)
         corr = check_correspondence(perf.score_features, notes, perf.alignment)
@@ -174,10 +184,14 @@ def _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend
         "correspondence": corr,
         "section": played_section(perf.score_features, perf.alignment),
     }
+    step("pose")
     with _timed(perf, "pose_wait"):                      # how long the analysis had to wait for the pose after the audio was done
         pose_job.exception()
+    step("visual")
     with _timed(perf, "visual"):
         analyze_visual(perf, pose_file, work, visual_audio, pose_job)    # pose first: its results are evidence for audio-side causes
+    if neural:
+        step("neural")
     with _timed(perf, "neural"):
         try:
             backend = load_backend(neural)
@@ -185,6 +199,7 @@ def _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend
                 perf.assessment["neural"] = analyze_windows(y, sr, backend)
         except NeuralUnavailable as e:
             perf.assessment["neural"] = {"error": str(e)}
+    step("assess")
     with _timed(perf, "assess"):
         ctx = Context(perf)
         a = perf.assessment

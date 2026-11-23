@@ -15,6 +15,38 @@ from maestro import analyze
 from maestro.utils.errors import InputError, MismatchError, PoseUnavailableError
 
 
+class Progress(unittest.TestCase):
+    def test_tracker_gives_monotone_fractions_that_fill_the_bar(self):
+        from maestro.utils.progress import STAGES, Tracker
+        seen = []
+        tracker = Tracker(seen.append)
+        for name, _, _ in STAGES:
+            tracker(name)
+        tracker("done")
+        tracker("not-a-stage")                                                      # ignored
+        starts = [i["fraction"] for i in seen]
+        self.assertEqual(starts, sorted(starts))
+        self.assertEqual(starts[0], 0.0)
+        self.assertEqual((seen[-1]["stage"], seen[-1]["fraction"]), ("done", 1.0))
+        self.assertTrue(all(i["fraction"] <= i["ceiling"] for i in seen))
+        self.assertAlmostEqual(seen[-2]["ceiling"], 1.0)                            # the last stage ends the bar
+        self.assertNotIn("neural", [i["stage"] for i in seen])                      # skipped unless asked for
+        with_neural = []
+        Tracker(with_neural.append, skip=())("neural")
+        self.assertEqual(with_neural[0]["stage"], "neural")
+        self.assertTrue(all(i["label"] for i in seen))
+
+    def test_analyze_reports_its_stages_in_order(self):
+        names = []
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "s.musicxml").write_text(musicxml([69, 71, 72, 74, 76, 74, 72, 71]))
+            write_wav(d / "a.wav", synth([(m, 0.3 + 0.5 * i, 0.4) for i, m in enumerate([69, 71, 72, 74, 76, 74, 72, 71])]))
+            make_video(d / "v.mp4", d / "a.wav", 5)
+            analyze(d / "v.mp4", d / "s.musicxml", pitch_backend="yin", progress=names.append)
+        self.assertEqual(names, ["video", "audio", "score", "pitch", "notes", "align", "pose", "visual", "assess", "done"])
+
+
 class Concurrency(unittest.TestCase):
     """The pose is estimated while the audio is analysed, and cancelled if the analysis fails."""
     midis = [69, 71, 72, 74, 76, 74, 72, 71]

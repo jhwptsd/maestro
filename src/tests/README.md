@@ -17,7 +17,7 @@ pose model.
 | `test_score.py`, `test_preprocessing.py`, `test_denoise.py` | score parsing (repeats, dynamics), file conversion, denoising |
 | `test_alignment_assessment.py`, `test_assessment_events.py` | alignment, the assessment modules and their events, causes and synthesis |
 | `test_vision.py`, `test_viopose_setup.py` | pose, motion features, visual pitch, the VioPose runner and its installer |
-| `test_gui.py`, `test_viewer.py` | the player page data, the server (range requests), the score viewer |
+| `test_gui.py`, `test_viewer.py` | the player page data, the server (range requests, background analysis and its progress), the progress bar of the start page in Chromium, the score viewer |
 | `test_pipeline.py` | end to end through `analyze()` |
 
 One test in `test_gui.py` and one in `test_viewer.py`

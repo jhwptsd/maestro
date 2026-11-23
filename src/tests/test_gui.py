@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -172,6 +173,62 @@ class PageInBrowser(unittest.TestCase):
             self.assertTrue(out["seeked"])
 
 
+@unittest.skipUnless(HAS_BROWSER, "needs node + playwright")
+class ProgressBarInBrowser(unittest.TestCase):
+    """The real start page against the real server: the bar moves while the analysis runs, and a failure is shown."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = make_server(port=0)
+        cls.url = f"http://127.0.0.1:{cls.srv.server_port}/"
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.srv.server_close()
+
+    def drive(self, score_midis):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            write_wav(d / "take.wav", synth([(m, 0.3 + 0.5 * i, 0.4) for i, m in enumerate(MIDIS)]))
+            (d / "piece.musicxml").write_text(musicxml(score_midis))
+            js = ("const {chromium}=require('playwright');(async()=>{const b=await chromium.launch();const p=await b.newPage();"
+                  "const errors=[];p.on('pageerror',e=>errors.push(String(e)));await p.goto(process.argv[1]);"
+                  "await p.setInputFiles('input[name=video]',process.argv[2]);await p.setInputFiles('input[name=score]',process.argv[3]);"
+                  "await p.click('#go');const samples=[];const start=Date.now();"
+                  "while(Date.now()-start<120000&&!p.url().includes('/run/')){"
+                  "samples.push(await p.evaluate(()=>({value:document.getElementById('bar').value,label:document.getElementById('progress-label').textContent,"
+                  "shown:!document.getElementById('progress').hidden,error:document.getElementById('status').textContent,"
+                  "enabled:!document.getElementById('go').disabled})));"
+                  "if(samples[samples.length-1].error)break;await p.waitForTimeout(150);}"
+                  "console.log(JSON.stringify({samples,url:p.url(),errors}));await b.close();})()")
+            out = subprocess.run(["node", "-e", js, self.url, str(d / "take.wav"), str(d / "piece.musicxml")], capture_output=True, text=True,
+                                 check=True).stdout
+        return json.loads(out)
+
+    def test_the_bar_moves_to_the_end_and_the_report_opens(self):
+        result = self.drive(MIDIS)
+        self.assertEqual(result["errors"], [])
+        self.assertIn("/run/", result["url"])
+        samples = [s for s in result["samples"] if s["shown"]]
+        self.assertGreaterEqual(len(samples), 1)
+        values = [s["value"] for s in samples]
+        self.assertTrue(all(isinstance(v, (int, float)) or v.isdigit() for v in values))
+        values = [int(v) for v in values]
+        self.assertEqual(values, sorted(values))                                        # never goes back
+        self.assertTrue(all(s["label"].strip() for s in samples))
+        self.assertTrue(any("%" in s["label"] for s in samples))
+
+    def test_a_failed_analysis_shows_the_reason_and_frees_the_button(self):
+        result = self.drive([60, 62, 64, 65, 55, 57, 59, 60])
+        last = result["samples"][-1]
+        self.assertIn("does not appear to match", last["error"])
+        self.assertFalse(last["shown"])                                                 # the bar is hidden again
+        self.assertTrue(last["enabled"])
+        self.assertNotIn("/run/", result["url"])
+
+
 def isolate_from_real_install(test, tmp):
     """Keep a VioPose really installed on this machine out of the test."""
     for name, value in (("CONFIG_PATH", tmp / "no_config.json"), ("DEFAULT_DIR", tmp / "no_default_checkout")):
@@ -207,7 +264,8 @@ class Server(unittest.TestCase):
         cls.srv.shutdown()
         cls.srv.server_close()
 
-    def post(self, files):
+    def start(self, files):
+        """POST an upload -> (HTTP status, JSON): 202 {"job": id} when the analysis was started, 400 for an unusable upload."""
         ctype, body = multipart(files)
         req = urllib.request.Request(self.url + "/api/analyze", body, {"Content-Type": ctype})
         try:
@@ -215,6 +273,26 @@ class Server(unittest.TestCase):
                 return r.status, json.loads(r.read())
         except urllib.error.HTTPError as e:
             return e.code, json.loads(e.read())
+
+    def wait(self, job, timeout=300):
+        """Poll a job until it is no longer running -> its last status (and every status seen on the way)."""
+        seen, deadline = [], time.time() + timeout
+        while time.time() < deadline:
+            with urllib.request.urlopen(f"{self.url}/api/job/{job}") as r:
+                status = json.loads(r.read())
+            seen.append(status)
+            if status["state"] != "running":
+                return status, seen
+            time.sleep(0.1)
+        raise AssertionError("the analysis did not finish")
+
+    def post(self, files):
+        """Upload and wait for the analysis -> (200, {"url"}) when it worked, else (400, {"error"}): the shape the checks below use."""
+        status, data = self.start(files)
+        if status != 202:
+            return status, data
+        final, _ = self.wait(data["job"])
+        return (200, {"url": final["url"]}) if final["state"] == "done" else (400, {"error": final["error"]})
 
     def upload(self, score_midis):
         with tempfile.TemporaryDirectory() as d:
@@ -311,6 +389,29 @@ class Server(unittest.TestCase):
             status, data = self.upload(MIDIS)
         self.assertEqual(status, 400)
         self.assertIn("ffprobe was not found", data["error"])
+
+    def test_progress_is_reported_while_the_analysis_runs(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            wav = d / "a.wav"
+            write_wav(wav, synth([(m, 0.3 + 0.5 * i, 0.4) for i, m in enumerate(MIDIS)]))
+            status, data = self.start({"video": ("take.wav", wav.read_bytes()), "score": ("piece.musicxml", musicxml(MIDIS).encode())})
+        self.assertEqual(status, 202)                                                    # answered at once, the analysis runs on
+        final, seen = self.wait(data["job"])
+        self.assertEqual((final["state"], final["fraction"], final["url"].startswith("/run/")), ("done", 1.0, True))
+        fractions = [x["fraction"] for x in seen]
+        self.assertEqual(fractions, sorted(fractions))                                   # the bar never goes back
+        self.assertTrue(all(0 <= x["fraction"] <= x["ceiling"] <= 1 for x in seen))
+        self.assertTrue(all(x["label"] for x in seen))
+        self.assertTrue({"stage", "seconds", "seconds_in_stage"} <= set(final))
+
+    def test_a_failed_analysis_ends_in_an_error_state_with_the_reason(self):
+        status, data = self.upload([60, 62, 64, 65, 55, 57, 59, 60])                      # (the wrong score)
+        self.assertEqual(status, 400)
+        self.assertIn("does not appear to match", data["error"])
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(f"{self.url}/api/job/{'0' * 32}")
+        self.assertEqual(cm.exception.code, 404)
 
     def test_missing_file_and_unknown_route(self):
         status, data = self.post({"score": ("s.musicxml", musicxml([69]).encode())})
