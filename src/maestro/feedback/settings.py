@@ -75,6 +75,11 @@ def set_key(provider, key, model=None):
     _save(data)
 
 
+def connect_local(model=None):
+    """Choose the local model provider: nothing to paste, so a placeholder is stored as its "key"."""
+    set_key("local", "local", model)
+
+
 def choose(provider, model=None):
     """Choose which connected provider (and model) writes the feedback."""
     _known(provider)
@@ -107,8 +112,9 @@ def status():
     out = {}
     for name, p in providers.PROVIDERS.items():
         key, saved = get_key(name), data["keys"].get(name)
-        out[name] = {"label": p.label, "connected": bool(key), "key": masked(key), "source": "saved" if saved else ("environment" if key else ""),
-                     "model": data["models"].get(name) or p.default_model, "key_url": p.key_url}
+        out[name] = {"label": p.label, "connected": bool(key), "needs_key": p.needs_key, "key": masked(key) if p.needs_key else "", "source": "saved" if saved else ("environment" if key else ""),
+                     "model": data["models"].get(name) or p.default_model, "key_url": p.key_url,
+                     "suggested": list(getattr(p, "SUGGESTED", ()))}
     saved = out.get(data["provider"])                                  # (a provider that no longer exists, e.g. Gemini, is ignored)
     chosen = data["provider"] if saved and saved["connected"] else next((n for n, s in out.items() if s["connected"]), None)
     return {"provider": chosen, "providers": out}

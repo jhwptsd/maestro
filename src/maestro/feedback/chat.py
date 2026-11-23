@@ -6,7 +6,7 @@
 # kept by gui/server.py per analysis. The model's answers are plain text (shown as text only by the page).
 import json
 
-from maestro.feedback import generator, providers
+from maestro.feedback import generator, prompts, providers
 
 MAX_QUESTION = 1000                # characters of one question
 MAX_TURNS = 40                     # messages kept in a conversation (20 questions and answers); older ones are dropped from what is sent
@@ -47,7 +47,7 @@ def reply(digest, feedback, history, question, provider=None, model=None, key=No
     recent = history[-MAX_TURNS:]
     while recent and recent[0]["role"] != "user":               # a window must start with the student
         recent = recent[1:]
-    answer, used, note = providers.complete_with_fallback(p, key, model, system_prompt(digest, feedback),
+    answer, used, note = providers.complete_with_fallback(p, key, model, system_prompt(prompts.compact(digest) if p.small_context else digest, feedback),
                                                           [*recent, {"role": "user", "content": question}], MAX_TOKENS)
     if note:
         generator.remember_model(chosen, used)

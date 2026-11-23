@@ -60,7 +60,7 @@ def resolve(provider=None, model=None, key=None, base_url=None):
     if nothing is connected or the model is unknown."""
     chosen = provider or settings.status()["provider"]
     if not chosen:
-        raise providers.LLMError("No AI provider is connected: add an API key for Groq or OpenRouter (or sign in to OpenRouter) first.")
+        raise providers.LLMError("No AI provider is connected: connect a local model, add an API key for Groq or OpenRouter, or sign in to OpenRouter first.")
     p = providers.get(chosen, base_url)
     key = key or settings.get_key(chosen)
     if not key:
@@ -85,7 +85,8 @@ def feedback_from_digest(digest, provider=None, model=None, key=None, base_url=N
     Raises providers.LLMError (readable message) if no provider is connected or the call fails."""
     p, key, model, chosen = resolve(provider, model, key, base_url)
     reply, used, note = providers.complete_with_fallback(p, key, model, prompts.SYSTEM,
-                                                         [{"role": "user", "content": prompts.user_message(digest)}], MAX_TOKENS, json_mode=True)
+                                                         [{"role": "user", "content": prompts.user_message(prompts.compact(digest) if p.small_context else digest)}],
+                                                         MAX_TOKENS, json_mode=True)
     if note:
         remember_model(chosen, used)
     answer = _parse(reply["text"])

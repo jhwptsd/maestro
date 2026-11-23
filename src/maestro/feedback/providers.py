@@ -1,6 +1,7 @@
 # The LLM providers behind one interface (new file; standard library only).
 #
-# OpenRouter and Groq, both with free tiers and both speaking the OpenAI chat-completions API: each `Provider` can `list_models(key)` and
+# OpenRouter and Groq, both with free tiers and both speaking the OpenAI chat-completions API, and a local small model through Ollama
+# (no account, no internet, nothing leaves the computer): each `Provider` can `list_models(key)` and
 # `complete(key, model, system, messages)` over plain HTTPS with urllib, so no vendor SDK is needed. A key comes from the provider's
 # console, or, for OpenRouter, from a sign-in (feedback/oauth.py, gui/server.py). (Claude, ChatGPT and Gemini were tried and dropped: their
 # app subscriptions cannot be linked, and a free Gemini key was often overloaded.) Free models are shared and get busy, so
@@ -8,6 +9,7 @@
 # Errors are `LLMError`s whose message is fit to show to the user (bad key, quota, unknown model, offline ...); `.status` carries the HTTP
 # status if there was one. `base_url` can be overridden (tests point it at a local server).
 import json
+import os
 import re
 import time
 import urllib.error
@@ -62,6 +64,9 @@ class Provider:
     name = label = key_url = default_model = base_url = ""
     env_vars = ()
     prefer = ()                        # substrings of model ids preferred when choosing a default, in order
+    needs_key = True                   # False for a local model: nothing to paste
+    small_context = False              # True when the model can only take a short prompt: the digest is made compact (prompts.compact)
+    timeout = TIMEOUT                  # seconds for one request
     _NOT_CHAT = ("embed", "whisper", "tts", "dall-e", "image", "moderation", "realtime", "transcribe", "audio", "rerank", "guard")
 
     def _headers(self, key):
@@ -69,7 +74,7 @@ class Provider:
 
     def list_models(self, key):
         """[{"id", "label"}] of the models this key can use for text generation (embedding, speech and image models left out)."""
-        data = http_json(f"{self.base_url}/v1/models", self._headers(key))
+        data = http_json(f"{self.base_url}/v1/models", self._headers(key), timeout=self.timeout)
         ids = sorted(m["id"] for m in data.get("data", []))
         return [{"id": i, "label": i + (" (free)" if i.endswith(":free") else "")} for i in ids if not any(w in i.lower() for w in self._NOT_CHAT)]
 
@@ -78,7 +83,7 @@ class Provider:
         -> {"text": the answer, "usage": {"input": tokens, "output": tokens} (0 if not reported)}. (`json_mode` is accepted for the callers'
         sake; the prompt asks for JSON, since not every model on these services supports a response-format option.)"""
         body = {"model": model, "messages": [{"role": "system", "content": system}, *messages], "max_tokens": max_tokens}
-        data = http_json(f"{self.base_url}/v1/chat/completions", self._headers(key), body)
+        data = http_json(f"{self.base_url}/v1/chat/completions", self._headers(key), body, timeout=self.timeout)
         usage = data.get("usage") or {}
         try:
             text = data["choices"][0]["message"]["content"] or ""
@@ -126,17 +131,112 @@ class Groq(Provider):
     prefer = ("llama-3.3-70b", "70b", "llama")
 
 
-PROVIDERS = {p.name: p for p in (OpenRouter(), Groq())}
+class Local(Provider):
+    """A small model running on this computer through Ollama (https://ollama.com, free): no account, no key, no internet once the model
+    is downloaded, and nothing is sent anywhere. It talks to Ollama's own API rather than the OpenAI-style one because that lets us set the
+    context window: Ollama's default (2048 tokens) would silently cut the prompt. The suggested models are small enough (about 1 to 4
+    billion parameters, 4-bit) to run on a phone too, which also keeps them light for a laptop, so the digest sent to them is made
+    compact (prompts.compact) and the answer is asked for in JSON mode."""
+    name, label = "local", "Local model (Ollama: private, no internet)"
+    key_url = "https://ollama.com/download"
+    env_vars = ()
+    default_model = "llama3.2:3b"
+    prefer = ("llama3.2", "qwen2.5", "gemma2", "phi3", "llama3", "mistral")
+    needs_key = False
+    small_context = True
+    timeout = 900                      # a small model on a CPU writes slowly, and the first call also loads it
+    CONTEXT = 8192                     # tokens: the compact digest, the prompt rules and the answer fit comfortably
+    SUGGESTED = (                      # (id, what it is): small enough for phones as well
+        {"id": "llama3.2:1b", "label": "Llama 3.2 1B (1.3 GB; fits any recent phone, fastest, simplest feedback)"},
+        {"id": "llama3.2:3b", "label": "Llama 3.2 3B (2 GB; phones with 6 GB+ of memory, best balance)"},
+        {"id": "qwen2.5:1.5b", "label": "Qwen 2.5 1.5B (1 GB; small and good at following instructions)"},
+        {"id": "gemma2:2b", "label": "Gemma 2 2B (1.6 GB)"},
+        {"id": "phi3.5", "label": "Phi 3.5 mini 3.8B (2.2 GB; strong for its size)"},
+    )
+
+    def __init__(self):
+        self._override = None
+
+    @property
+    def base_url(self):
+        """http://localhost:11434, or what OLLAMA_HOST says (Ollama's own setting), or what was set for tests."""
+        if self._override:
+            return self._override
+        host = os.environ.get("OLLAMA_HOST", "").strip()
+        if host:
+            return host.rstrip("/") if "://" in host else f"http://{host}"
+        return "http://localhost:11434"
+
+    @base_url.setter
+    def base_url(self, value):
+        self._override = value
+
+    @base_url.deleter
+    def base_url(self):
+        self._override = None
+
+    def _call(self, path, body=None, timeout=None):
+        try:
+            return http_json(f"{self.base_url}{path}", {}, body, timeout or self.timeout)
+        except LLMError as e:
+            if e.status is None and "Could not reach" in str(e):
+                raise LLMError(f"Ollama is not running at {self.base_url}. Install it from https://ollama.com/download (free), start it, "
+                               "and try again.") from None
+            raise
+
+    def list_models(self, key=None):
+        """The models already downloaded to Ollama (embedding models left out)."""
+        data = self._call("/api/tags", timeout=30)
+        return [{"id": m["name"], "label": f"{m['name']} ({m.get('size', 0) / 1e9:.1f} GB)"} for m in data.get("models", [])
+                if "embed" not in m["name"].lower()]
+
+    def complete(self, key, model, system, messages, max_tokens=2000, json_mode=False):
+        body = {"model": model, "stream": False, "messages": [{"role": "system", "content": system}, *messages],
+                "options": {"num_ctx": self.CONTEXT, "num_predict": max_tokens, "temperature": 0.4}}
+        if json_mode:
+            body["format"] = "json"                                # Ollama then only produces valid JSON
+        data = self._call("/api/chat", body)
+        text = (data.get("message") or {}).get("content", "")
+        if not text:
+            raise LLMError("The local model returned no answer.")
+        return {"text": text, "usage": {"input": data.get("prompt_eval_count", 0), "output": data.get("eval_count", 0)}}
+
+    def pull(self, model, on_progress):
+        """Download `model` into Ollama, calling on_progress(fraction 0-1 of the biggest piece, text) as it goes (blocking; streamed)."""
+        import urllib.error
+        import urllib.request
+        request = urllib.request.Request(f"{self.base_url}/api/pull", data=json.dumps({"name": model, "stream": True}).encode(),
+                                         headers={"Content-Type": "application/json"}, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                best = 0.0
+                for line in response:
+                    info = json.loads(line)
+                    if info.get("error"):
+                        raise LLMError(f"Ollama could not download {model}: {info['error']}")
+                    if info.get("total"):
+                        best = max(best, info.get("completed", 0) / info["total"])      # layers come one after another: never go back
+                        on_progress(best, f"Downloading {model}: {info.get('completed', 0) / 1e9:.1f} of {info['total'] / 1e9:.1f} GB")
+                    else:
+                        on_progress(best, str(info.get("status", "")))
+        except urllib.error.HTTPError as e:
+            raise LLMError(_http_message(e), e.code) from None
+        except (urllib.error.URLError, OSError):
+            raise LLMError(f"Ollama is not running at {self.base_url}. Install it from https://ollama.com/download (free), start it, "
+                           "and try again.") from None
+
+
+PROVIDERS = {p.name: p for p in (Local(), OpenRouter(), Groq())}
 
 
 def get(name, base_url=None):
-    """The provider called `name` ("openrouter" or "groq"), optionally with another base URL (tests, proxies)."""
+    """The provider called `name` ("local", "openrouter" or "groq"), optionally with another base URL (tests, proxies)."""
     if name not in PROVIDERS:
         raise LLMError(f"Unknown provider {name!r}: choose one of {', '.join(PROVIDERS)}.")
     provider = PROVIDERS[name]
     if base_url:
         provider = type(provider)()
-        provider.base_url = re.sub(r"/v1$", "", base_url.rstrip("/"))      # the paths we call start with /v1 already
+        provider.base_url = re.sub(r"/v1$", "", base_url.rstrip("/"))      # (the paths of the OpenAI-style services start with /v1)
     return provider
 
 

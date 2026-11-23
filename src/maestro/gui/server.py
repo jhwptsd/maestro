@@ -9,8 +9,9 @@
 # The page plays the recording, which is served from /run/<id>/media with HTTP range support (browsers need it to seek). Runs live in a temporary folder that is removed when the server exits. Binds to localhost only: it is meant
 # for personal use.
 #
-# AI feedback (feedback/): GET /api/llm and POST /api/llm/{connect,models,select,disconnect} manage which provider (OpenRouter or
-# Groq) the user connected with an API key (feedback/settings.py: stored per user, only ever shown masked), and
+# AI feedback (feedback/): GET /api/llm and POST /api/llm/{connect,models,select,disconnect} manage which provider (a small local model
+# through Ollama, OpenRouter or Groq) the user connected, with an API key for the last two; POST /api/llm/pull {model} downloads a local
+# model in the background (polled at /api/job/<id>) (feedback/settings.py: stored per user, only ever shown masked), and
 # POST /api/feedback {"run": id} writes feedback for an analysis with the chosen model (feedback/generator.py), sending only the
 # digest of numbers; POST /api/chat {"run": id, "message": text} continues a conversation with the model about it (feedback/chat.py);
 # GET /auth/openrouter/start and /auth/openrouter/callback/<state> are the "Sign in with OpenRouter" flow (feedback/oauth.py). These endpoints spend the user's money and handle their keys, so a web page on another site must not be able to
@@ -155,9 +156,15 @@ class Handler(BaseHTTPRequestHandler):
             return 200, run["feedback"]
         if route == "/api/chat":
             return self._chat(body)
+        if route == "/api/llm/pull":
+            return self._pull(str(body.get("model", "")).strip())
         provider = str(body.get("provider", ""))
         settings._known(provider)                                      # unknown name -> LLMError
         if route == "/api/llm/connect":
+            if not providers.PROVIDERS[provider].needs_key:            # the local model: just check Ollama answers
+                models = providers.get(provider).list_models()
+                settings.connect_local(providers.get(provider).pick_model(models) if models else None)
+                return 200, {"status": settings.status(), "models": models}
             key = str(body.get("api_key", "")).strip()
             if not key:
                 return 400, {"error": "Paste the API key first."}
@@ -177,6 +184,30 @@ class Handler(BaseHTTPRequestHandler):
             settings.remove_key(provider)
             return 200, {"status": settings.status()}
         return 404, {"error": "Not found"}
+
+    def _pull(self, model):
+        """POST /api/llm/pull {model} -> 202 {"job": id}: download a model into Ollama in the background and, when done, use it. The job
+        is polled at /api/job/<id> like an analysis (state, label, fraction)."""
+        if not re.fullmatch(r"[\w.\-:/]{1,100}", model):
+            return 400, {"error": "Choose a model to download."}
+        job_id, now = uuid.uuid4().hex, time.monotonic()
+        job = JOBS[job_id] = {"state": "running", "stage": "pull", "label": f"Starting the download of {model}", "fraction": 0.0,
+                              "ceiling": 0.0, "started": now, "stage_started": now}
+
+        def work():
+            try:
+                def progress(fraction, label):
+                    job.update(fraction=fraction, ceiling=fraction, label=label)
+                providers.get("local").pull(model, progress)
+                settings.connect_local(model)
+                job.update(state="done", fraction=1.0, ceiling=1.0, label="Ready")
+            except providers.LLMError as e:
+                job.update(state="error", error=str(e))
+            except Exception as e:
+                traceback.print_exc()
+                job.update(state="error", error=f"Unexpected error: {e}")
+        threading.Thread(target=work, daemon=True).start()
+        return 202, {"job": job_id}
 
     def _chat(self, body):
         """POST /api/chat {run, message} -> {reply, ...}: the next turn of the conversation about an analysis (kept server-side);

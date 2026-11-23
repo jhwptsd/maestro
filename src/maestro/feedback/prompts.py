@@ -88,6 +88,19 @@ def build_digest(perf):
     return digest
 
 
+COMPACT_EVENTS, COMPACT_BARS, COMPACT_CAUSES = 10, 5, 4
+
+
+def compact(digest):
+    """A much shorter digest for small local models (short context, easily distracted): the most severe events with one cause each,
+    the worst bars and main causes, the scores and the limits; the per-skill summaries and simultaneity links are dropped."""
+    return {"piece": digest["piece"], "scores_0_to_100": digest["scores_0_to_100"],
+            "problem_events": [{**e, "causes": e["causes"][:1]} for e in digest["problem_events"][:COMPACT_EVENTS]],
+            "event_counts": {m: sum(c.values()) for m, c in digest["event_counts"].items()},
+            "bars_with_most_problems": digest["bars_with_most_problems"][:COMPACT_BARS],
+            "top_causes": digest["top_causes"][:COMPACT_CAUSES], "unavailable": digest["unavailable"], "limits": digest["limits"]}
+
+
 def user_message(digest):
     """The user turn: the digest as JSON, with the instruction to answer in the required shape."""
     return ("Measurements of the student's recording:\n" + json.dumps(digest, separators=(",", ":"), ensure_ascii=False) +

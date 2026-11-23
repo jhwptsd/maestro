@@ -1,7 +1,7 @@
 # Project setup for Windows: installs ffmpeg (if missing), Maestro with the default CREPE backend (torch, ONNX Runtime),
 # and VioPose (the 3D pose model behind the movement analysis, in its own Python 3.9 environment under
 # third_party\).
-# Usage: .\setup.ps1 [-SkipViopose] [-Neural] [-NoVenv] [-NoGpu]
+# Usage: .\setup.ps1 [-SkipViopose] [-Neural] [-NoVenv] [-NoGpu] [-LocalModel]
 #   -Neural     also install transformers for the optional CLAP tone/expression judgement (analyze(neural="clap"))
 #   -NoVenv     install into the Python you ran this with instead of a virtual environment (not recommended)
 #   -NoGpu      do not install the GPU runtime (ONNX Runtime with DirectML, which runs the CREPE pitch network on any
@@ -11,7 +11,7 @@
 # your global Python (an old torch there makes pip fail with "WinError 2 ... .exe.deleteme"). Activate it afterwards with the
 # command printed at the end.
 # Install the CUDA-specific PyTorch build first if GPU acceleration is desired.
-param([switch]$SkipViopose, [switch]$Neural, [switch]$NoVenv, [switch]$NoGpu)
+param([switch]$SkipViopose, [switch]$Neural, [switch]$NoVenv, [switch]$NoGpu, [switch]$LocalModel)
 $ErrorActionPreference = "Stop"
 
 function Test-Ffmpeg {            # both programs exist AND run (a stale or half-installed copy on the PATH does not count)
@@ -102,6 +102,12 @@ if ($NoGpu) {
     if ($gpus -match "NVIDIA") {
         Write-Host "NVIDIA GPU: for the other network (CLAP) also install the CUDA build of PyTorch into this environment: https://pytorch.org/get-started/locally/"
     }
+}
+
+if ($LocalModel) {
+    # Ollama runs the small local model for the written feedback (then choose "Local model" in the GUI and download one there)
+    if (Get-Command ollama -ErrorAction SilentlyContinue) { Write-Host "Ollama already installed." }
+    else { winget install --id Ollama.Ollama -e --accept-source-agreements --accept-package-agreements }
 }
 
 if ($SkipViopose) {

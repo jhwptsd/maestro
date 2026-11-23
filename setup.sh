@@ -2,7 +2,7 @@
 # Project setup for Linux and macOS: installs ffmpeg and git if missing, Maestro with the default CREPE backend (torch, ONNX
 # Runtime), and VioPose (the 3D pose model behind the movement analysis, in its own Python 3.9
 # environment under third_party/).
-# Usage: ./setup.sh [--skip-viopose] [--neural] [--no-venv]
+# Usage: ./setup.sh [--skip-viopose] [--neural] [--no-venv] [--local-model]
 #   --neural     also install transformers for the optional CLAP tone/expression judgement (analyze(neural="clap"))
 #   --no-venv    install into the Python you ran this with instead of a virtual environment (not recommended)
 # Maestro is installed into its own virtual environment (.venv in this folder), which keeps it apart from packages already
@@ -19,7 +19,8 @@ for arg in "$@"; do
         --skip-viopose) skip_viopose=1 ;;
         --neural) extras="$extras,neural" ;;
         --no-venv) use_venv=0 ;;
-        *) echo "Unknown option $arg (use --skip-viopose, --neural, --no-venv)" >&2; exit 1 ;;
+        --local-model) local_model=1 ;;
+        *) echo "Unknown option $arg (use --skip-viopose, --neural, --no-venv, --local-model)" >&2; exit 1 ;;
     esac
 done
 
@@ -56,6 +57,12 @@ elif [ "$(uname)" = "Darwin" ]; then
     echo "macOS: PyTorch uses the Apple GPU (MPS) automatically."
 elif command -v lspci >/dev/null 2>&1 && lspci | grep -qiE "(vga|3d|display).*(amd|advanced micro|radeon)"; then
     echo "AMD GPU found: install the ROCm build of PyTorch into this environment to use it, see https://pytorch.org/get-started/locally/ (choose ROCm)."
+fi
+
+if [ "${local_model:-0}" -eq 1 ]; then   # Ollama runs the small local model for the written feedback
+    if command -v ollama >/dev/null 2>&1; then echo "Ollama already installed."
+    elif command -v brew >/dev/null 2>&1; then brew install ollama
+    else curl -fsSL https://ollama.com/install.sh | sh; fi
 fi
 
 if [ "$skip_viopose" -eq 1 ]; then

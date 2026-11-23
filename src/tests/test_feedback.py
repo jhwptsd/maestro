@@ -8,6 +8,7 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.parse
@@ -174,7 +175,7 @@ class ProviderCalls(WithConfig):
         for gone in ("gemini", "anthropic", "openai", "custom"):
             with self.assertRaisesRegex(providers.LLMError, "Unknown provider"):
                 providers.get(gone)
-        self.assertEqual(set(providers.PROVIDERS), {"openrouter", "groq"})
+        self.assertEqual(set(providers.PROVIDERS), {"local", "openrouter", "groq"})
 
 
 class BusyAndMissingModels(WithConfig):
@@ -273,7 +274,7 @@ class SavedSettings(WithConfig):
             {"provider": "gemini", "keys": {"gemini": "old-key-0123456789", "groq": KEY}, "models": {"gemini": "gemini-2.5-flash"}}))
         state = settings.status()
         self.assertEqual(state["provider"], "groq")                                              # falls back to one that is connected
-        self.assertEqual(set(state["providers"]), {"openrouter", "groq"})
+        self.assertEqual(set(state["providers"]), {"local", "openrouter", "groq"})
 
     def test_a_corrupt_file_is_treated_as_nothing_saved(self):
         (Path(self._tmp.name) / "llm.json").write_text("{not json")
@@ -487,6 +488,23 @@ class Endpoints(WithConfig):
             patcher = mock.patch.object(providers.PROVIDERS[name], "base_url", self.fake.url)
             patcher.start()
             self.addCleanup(patcher.stop)
+
+    def test_local_model_connects_without_a_key_and_downloads_with_progress(self):
+        ollama = FakeOllama()
+        self.addCleanup(ollama.close)
+        with mock.patch.object(providers.PROVIDERS["local"], "base_url", ollama.url):
+            status, data = self.call("/api/llm/connect", {"provider": "local"})
+            self.assertEqual((status, data["status"]["provider"], [m["id"] for m in data["models"]]), (200, "local", ["llama3.2:3b"]))
+            self.assertEqual(self.call("/api/llm/pull", {"model": "bad name!"})[0], 400)
+            status, data = self.call("/api/llm/pull", {"model": "llama3.2:1b"})
+            self.assertEqual(status, 202)
+            for _ in range(100):
+                job = self.call(f"/api/job/{data['job']}")[1]
+                if job["state"] != "running":
+                    break
+                time.sleep(0.05)
+            self.assertEqual((job["state"], job["fraction"]), ("done", 1.0))
+            self.assertEqual(self.call("/api/llm")[1]["providers"]["local"]["model"], "llama3.2:1b")
 
     def call(self, path, body=None, headers=None, method=None, raw=None):
         data = raw if raw is not None else (None if body is None else json.dumps(body).encode())
@@ -736,6 +754,118 @@ class Page(WithConfig):
         self.assertEqual((out["pwned"], out["imgs"], out["errors"]), (False, 0, []))
         self.assertIn("<img src=x", out["text"])                                                  # visible as text
         self.assertEqual(out["bolds"], 2)                                                         # only our own <b> (title, "Going well")
+
+
+class FakeOllama:
+    """A local server that answers like Ollama's native API (/api/tags, /api/chat, /api/pull) and records what it was sent."""
+
+    def __init__(self, models=("llama3.2:3b", "nomic-embed-text"), answer=None):
+        outer = self
+        self.requests, self.models = [], list(models)
+        self.answer = json.dumps(answer if answer is not None else GOOD_ANSWER)
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                outer.requests.append({"path": self.path, "body": None})
+                data = json.dumps({"models": [{"name": m, "size": 2e9} for m in outer.models]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                outer.requests.append({"path": self.path, "body": body})
+                if self.path == "/api/pull":                       # newline-delimited progress, layers one after another
+                    lines = [{"status": "pulling manifest"}, {"status": "pulling a", "total": 100, "completed": 50},
+                             {"status": "pulling a", "total": 100, "completed": 100}, {"status": "pulling b", "total": 10, "completed": 1},
+                             {"status": "success"}]
+                    if body["name"] == "nope":
+                        lines = [{"error": "pull model manifest: file does not exist"}]
+                    data = "".join(json.dumps(x) + "\n" for x in lines).encode()
+                else:
+                    data = json.dumps({"message": {"role": "assistant", "content": outer.answer}, "prompt_eval_count": 5, "eval_count": 7}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+class LocalModel(unittest.TestCase):
+    """The local (Ollama) provider: native API with a big enough context, JSON mode, a compact digest, download progress."""
+
+    def setUp(self):
+        self.fake = FakeOllama()
+        self.addCleanup(self.fake.close)
+        self.local = providers.PROVIDERS["local"]
+        patcher = mock.patch.object(self.local, "base_url", self.fake.url)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = mock.patch.dict(os.environ, {"MAESTRO_CONFIG": tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.digest = prompts.build_digest(performance(Path(tmp.name)))
+
+    def test_lists_installed_models_without_embedding_models(self):
+        self.assertEqual([m["id"] for m in self.local.list_models()], ["llama3.2:3b"])
+
+    def test_complete_sets_context_and_json_mode(self):
+        out = self.local.complete("local", "llama3.2:3b", "S", [{"role": "user", "content": "hi"}], 300, json_mode=True)
+        body = self.fake.requests[-1]["body"]
+        self.assertEqual((body["format"], body["options"]["num_ctx"], body["options"]["num_predict"], body["stream"]), ("json", 8192, 300, False))
+        self.assertEqual(body["messages"][0], {"role": "system", "content": "S"})
+        self.assertEqual(out["usage"], {"input": 5, "output": 7})
+
+    def test_not_running_says_how_to_install(self):
+        with mock.patch.object(self.local, "base_url", "http://127.0.0.1:1"), self.assertRaisesRegex(providers.LLMError, "ollama.com/download"):
+            self.local.list_models()
+
+    def test_compact_digest_is_much_smaller_and_keeps_the_worst(self):
+        small = prompts.compact(self.digest)
+        self.assertLessEqual(len(small["problem_events"]), prompts.COMPACT_EVENTS)
+        self.assertLess(len(json.dumps(small)), len(json.dumps(self.digest)))
+        self.assertNotIn("summaries", small)
+        self.assertEqual(small["problem_events"], [{**e, "causes": e["causes"][:1]} for e in self.digest["problem_events"][:prompts.COMPACT_EVENTS]])
+
+    def test_feedback_uses_compact_digest_without_a_key(self):
+        settings.connect_local("llama3.2:3b")
+        result = generator.feedback_from_digest(self.digest)
+        self.assertEqual((result["provider"], result["model"]), ("local", "llama3.2:3b"))
+        sent = self.fake.requests[-1]["body"]["messages"][-1]["content"]
+        self.assertNotIn("summaries", sent)
+
+    def test_chat_works_locally(self):
+        settings.connect_local("llama3.2:3b")
+        self.fake.answer = "Bar 2 first."
+        self.assertEqual(chat.reply(self.digest, None, [], "What first?")["reply"], "Bar 2 first.")
+
+    def test_status_shows_no_key_and_suggested_models(self):
+        settings.connect_local()
+        state = settings.status()
+        self.assertEqual(state["provider"], "local")
+        self.assertEqual((state["providers"]["local"]["needs_key"], state["providers"]["local"]["key"]), (False, ""))
+        self.assertIn("llama3.2:1b", [m["id"] for m in state["providers"]["local"]["suggested"]])
+
+    def test_pull_progress_never_goes_back_and_reports_errors(self):
+        seen = []
+        self.local.pull("llama3.2:1b", lambda f, text: seen.append(f))
+        self.assertEqual(seen, sorted(seen))
+        self.assertEqual(max(seen), 1.0)
+        with self.assertRaisesRegex(providers.LLMError, "does not exist"):
+            self.local.pull("nope", lambda f, t: None)
 
 
 if __name__ == "__main__":

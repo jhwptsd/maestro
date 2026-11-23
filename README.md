@@ -129,7 +129,7 @@ override it, `VIOPOSE_AUDIO=0` runs VioPose without the recording's audio (by de
 the video-only weights). Without VioPose the audio analysis works as before and the report omits the movement parts. Details
 and the visual pitch method are in `src/docs/README.md`.
 
-### Written feedback and chat (OpenRouter or Groq)
+### Written feedback and chat (local model, OpenRouter or Groq)
 
 The analysis gives numbers; an AI model turns them into feedback a student can use: a short summary, up to three priorities (the bars
 involved, what is probably going wrong, one concrete practice suggestion each) and what is going well, and then answers follow-up
@@ -138,6 +138,7 @@ questions in a chat (`maestro/feedback/`). It is optional, uses **your own** con
 | way to connect | service | cost |
 |---|---|---|
 | **Sign in with OpenRouter** (OAuth, no key to copy) | OpenRouter: you log in there and Maestro receives an API key for your own account (`feedback/oauth.py`) | free models (`:free`) |
+| **Local model** (Ollama) | a small model on your own computer: no account, no key, works offline, nothing is sent anywhere | free |
 | paste an **API key** | [OpenRouter](https://openrouter.ai/keys) or [Groq](https://console.groq.com/keys) | both have free tiers with rate limits |
 
 (Claude, ChatGPT and Gemini were tried and dropped: their app subscriptions cannot be linked to other apps, their APIs are billed by use, and a free Gemini key
@@ -145,6 +146,13 @@ was often "overloaded".) Free models are shared and sometimes busy or rate limit
 retried once and then replaced by up to two other models (a free model only ever by another free one, so a fallback never spends money);
 the model that worked is remembered and the feedback notes the swap.
 
+- **Local model.** Install [Ollama](https://ollama.com/download) (or `setup.ps1 -LocalModel` / `./setup.sh --local-model`), start it, choose
+  "Local model" on the start page, press **Connect to Ollama**, then pick a model and **Download and use** (real progress bar). The models
+  offered are small, 4-bit models of 1 to 4 billion parameters (Llama 3.2 1B/3B, Qwen 2.5 1.5B, Gemma 2 2B, Phi 3.5 mini): the same ones run
+  on a recent phone. To suit them Maestro sends a compact summary (the 10 worst events, 5 worst bars), asks for JSON mode and sets an 8192-token
+  context (Ollama's default would silently cut the prompt). Expect plainer feedback than from the big hosted models; the bar numbers are still
+  checked against the analysis. Note that Maestro itself is a computer app: it does not run on an iPhone (that would need it packaged as a
+  separate app); `OLLAMA_HOST` points it at an Ollama on another machine.
 - **Connect** on the start page of the GUI ("Written feedback from an AI"): sign in or paste the key (it is checked by listing the models it
   can use, and only then saved), pick a model, connect both if you like and choose which one to use. Keys are kept in your user config
   folder (`%APPDATA%\maestro\llm.json`, `~/.config/maestro/llm.json`; readable by you only, `MAESTRO_CONFIG` moves it) and are only ever
