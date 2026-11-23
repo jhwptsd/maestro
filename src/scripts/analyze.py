@@ -6,6 +6,8 @@ from pathlib import Path
 from maestro import analyze
 from maestro.audio.pitch import DEFAULT_PITCH_BACKEND, list_pitch_backends
 from maestro.gui.report import build_page, copy_media
+from maestro.feedback.generator import generate_feedback
+from maestro.feedback.providers import LLMError
 from maestro.utils.errors import InputError, ToolMissingError
 
 
@@ -23,6 +25,10 @@ def main():
     parser.add_argument("--crepe-model", choices=("tiny", "full"), default="full")
     parser.add_argument("--neural", choices=("clap",), default=None,
                         help="add the pretrained CLAP tone/expression judgement (needs transformers + torch)")
+    parser.add_argument("--feedback", choices=("anthropic", "openai", "gemini"), default=None,
+                        help="also write feedback with this provider (needs its API key: saved in the GUI or in ANTHROPIC_API_KEY / "
+                             "OPENAI_API_KEY / GEMINI_API_KEY); only a summary of numbers is sent")
+    parser.add_argument("--model", default=None, help="model for --feedback (default: the provider's default or the saved choice)")
     args = parser.parse_args()
 
     pitch_options = {}
@@ -44,6 +50,12 @@ def main():
     except (InputError, ToolMissingError, ImportError, ValueError) as exc:
         parser.exit(2, f"error: {exc}\n")
 
+    if args.feedback:
+        try:
+            generate_feedback(perf, provider=args.feedback, model=args.model)
+            (out / "feedback.json").write_text(json.dumps(perf.feedback, indent=1), encoding="utf-8")
+        except LLMError as exc:
+            print(f"feedback: {exc}")
     (out / "report.html").write_text(build_page(perf, copy_media(perf, out)), encoding="utf-8")
     (out / "assessment.json").write_text(json.dumps(perf.assessment["synthesis"], indent=1), encoding="utf-8")
     print(f"report: {out / 'report.html'}\nassessment events (JSON): {out / 'assessment.json'}")

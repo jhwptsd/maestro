@@ -7,6 +7,14 @@
 # Audiveris). The page plays the recording, which is served from /run/<id>/media with HTTP range support (browsers need it
 # to seek). Runs live in a temporary folder that is removed when the server exits. Binds to localhost only: it is meant
 # for personal use.
+#
+# AI feedback (feedback/): GET /api/llm and POST /api/llm/{connect,models,select,disconnect} manage which provider (Claude,
+# ChatGPT or Gemini) the user connected with an API key (feedback/settings.py: stored per user, only ever shown masked), and
+# POST /api/feedback {"run": id} writes feedback for an analysis with the chosen model (feedback/generator.py), sending only the
+# digest of numbers. These endpoints spend the user's money and handle their keys, so a web page on another site must not be able to
+# call them: every request must name this server in its Host header (against DNS rebinding), a request with an Origin must come
+# from this server, and POST bodies must be application/json (which a cross-site page cannot send without a preflight, which
+# this server never answers).
 import atexit
 import json
 import mimetypes
@@ -22,6 +30,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from maestro import analyze
+from maestro.feedback import generator, prompts, providers, settings
 from maestro.gui.report import build_page, media_source
 from maestro.utils.errors import InputError, ToolMissingError
 
@@ -30,7 +39,7 @@ FIELDS = ("video", "score")                   # the upload form's file inputs; a
 INDEX = (Path(__file__).parent / "index.html").read_text(encoding="utf-8")
 RUNS_DIR = Path(tempfile.mkdtemp(prefix="maestro_runs_"))     # one folder per analysis, deleted when the server exits
 atexit.register(shutil.rmtree, RUNS_DIR, ignore_errors=True)
-RUNS = {}                                                     # id -> {"page": html, "media": path}
+RUNS = {}                                                     # id -> {"page": html, "media": path, "digest": dict, "feedback": dict once written}
 CHUNK = 1 << 20
 
 
@@ -76,7 +85,69 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(block)
                 left -= len(block)
 
+    def _local_request(self):
+        """False (and a 403 sent) unless the Host header and any Origin name this server itself."""
+        port = self.server.server_address[1]
+        hosts = {f"{h}:{port}" for h in ("127.0.0.1", "localhost", "[::1]")}
+        origin = self.headers.get("Origin")
+        if self.headers.get("Host") not in hosts or (origin and origin not in {f"http://{h}" for h in hosts}):
+            self._json(403, {"error": "Requests must come from the Maestro page itself."})
+            return False
+        return True
+
+    def _read_json(self):
+        """The JSON object in the request body (application/json only, at most 1 MB), else None after sending an error."""
+        length = int(self.headers.get("Content-Length", 0))
+        if not self.headers.get("Content-Type", "").startswith("application/json") or not 0 < length <= 1 << 20:
+            self._json(400, {"error": "Expected a JSON body."})
+            return None
+        try:
+            body = json.loads(self.rfile.read(length))
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            self._json(400, {"error": "Expected a JSON object."})
+            return None
+        return body
+
+    def _llm_api(self, body):
+        """POST /api/llm/* and /api/feedback -> (status, object); providers.LLMError is the caller's to report."""
+        route = self.path
+        if route == "/api/feedback":
+            run = RUNS.get(str(body.get("run", "")))
+            if run is None:
+                return 404, {"error": "Unknown analysis: open the report again."}
+            if "feedback" not in run:                                  # one paid call per analysis, then the saved answer
+                run["feedback"] = generator.feedback_from_digest(run["digest"])
+            return 200, run["feedback"]
+        provider = str(body.get("provider", ""))
+        providers.get(provider)                                        # unknown name -> LLMError
+        if route == "/api/llm/connect":
+            key = str(body.get("api_key", "")).strip()
+            if not key:
+                return 400, {"error": "Paste the API key first."}
+            models = providers.get(provider).list_models(key)         # a bad key fails here, before anything is saved
+            pick = next((m["id"] for m in models if m["id"] == providers.PROVIDERS[provider].default_model), models[0]["id"] if models else None)
+            settings.set_key(provider, key, pick)
+            return 200, {"status": settings.status(), "models": models}
+        if route == "/api/llm/models":
+            key = settings.get_key(provider)
+            if not key:
+                return 400, {"error": f"{providers.PROVIDERS[provider].label} is not connected."}
+            return 200, {"models": providers.get(provider).list_models(key)}
+        if route == "/api/llm/select":
+            settings.choose(provider, str(body.get("model", "")) or None)
+            return 200, {"status": settings.status()}
+        if route == "/api/llm/disconnect":
+            settings.remove_key(provider)
+            return 200, {"status": settings.status()}
+        return 404, {"error": "Not found"}
+
     def do_GET(self):
+        if self.path == "/api/llm":
+            if self._local_request():
+                self._json(200, settings.status())
+            return
         run = re.fullmatch(r"/run/([0-9a-f]{32})/(media)?", self.path)
         if self.path in ("/", "/index.html"):
             self._send(200, INDEX, "text/html; charset=utf-8")
@@ -92,8 +163,24 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "Not found", "text/plain")
 
     def do_POST(self):
+        if self.path == "/api/feedback" or self.path.startswith("/api/llm/"):
+            if not self._local_request():
+                return
+            body = self._read_json()
+            if body is None:
+                return
+            try:
+                self._json(*self._llm_api(body))
+            except providers.LLMError as e:
+                self._json(400, {"error": str(e)})
+            except Exception as e:                                     # a bug, not the user's problem: log it, answer briefly
+                traceback.print_exc()
+                self._json(500, {"error": f"Unexpected error: {e}"})
+            return
         if self.path != "/api/analyze":
             return self._send(404, "Not found", "text/plain")
+        if not self._local_request():
+            return
         length = int(self.headers.get("Content-Length", 0))
         if not 0 < length <= MAX_UPLOAD:
             return self._json(400, {"error": "Upload is empty or larger than 1 GB."})
@@ -112,7 +199,7 @@ class Handler(BaseHTTPRequestHandler):
                 paths[field] = folder / (field + Path(name).suffix[:10])
                 paths[field].write_bytes(data)
             perf = analyze(paths["video"], paths["score"], folder / "work")
-            RUNS[run_id] = {"page": build_page(perf, "media"), "media": media_source(perf)[0]}
+            RUNS[run_id] = {"page": build_page(perf, "media", run_id), "media": media_source(perf)[0], "digest": prompts.build_digest(perf)}
             print(f"analysis {run_id[:8]}: " + ", ".join(f"{k} {v:.1f}s" for k, v in perf.timings.items()) +
                   f" (pitch on {perf.audio_features.get('pitch_runtime') or 'n/a'})", file=sys.stderr)
             self._json(200, {"url": f"/run/{run_id}/"})

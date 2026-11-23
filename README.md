@@ -63,7 +63,7 @@ skill, a timeline of problem areas, one button per bar coloured by its worst pro
 row to jump there; clicking the timeline seeks). The score viewer (written vs played notation) is folded away at the bottom.
 
 **Command line**: `python src/scripts/analyze.py performance.mp4 score.musicxml out/ [--pitch-backend crepe|yin|pyin|basic_pitch]
-[--neural clap]` writes `out/report.html` (open it next to the media it saved there), `out/assessment.json` (all events) and the
+[--neural clap] [--feedback anthropic|openai|gemini] [--model NAME]` writes `out/report.html` (open it next to the media it saved there), `out/assessment.json` (all events) and the
 intermediate files (`pose.json`, converted video, ...).
 
 **Python**:
@@ -127,6 +127,33 @@ override it, `VIOPOSE_AUDIO=0` runs VioPose without the recording's audio (by de
 the video-only weights). Without VioPose the audio analysis works as before and the report omits the movement parts. Details
 and the visual pitch method are in `src/docs/README.md`.
 
+### Written feedback (Claude, ChatGPT or Gemini)
+
+The analysis gives numbers; an AI model turns them into feedback a student can use: a short summary, up to three priorities (the bars
+involved, what is probably going wrong, one concrete practice suggestion each) and what is going well (`maestro/feedback/`).
+It is optional and uses **your own API key** for one of the three providers; a Claude, ChatGPT or Gemini *app subscription* cannot
+be linked, because none of the three offers third-party sign-in to it (they issue API keys for developers, billed by use):
+[Claude](https://console.anthropic.com/settings/keys), [OpenAI](https://platform.openai.com/api-keys),
+[Google AI Studio](https://aistudio.google.com/apikey).
+
+- **Connect** on the start page of the GUI ("Written feedback from an AI"): choose the provider, paste the key (it is checked by
+  listing the models it can use, and only then saved), pick a model, and connect several providers if you like and choose which
+  one to use. Keys are kept in your user config folder (`%APPDATA%\maestro\llm.json`, `~/.config/maestro/llm.json`; readable by you
+  only, `MAESTRO_CONFIG` moves it) and are only ever shown masked. The environment variables `ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY` and `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) work too.
+- **Ask** with the "Write feedback" button on a report (one paid call per analysis, the answer is kept). From the command line:
+  `analyze.py ... --feedback anthropic [--model NAME]` also writes `feedback.json` and puts it in the report.
+- **What is sent**: only a digest of numbers (scores, the 30 most severe problems with bar, time, size and likely causes, the bars with
+  most problems), never the recording, the video, the score or file names; the report page shows it ("What is sent to the AI provider")
+  before you ask. The model is told to use only those measurements, and every bar it cites is checked against the bars the analysis
+  flagged: an invented bar is removed and a warning shown. Its text is displayed as plain text.
+- The server only accepts these requests from its own page (Host and Origin are checked and bodies must be JSON), so another
+  website cannot spend your quota or read or change your keys.
+
+The providers are called over plain HTTPS (`feedback/providers.py`, no vendor SDK); `feedback/prompts.py` holds the system prompt and
+the digest, `feedback/generator.py` the call, parsing and bar check. Offline evaluation against teachers' comments
+(`feedback/evidence.py`, `feedback/validate.py`) is still an outline.
+
 ### Assessment events and root causes
 
 `maestro/assessment/` turns the aligned audio, video and score into **events**: one JSON object per problem, in a single
@@ -156,7 +183,7 @@ causes come from the measured features inside each window. It is zero-shot and c
 
 | folder | contents |
 |---|---|
-| `src/maestro/` | the package: `preprocessing`, `audio`, `score`, `alignment`, `vision`, `assessment`, `fusion` (outlined, not implemented yet), `gui`, `utils` (see the header comment of each file) |
+| `src/maestro/` | the package: `preprocessing`, `audio`, `score`, `alignment`, `vision`, `assessment`, `feedback`, `fusion` (outlined, not implemented yet), `gui`, `utils` (see the header comment of each file) |
 | `src/scripts/` | command-line tools: `analyze.py`, `serve.py`, `setup_viopose.py`, `convert_viopose.py`, `bench_pitch.py`, `tune_denoise.py` |
 | `src/training/` | (reserved for training scripts) |
 | `src/tests/` | the tests (`pytest`) |
@@ -174,5 +201,6 @@ causes come from the measured features inside each window. It is zero-shot and c
 
 Implemented: audio extraction, selectable pitch/transcription backends, score conversion, score-audio alignment, assessment of
 pitch, timing, expression, tone, bowing and posture as quantitative events with causes, denoising, the player GUI, VioPose
-movement analysis, and GPU-aware pitch estimation. The `fusion/` folder (learned encoders, multimodal fusion, prediction heads) and
-LLM feedback are outlined but not implemented yet.
+movement analysis, GPU-aware pitch estimation and written feedback from Claude, ChatGPT or Gemini. The `fusion/` folder (learned
+encoders, multimodal fusion, prediction heads), the professional reference (`reference/`) and the offline evaluation of the feedback
+against teachers' comments are outlined but not implemented yet.

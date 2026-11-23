@@ -4,29 +4,52 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 body{font-family:system-ui,sans-serif;max-width:640px;margin:2em auto;padding:0 1em;color:#222}
-form{display:grid;gap:14px;border:1px solid #ddd;border-radius:8px;padding:18px;background:#fafafa}
+form,.box{display:grid;gap:14px;border:1px solid #ddd;border-radius:8px;padding:18px;background:#fafafa}
 label{font-weight:600}.hint{font-weight:400;color:#666;font-size:.9em}
 input[type=file]{display:block;margin-top:6px}
 button{padding:10px 18px;font-size:1em;border:0;border-radius:6px;background:#4a6fa5;color:white;cursor:pointer}
+button.small{padding:5px 10px;font-size:.85em}button.plain{background:#eee;color:#333}
 button:disabled{background:#999;cursor:wait}
-#status{min-height:1.4em}.error{color:#b00020;font-weight:600}
+#status,#ai-status{min-height:1.4em}.error{color:#b00020;font-weight:600}
+h2{margin-top:2em;font-size:1.1em}
+.row{display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center;padding:8px 0;border-top:1px solid #eee}
+.row:first-child{border-top:0}.row small{color:#666}.add{display:flex;gap:8px;flex-wrap:wrap}.add input,.add select{padding:7px;font-size:.95em}
+.add input{flex:1;min-width:200px}
 </style>
 <h1>Maestro: violin feedback</h1>
 <p>Upload a video (or audio) of yourself playing and the score you played from.</p>
 <form id="f">
-  <div><label>Recording <span class="hint">(video or audio: mp4, mov, webm, wav, mp3, m4a …)</span>
+  <div><label>Recording <span class="hint">(video or audio: mp4, mov, webm, wav, mp3, m4a ...)</span>
     <input type="file" name="video" accept="video/*,audio/*" required></label></div>
   <div><label>Score <span class="hint">(MusicXML, .mxl, MIDI, or PDF/image if Audiveris is installed)</span>
     <input type="file" name="score" accept=".musicxml,.xml,.mxl,.mid,.midi,.pdf,.png,.jpg,.jpeg,.tif,.tiff" required></label></div>
   <div><button id="go">Analyze</button></div>
   <div id="status" role="status"></div>
 </form>
+
+<h2 id="ai">Written feedback from an AI (optional)</h2>
+<div class="box">
+  <p class="hint" style="margin:0">After an analysis you can ask Claude, ChatGPT or Gemini to turn the results into feedback. Connect one with
+  <b>your own API key</b> (a Claude, ChatGPT or Gemini app subscription cannot be linked: the providers only offer keys for developers,
+  billed by use). Get a key: <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Claude</a>,
+  <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">OpenAI</a>,
+  <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>.
+  The key is kept on this computer only. What is sent to the provider is a short summary of numbers (bar numbers, errors in cents and milliseconds,
+  scores): never your recording, video or score; you can read it on the report page before asking.</p>
+  <div id="ai-list"></div>
+  <div class="add">
+    <select id="prov"></select>
+    <input id="key" type="password" placeholder="Paste API key" autocomplete="off">
+    <button id="connect" class="small">Connect</button>
+  </div>
+  <div id="ai-status" role="status"></div>
+</div>
 <script>
 const f = document.getElementById("f"), status = document.getElementById("status"), go = document.getElementById("go");
 f.addEventListener("submit", async (e) => {
   e.preventDefault();
   go.disabled = true;
-  status.className = ""; status.textContent = "Uploading and analyzing… this can take a minute for long videos.";
+  status.className = ""; status.textContent = "Uploading and analyzing... this can take a minute for long videos.";
   try {
     const res = await fetch("/api/analyze", {method: "POST", body: new FormData(f)});
     const data = await res.json();
@@ -36,4 +59,53 @@ f.addEventListener("submit", async (e) => {
     status.className = "error"; status.textContent = err.message;
   } finally { go.disabled = false; }
 });
+
+// ---- AI provider connection ------------------------------------------------------------------------------------------
+const list = document.getElementById("ai-list"), prov = document.getElementById("prov"), keyBox = document.getElementById("key"),
+      aiStatus = document.getElementById("ai-status");
+const post = async (url, body) => {
+  const res = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Request failed.");
+  return data;
+};
+const say = (text, error) => { aiStatus.className = error ? "error" : ""; aiStatus.textContent = text; };
+const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { say(e.message, true); } };
+
+function render(state, models = {}) {
+  list.textContent = "";
+  prov.textContent = "";
+  Object.entries(state.providers).forEach(([name, p]) => {
+    const option = document.createElement("option"); option.value = name; option.textContent = p.label; prov.appendChild(option);
+    if (!p.connected) return;
+    const row = document.createElement("div"); row.className = "row";
+    const info = document.createElement("div");
+    const title = document.createElement("b"); title.textContent = p.label + (state.provider === name ? " (in use)" : "");
+    const small = document.createElement("small"); small.textContent = ` key ${p.key} (${p.source}) `;
+    const select = document.createElement("select");
+    (models[name] || [{id: p.model, label: p.model}]).forEach((m) => { const o = document.createElement("option"); o.value = m.id; o.textContent = m.label; o.selected = m.id === p.model; select.appendChild(o); });
+    select.onchange = guard(async () => { render((await post("/api/llm/select", {provider: name, model: select.value})).status, models); say("Model saved."); });
+    info.append(title, document.createElement("br"), small, select);
+    const buttons = document.createElement("div");
+    if (state.provider !== name) {
+      const use = document.createElement("button"); use.className = "small plain"; use.textContent = "Use this one";
+      use.onclick = guard(async () => { render((await post("/api/llm/select", {provider: name, model: select.value})).status, models); });
+      buttons.appendChild(use);
+    }
+    const off = document.createElement("button"); off.className = "small plain"; off.textContent = "Disconnect";
+    off.onclick = guard(async () => { render((await post("/api/llm/disconnect", {provider: name})).status, models); say("Disconnected."); });
+    buttons.appendChild(off);
+    row.append(info, buttons);
+    list.appendChild(row);
+    if (!models[name]) post("/api/llm/models", {provider: name}).then((d) => { models[name] = d.models; render(state, models); }).catch(() => {});
+  });
+}
+document.getElementById("connect").onclick = guard(async () => {
+  say("Checking the key...");
+  const data = await post("/api/llm/connect", {provider: prov.value, api_key: keyBox.value});
+  keyBox.value = "";
+  render(data.status, {[prov.value]: data.models});
+  say("Connected. You can now ask for written feedback on any report.");
+});
+fetch("/api/llm").then((r) => r.json()).then((s) => render(s)).catch(() => {});
 </script>

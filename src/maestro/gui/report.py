@@ -9,6 +9,7 @@ import json
 import shutil
 from pathlib import Path
 
+from maestro.feedback.prompts import build_digest
 from maestro.gui.player import player_data
 from maestro.gui.viewer import build_viewer
 
@@ -49,10 +50,11 @@ def copy_media(perf, directory):
     return Path(path).name
 
 
-def build_page(perf, media_url):
-    """Complete HTML page for a Performance returned by analyze(); `media_url` is where the browser finds the recording."""
+def build_page(perf, media_url, run=None):
+    """Complete HTML page for a Performance returned by analyze(); `media_url` is where the browser finds the recording.
+    `run` (given by gui/server.py) lets the page ask the server for written feedback (feedback/generator.py)."""
     _, kind = media_source(perf)
-    data = json.dumps(player_data(perf, media_url, kind)).replace("</", "<\\/")
+    data = json.dumps(player_data(perf, media_url, kind, run, build_digest(perf))).replace("</", "<\\/")
     viewer = f"<details><summary>Score as read vs score as played</summary>{build_viewer(perf)}</details>"
     return (TEMPLATE.replace("/*CSS*/", CSS).replace("/*VIEWER_JS*/", VIEWER_JS)
             .replace("/*VIEWER*/", viewer).replace("/*DATA*/", data))

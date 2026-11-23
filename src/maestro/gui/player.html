@@ -30,10 +30,16 @@ table{width:100%;border-collapse:collapse;background:white;border:1px solid var(
 th,td{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left;font-variant-numeric:tabular-nums}
 th{font-size:12px;color:var(--mute);cursor:pointer}tr.row{cursor:pointer}tr.row:hover,tr.active{background:#eef3fb}
 .sev{display:inline-block;width:10px;height:10px;border-radius:50%}
+#feedback .fb{background:white;border:1px solid var(--line);border-left:5px solid var(--blue);border-radius:6px;padding:10px 14px;margin-bottom:12px}
+#feedback h2{margin:0 0 6px}#feedback ol{padding-left:20px;margin:6px 0}#feedback li{margin-bottom:8px}
+#feedback .bars{display:inline-block;background:#eef3fb;border-radius:10px;padding:0 8px;font-size:12px;margin-left:6px}
+#feedback .note{color:var(--mute);font-size:12px}#feedback pre{max-height:240px;overflow:auto;background:#f6f6f6;padding:8px;font-size:11px}
+#feedback button{padding:6px 12px;border:0;border-radius:6px;background:var(--blue);color:white;cursor:pointer}#feedback button:disabled{background:#999}
 details{margin-top:20px}summary{cursor:pointer;font-weight:600}
 </style>
 <main>
 <div class="scores" id="scores"></div>
+<div id="feedback"></div>
 <div class="stage" id="stage"><div id="mediaBox"></div><div><canvas id="skel" width="640" height="480"></canvas></div></div>
 <div id="hud"></div>
 <h2>Live traces</h2>
@@ -59,6 +65,50 @@ const NOTE = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const noteName = (m) => NOTE[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
 const fmtTime = (t) => Math.floor(t / 60) + ":" + String(Math.floor(t % 60)).padStart(2, "0");
 const fmtNum = (v) => v === null || v === undefined ? "" : Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2);
+
+// ---- written feedback (an AI provider the user connected; the text is untrusted, so it is only ever inserted as text) -----------
+(function feedbackCard() {
+  const box = $("#feedback");
+  const el = (tag, text, cls) => { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; };
+  const card = el("div", undefined, "fb");
+  function show(fb) {
+    card.textContent = "";
+    card.append(el("h2", "Feedback"), el("p", fb.summary));
+    if (fb.priorities.length) {
+      const list = el("ol");
+      fb.priorities.forEach((p) => { const li = el("li"); li.append(el("b", p.title));
+        if (p.bars.length) li.append(el("span", (p.bars.length > 1 ? "bars " : "bar ") + p.bars.join(", "), "bars"));
+        li.append(el("div", p.why), el("div", "Practice: " + p.practice)); list.appendChild(li); });
+      card.appendChild(list);
+    }
+    if (fb.strengths.length) { card.appendChild(el("b", "Going well")); const ul = el("ul"); fb.strengths.forEach((t) => ul.appendChild(el("li", t))); card.appendChild(ul); }
+    card.appendChild(el("div", `Written by ${fb.model} (${fb.provider}) from the measurements below the video; like any AI text it can be wrong. ` + fb.warnings.join(" "), "note"));
+  }
+  const sent = D.digest && el("details");
+  if (sent) { sent.append(el("summary", "What is sent to the AI provider (numbers only)"), el("pre", JSON.stringify(D.digest, null, 1))); }
+  if (D.feedback) { show(D.feedback); box.append(card); return; }
+  if (!D.run) return;                                     // a saved report has no server to ask
+  const button = el("button", "Write feedback"), hint = el("span", "", "note");
+  card.append(el("h2", "Feedback"), button, hint);
+  if (sent) card.appendChild(sent);
+  box.append(card);
+  const choose = () => fetch("/api/llm").then((r) => r.json()).then((st) => {
+    const p = st.provider && st.providers[st.provider];
+    button.disabled = !p; button.textContent = p ? `Write feedback with ${p.label.split(" ")[0]} (${p.model})` : "Write feedback";
+    hint.textContent = p ? " " : " Connect an AI provider with your own API key on the start page first.";
+    if (!p) { const a = el("a", "Open the start page"); a.href = "/#ai"; hint.append(" ", a); }
+  }).catch(() => { button.disabled = true; });
+  choose();
+  button.onclick = async () => {
+    button.disabled = true; hint.textContent = " Writing...";
+    try {
+      const res = await fetch("/api/feedback", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({run: D.run})});
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not write feedback.");
+      show(data); if (sent) card.appendChild(sent);
+    } catch (e) { hint.textContent = " " + e.hint; button.disabled = false; }
+  };
+})();
 
 // ---- media ---------------------------------------------------------------------------------------------------------
 const media = document.createElement(D.media.kind);
