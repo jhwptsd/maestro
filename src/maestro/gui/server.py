@@ -8,8 +8,8 @@
 # to seek). Runs live in a temporary folder that is removed when the server exits. Binds to localhost only: it is meant
 # for personal use.
 #
-# AI feedback (feedback/): GET /api/llm and POST /api/llm/{connect,models,select,disconnect} manage which provider (Claude,
-# ChatGPT or Gemini) the user connected with an API key (feedback/settings.py: stored per user, only ever shown masked), and
+# AI feedback (feedback/): GET /api/llm and POST /api/llm/{connect,models,select,disconnect} manage which provider (OpenRouter or
+# Groq) the user connected with an API key (feedback/settings.py: stored per user, only ever shown masked), and
 # POST /api/feedback {"run": id} writes feedback for an analysis with the chosen model (feedback/generator.py), sending only the
 # digest of numbers; POST /api/chat {"run": id, "message": text} continues a conversation with the model about it (feedback/chat.py);
 # GET /auth/openrouter/start and /auth/openrouter/callback/<state> are the "Sign in with OpenRouter" flow (feedback/oauth.py). These endpoints spend the user's money and handle their keys, so a web page on another site must not be able to
@@ -131,16 +131,15 @@ class Handler(BaseHTTPRequestHandler):
             key = str(body.get("api_key", "")).strip()
             if not key:
                 return 400, {"error": "Paste the API key first."}
-            base_url = str(body.get("base_url", "")).strip() or None
-            p = providers.get(provider, base_url)
-            models = p.list_models(key)                                # a bad key (or URL) fails here, before anything is saved
-            settings.set_key(provider, key, p.pick_model(models), base_url)
+            p = providers.get(provider)
+            models = p.list_models(key)                                # a bad key fails here, before anything is saved
+            settings.set_key(provider, key, p.pick_model(models))
             return 200, {"status": settings.status(), "models": models}
         if route == "/api/llm/models":
             key = settings.get_key(provider)
             if not key:
                 return 400, {"error": f"{providers.PROVIDERS[provider].label} is not connected."}
-            return 200, {"models": providers.get(provider, settings.get_base_url(provider)).list_models(key)}
+            return 200, {"models": providers.get(provider).list_models(key)}
         if route == "/api/llm/select":
             settings.choose(provider, str(body.get("model", "")) or None)
             return 200, {"status": settings.status()}

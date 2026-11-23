@@ -1,5 +1,5 @@
-"""The LLM feedback layer: the three providers (against a local fake of each API), the saved settings, the digest, the generator,
-the server endpoints and their protection, and the feedback card of the page."""
+"""The LLM feedback layer: the two providers (OpenRouter and Groq, against a local fake of their API), retries and model fallback, the saved settings,
+the digest, the generator, the chat, OpenRouter sign-in, the server endpoints and their protection, and the feedback card and chat of the page."""
 import hashlib
 import http.client
 import json
@@ -27,20 +27,18 @@ KEY = "sk-test-0123456789abcdefghij"
 GOOD_ANSWER = {"summary": "A steady performance with some sharp notes.",
                "priorities": [{"title": "Intonation after leaps", "bars": [2], "why": "Probably overshooting the shift.", "practice": "Slow shifts."}],
                "strengths": ["Steady tempo"]}
+FREE = ["google/gemini-2.0-flash:free", "meta-llama/llama-3.3-70b-instruct:free", "mistralai/mistral-7b-instruct:free"]
 
 
 class FakeProvider:
-    """A local server that answers like the Anthropic, OpenAI and Gemini APIs and records what it was sent."""
+    """A local server that answers like the OpenAI-style API of OpenRouter and Groq and records what it was sent."""
 
     def __init__(self, answer=None, status=200, models_status=200):
         outer = self
         self.requests, self.answer, self.status, self.models_status = [], answer if answer is not None else GOOD_ANSWER, status, models_status
         self.missing = set()                                      # model ids that answer 404, like a retired or unavailable model
-        self.openai_models = ["gpt-4o", "text-embedding-3-small", "whisper-1", "o3-mini", "gpt-4o-realtime-preview"]
-        self.gemini_models = [("gemini-2.0-flash", "generateContent"), ("gemini-2.5-flash", "generateContent"),
-                              ("gemini-2.5-flash-lite", "generateContent"), ("gemini-2.5-pro", "generateContent"),
-                              ("gemini-3-flash-preview", "generateContent"), ("embedding-001", "embedContent"),
-                              ("gemini-old", "countTokens")]
+        self.busy = {}                                            # model id -> how many calls still answer 503 ("overloaded")
+        self.models = ["gpt-4o", "text-embedding-3-small", "whisper-1", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
 
         class Handler(BaseHTTPRequestHandler):
             def reply(self, status, body):
@@ -53,35 +51,28 @@ class FakeProvider:
             def record(self):
                 length = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(length)) if length else None
-                outer.requests.append({"method": self.command, "path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()}, "body": body})
+                outer.requests.append({"method": self.command, "path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()},
+                                       "body": body})
                 return body
 
             def do_GET(self):
                 self.record()
                 if outer.models_status != 200:
                     return self.reply(outer.models_status, {"error": {"message": "bad key"}})
-                if self.path.startswith("/v1/models") and "anthropic-version" in {k.lower() for k in self.headers}:
-                    return self.reply(200, {"data": [{"id": "claude-sonnet-5-5", "display_name": "Claude Sonnet 5.5"},
-                                                      {"id": "claude-haiku-5-5", "display_name": "Claude Haiku 5.5"}]})
-                if self.path.startswith("/v1/models"):
-                    return self.reply(200, {"data": [{"id": i} for i in outer.openai_models]})
-                return self.reply(200, {"models": [{"name": f"models/{i}", "displayName": i, "supportedGenerationMethods": [m]}
-                                                   for i, m in outer.gemini_models]})
+                return self.reply(200, {"data": [{"id": i} for i in outer.models]})
 
             def do_POST(self):
                 body = self.record()
-                model = (body or {}).get("model") or self.path.split("/models/")[-1].split(":")[0]
+                model = (body or {}).get("model")
                 if model in outer.missing:
-                    return self.reply(404, {"error": {"message": f"models/{model} is not found for API version v1beta"}})
+                    return self.reply(404, {"error": {"message": f"model {model} not found"}})
+                if outer.busy.get(model, 0) > 0:
+                    outer.busy[model] -= 1
+                    return self.reply(503, {"error": {"message": "This model is currently experiencing high demand."}})
                 if outer.status != 200:
                     return self.reply(outer.status, {"error": {"message": "quota exceeded"}})
                 text = outer.answer if isinstance(outer.answer, str) else json.dumps(outer.answer)
-                if self.path == "/v1/messages":
-                    return self.reply(200, {"content": [{"type": "text", "text": text}], "usage": {"input_tokens": 11, "output_tokens": 7}})
-                if self.path == "/v1/chat/completions":
-                    return self.reply(200, {"choices": [{"message": {"content": text}}], "usage": {"prompt_tokens": 12, "completion_tokens": 8}})
-                return self.reply(200, {"candidates": [{"content": {"parts": [{"text": text}]}}],
-                                        "usageMetadata": {"promptTokenCount": 13, "candidatesTokenCount": 9}})
+                return self.reply(200, {"choices": [{"message": {"content": text}}], "usage": {"prompt_tokens": 12, "completion_tokens": 8}})
 
             def log_message(self, *a):
                 pass
@@ -94,18 +85,28 @@ class FakeProvider:
         self.httpd.shutdown()
         self.httpd.server_close()
 
+    def posts(self):
+        return [r for r in self.requests if r["method"] == "POST"]
+
 
 class WithConfig(unittest.TestCase):
-    """Settings in a temporary config folder, no provider keys in the environment."""
+    """Settings in a temporary config folder, no provider keys in the environment, no waiting between retries."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")}
+        env = {k: v for k, v in os.environ.items() if k not in ("OPENROUTER_API_KEY", "GROQ_API_KEY")}
         env["MAESTRO_CONFIG"] = self._tmp.name
         patcher = mock.patch.dict(os.environ, env, clear=True)
         patcher.start()
         self.addCleanup(patcher.stop)
+        sleeper = mock.patch.object(providers.time, "sleep")
+        self.sleep = sleeper.start()
+        self.addCleanup(sleeper.stop)
+
+
+def user(text):
+    return [{"role": "user", "content": text}]
 
 
 class ProviderCalls(WithConfig):
@@ -117,142 +118,162 @@ class ProviderCalls(WithConfig):
     def provider(self, name):
         return providers.get(name, self.fake.url)
 
-    def test_anthropic_request_and_answer(self):
-        p = self.provider("anthropic")
-        models = p.list_models(KEY)
-        self.assertEqual([m["id"] for m in models], ["claude-sonnet-5-5", "claude-haiku-5-5"])
-        reply = p.complete(KEY, "claude-sonnet-5-5", "SYSTEM TEXT", [{"role": "user", "content": "USER TEXT"}], 500)
-        sent = self.fake.requests[-1]
-        self.assertEqual(sent["path"], "/v1/messages")
-        self.assertEqual((sent["headers"]["x-api-key"], sent["headers"]["anthropic-version"]), (KEY, "2023-06-01"))
-        self.assertEqual(sent["body"], {"model": "claude-sonnet-5-5", "max_tokens": 500, "system": "SYSTEM TEXT",
-                                        "messages": [{"role": "user", "content": "USER TEXT"}]})
-        self.assertEqual(json.loads(reply["text"])["summary"], GOOD_ANSWER["summary"])
-        self.assertEqual(reply["usage"], {"input": 11, "output": 7})
+    def test_request_and_answer_format(self):
+        for name in ("openrouter", "groq"):
+            reply = self.provider(name).complete(KEY, "some/model", "SYS", user("USR"), 321, json_mode=True)
+            sent = self.fake.requests[-1]
+            self.assertEqual(sent["path"], "/v1/chat/completions")
+            self.assertEqual(sent["headers"]["authorization"], f"Bearer {KEY}")
+            self.assertEqual(sent["body"]["messages"], [{"role": "system", "content": "SYS"}, {"role": "user", "content": "USR"}])
+            self.assertEqual(sent["body"]["max_tokens"], 321)                                       # the widely supported spelling ...
+            self.assertNotIn("response_format", sent["body"])                                       # ... and no option some models reject
+            self.assertNotIn("max_completion_tokens", sent["body"])
+            self.assertEqual(json.loads(reply["text"])["summary"], GOOD_ANSWER["summary"])
+            self.assertEqual(reply["usage"], {"input": 12, "output": 8})
 
-    def test_openai_request_answer_and_model_filter(self):
-        p = self.provider("openai")
-        self.assertEqual([m["id"] for m in p.list_models(KEY)], ["gpt-4o", "o3-mini"])           # no embeddings, speech or realtime
-        reply = p.complete(KEY, "gpt-4o", "SYS", [{"role": "user", "content": "USR"}], 400, json_mode=True)
-        sent = self.fake.requests[-1]
-        self.assertEqual(sent["path"], "/v1/chat/completions")
-        self.assertEqual(sent["headers"]["authorization"], f"Bearer {KEY}")
-        self.assertEqual(sent["body"]["messages"], [{"role": "system", "content": "SYS"}, {"role": "user", "content": "USR"}])
-        self.assertEqual((sent["body"]["max_completion_tokens"], sent["body"]["response_format"]), (400, {"type": "json_object"}))
-        self.assertEqual(reply["usage"], {"input": 12, "output": 8})
+    def test_a_conversation_is_sent_as_alternating_turns(self):
+        turns = [*user("q1"), {"role": "assistant", "content": "a1"}, *user("q2")]
+        self.provider("groq").complete(KEY, "m", "S", turns)
+        self.assertEqual([m["role"] for m in self.fake.requests[-1]["body"]["messages"]], ["system", "user", "assistant", "user"])
 
-    def test_gemini_request_answer_and_model_filter(self):
-        p = self.provider("gemini")
-        self.assertEqual([m["id"] for m in p.list_models(KEY)], ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite",
-                                                                   "gemini-2.5-pro", "gemini-3-flash-preview"])     # only text generators
-        reply = p.complete(KEY, "gemini-2.5-flash", "SYS", [{"role": "user", "content": "USR"}], 300, json_mode=True)
-        sent = self.fake.requests[-1]
-        self.assertEqual(sent["path"], "/v1beta/models/gemini-2.5-flash:generateContent")
-        self.assertEqual(sent["headers"]["x-goog-api-key"], KEY)                                 # in a header, not the URL
-        self.assertNotIn(KEY, sent["path"])
-        self.assertEqual(sent["body"]["systemInstruction"], {"parts": [{"text": "SYS"}]})
-        self.assertEqual(sent["body"]["generationConfig"], {"maxOutputTokens": 300, "responseMimeType": "application/json"})
-        self.assertEqual(reply["usage"], {"input": 13, "output": 9})
+    def test_model_lists_drop_non_chat_models_and_put_free_ones_first(self):
+        self.fake.models = ["openai/gpt-4o", "openai/text-embedding-3-small", *FREE, "meta-llama/llama-guard-3-8b"]
+        models = self.provider("openrouter").list_models(KEY)
+        self.assertEqual([m["id"] for m in models], [*FREE, "openai/gpt-4o"])                      # no embeddings, no guard model
+        self.assertEqual(models[1]["label"], "meta-llama/llama-3.3-70b-instruct:free (free)")
+        self.fake.models = ["llama-3.3-70b-versatile", "whisper-large-v3", "llama-3.1-8b-instant"]
+        self.assertEqual([m["id"] for m in self.provider("groq").list_models(KEY)], ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"])
+
+    def test_default_model_choice(self):
+        ids = lambda *names: [{"id": n} for n in names]
+        openrouter, groq = providers.PROVIDERS["openrouter"], providers.PROVIDERS["groq"]
+        self.assertEqual(openrouter.pick_model(ids("openai/gpt-4o", *FREE)), "meta-llama/llama-3.3-70b-instruct:free")
+        self.assertEqual(openrouter.pick_model(ids("openai/gpt-4o", "google/gemini-2.0-flash:free", "qwen/qwen-2.5:free")), "google/gemini-2.0-flash:free")
+        self.assertEqual(openrouter.pick_model(ids("openai/gpt-4o", "anthropic/claude")), "openai/gpt-4o")      # no free model at all
+        self.assertEqual(openrouter.pick_model(ids(*FREE), exclude={"meta-llama/llama-3.3-70b-instruct:free"}), "google/gemini-2.0-flash:free")
+        self.assertEqual(groq.pick_model(ids("gemma2-9b-it", "llama-3.3-70b-versatile")), "llama-3.3-70b-versatile")
+        self.assertEqual(groq.pick_model(ids("gemma2-9b-it", "llama-3.1-70b-x")), "llama-3.1-70b-x")
+        self.assertIsNone(groq.pick_model([]))
 
     def test_failures_become_readable_messages(self):
         self.fake.status = 429
         with self.assertRaisesRegex(providers.LLMError, "quota"):
-            self.provider("openai").complete(KEY, "gpt-4o", "s", [{"role": "user", "content": "u"}])
+            self.provider("groq").complete(KEY, "m", "s", user("u"))
+        self.fake.busy = {"m": 1}
+        self.fake.status = 200
+        with self.assertRaises(providers.LLMError) as cm:
+            self.provider("groq").complete(KEY, "m", "s", user("u"))
+        self.assertEqual(cm.exception.status, 503)
+        self.assertIn("overloaded", str(cm.exception).lower())
+        self.assertIn("high demand", str(cm.exception))                                             # the provider's own words are kept
         self.fake.models_status = 401
         with self.assertRaisesRegex(providers.LLMError, "API key is not valid"):
-            self.provider("anthropic").list_models("bad")
+            self.provider("openrouter").list_models("bad")
         with self.assertRaisesRegex(providers.LLMError, "Could not reach"):
-            providers.get("gemini", "http://127.0.0.1:1").list_models(KEY)                      # nothing listens there
-        with self.assertRaisesRegex(providers.LLMError, "Unknown provider"):
-            providers.get("llama")
+            providers.get("groq", "http://127.0.0.1:1").list_models(KEY)                            # nothing listens there
+        for gone in ("gemini", "anthropic", "openai", "custom"):
+            with self.assertRaisesRegex(providers.LLMError, "Unknown provider"):
+                providers.get(gone)
+        self.assertEqual(set(providers.PROVIDERS), {"openrouter", "groq"})
 
-    def test_a_conversation_is_sent_as_alternating_turns_in_each_providers_format(self):
-        turns = [{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}, {"role": "user", "content": "q2"}]
-        self.provider("anthropic").complete(KEY, "m", "S", turns)
-        self.assertEqual(self.fake.requests[-1]["body"]["messages"], turns)
-        self.provider("openai").complete(KEY, "m", "S", turns)
-        self.assertEqual([m["role"] for m in self.fake.requests[-1]["body"]["messages"]], ["system", "user", "assistant", "user"])
-        self.provider("gemini").complete(KEY, "m", "S", turns)
-        self.assertEqual([c["role"] for c in self.fake.requests[-1]["body"]["contents"]], ["user", "model", "user"])      # Gemini says "model"
 
-    def test_openai_compatible_services_get_the_common_subset(self):
-        self.fake.openai_models = ["meta-llama/llama-3.3-70b-instruct:free", "openai/gpt-4o", "google/gemini-2.0-flash:free",
-                                   "openai/text-embedding-3-small", "mistralai/mistral-7b-instruct:free"]
-        for name in ("openrouter", "groq"):
-            p = self.provider(name)
-            reply = p.complete(KEY, "some/model", "SYS", [{"role": "user", "content": "USR"}], 321, json_mode=True)
-            sent = self.fake.requests[-1]["body"]
-            self.assertEqual(sent["max_tokens"], 321)                                              # the widely supported spelling ...
-            self.assertNotIn("response_format", sent)                                               # ... and no option some models reject
-            self.assertNotIn("max_completion_tokens", sent)
-            self.assertEqual(json.loads(reply["text"])["summary"], GOOD_ANSWER["summary"])
-        models = self.provider("openrouter").list_models(KEY)
-        self.assertEqual([m["id"] for m in models], ["google/gemini-2.0-flash:free", "meta-llama/llama-3.3-70b-instruct:free",
-                                                      "mistralai/mistral-7b-instruct:free", "openai/gpt-4o"])   # free first, embeddings gone
-        self.assertEqual(models[1]["label"], "meta-llama/llama-3.3-70b-instruct:free (free)")
-        self.assertEqual(self.provider("openrouter").pick_model(models), "meta-llama/llama-3.3-70b-instruct:free")
+class BusyAndMissingModels(WithConfig):
+    """Free models get busy and are retired: retry once, then other models, never a paid one, never past two alternatives."""
 
-    def test_the_custom_service_needs_its_url_and_tolerates_a_trailing_v1(self):
-        with self.assertRaisesRegex(providers.LLMError, "base URL"):
-            providers.get("custom")
-        with self.assertRaisesRegex(providers.LLMError, "http"):
-            providers.get("custom", "api.mistral.ai")
-        self.assertEqual(providers.get("custom", "https://api.mistral.ai/v1/").base_url, "https://api.mistral.ai")
-        self.assertEqual(providers.get("custom", "https://api.mistral.ai").base_url, "https://api.mistral.ai")
+    def setUp(self):
+        super().setUp()
+        self.fake = FakeProvider()
+        self.fake.models = ["openai/gpt-4o", *FREE]
+        self.addCleanup(self.fake.close)
+        self.p = providers.get("openrouter", self.fake.url)
+        self.first = "meta-llama/llama-3.3-70b-instruct:free"
 
-    def test_default_model_choice(self):
-        gemini = providers.PROVIDERS["gemini"]
-        ids = lambda *names: [{"id": n} for n in names]
-        self.assertEqual(gemini.pick_model(ids("gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-flash-preview", "gemini-2.5-pro")),
-                         "gemini-2.5-flash")                                                         # newest stable Flash, not lite or preview
-        self.assertEqual(gemini.pick_model(ids("gemini-1.5-pro", "gemini-2.0-flash")), "gemini-2.0-flash")
-        self.assertEqual(gemini.pick_model(ids("gemini-1.5-pro", "gemini-2.5-pro")), "gemini-2.5-pro")
-        self.assertIsNone(gemini.pick_model([]))
-        self.assertEqual(providers.PROVIDERS["anthropic"].pick_model(ids("claude-haiku-5-5", "claude-sonnet-5-5")), "claude-sonnet-5-5")
+    def run_fallback(self, model=None):
+        return providers.complete_with_fallback(self.p, KEY, model or self.first, "S", user("u"))
 
-    def test_a_model_the_key_cannot_use_is_replaced_once_and_other_errors_are_not_retried(self):
-        gemini = self.provider("gemini")
-        self.fake.missing = {"gemini-2.5-flash"}
-        reply, used, note = providers.complete_with_fallback(gemini, KEY, "gemini-2.5-flash", "S", [{"role": "user", "content": "u"}])
-        self.assertEqual(used, "gemini-2.0-flash")                                                  # the newest other stable Flash
-        self.assertIn("gemini-2.5-flash was not available", note)
-        self.assertEqual(json.loads(reply["text"])["summary"], GOOD_ANSWER["summary"])
-        self.fake.status = 429
-        before = len(self.fake.requests)
-        with self.assertRaisesRegex(providers.LLMError, "quota"):
-            providers.complete_with_fallback(self.provider("openai"), KEY, "gpt-4o", "S", [{"role": "user", "content": "u"}])
-        self.assertEqual(len(self.fake.requests) - before, 1)                                       # no retry for a quota error
-        self.fake.status, self.fake.missing = 200, {"gpt-4o", "o3-mini"}
+    def test_a_busy_model_is_retried_once_after_a_pause(self):
+        self.fake.busy = {self.first: 1}
+        reply, used, note = self.run_fallback()
+        self.assertEqual(used, self.first)
+        self.assertIn("busy", note)
+        self.sleep.assert_called_once_with(providers.RETRY_DELAY)
+        self.assertEqual(len(self.fake.posts()), 2)
+
+    def test_a_model_that_stays_busy_is_replaced_by_another_free_one(self):
+        self.fake.busy = {self.first: 9}
+        reply, used, note = self.run_fallback()
+        self.assertEqual(used, "google/gemini-2.0-flash:free")
+        self.assertIn(f"model {self.first} was busy, so google/gemini-2.0-flash:free was used", note)
+        self.assertEqual([r["body"]["model"] for r in self.fake.posts()], [self.first, self.first, "google/gemini-2.0-flash:free"])
+
+    def test_it_gives_up_after_two_alternatives_and_never_picks_a_paid_model(self):
+        self.fake.busy = {m: 9 for m in FREE}
         with self.assertRaises(providers.LLMError) as cm:
-            providers.complete_with_fallback(self.provider("openai"), KEY, "gpt-4o", "S", [{"role": "user", "content": "u"}])
-        self.assertEqual(cm.exception.status, 404)                                                  # nothing else to try: the real error
+            self.run_fallback()
+        self.assertEqual(cm.exception.status, 503)
+        tried = {r["body"]["model"] for r in self.fake.posts()}
+        self.assertNotIn("openai/gpt-4o", tried)                                                    # a free request stays free
+        self.assertEqual(len(tried), 1 + providers.MAX_ALTERNATIVES)
+
+    def test_an_unknown_model_goes_straight_to_another_without_waiting(self):
+        self.fake.missing = {self.first}
+        reply, used, note = self.run_fallback()
+        self.assertEqual(used, "google/gemini-2.0-flash:free")
+        self.assertIn("not available to this key", note)
+        self.sleep.assert_not_called()
+
+    def test_a_paid_model_may_fall_back_to_any_model(self):
+        self.fake.missing = {"openai/gpt-4o"}
+        reply, used, note = self.run_fallback("openai/gpt-4o")
+        self.assertTrue(used.endswith(":free"))                                                     # the free ones are still preferred
+
+    def test_other_errors_are_raised_at_once(self):
+        self.fake.status = 401
+        before = len(self.fake.requests)
+        with self.assertRaisesRegex(providers.LLMError, "API key is not valid"):
+            self.run_fallback()
+        self.assertEqual(len(self.fake.requests) - before, 1)
+        self.sleep.assert_not_called()
+
+    def test_the_generator_remembers_the_model_that_worked(self):
+        digest = prompts.build_digest(sample_perf())
+        settings.set_key("openrouter", KEY, self.first)
+        self.fake.busy = {self.first: 9}
+        with mock.patch.object(providers.PROVIDERS["openrouter"], "base_url", self.fake.url):
+            result = generator.feedback_from_digest(digest)
+        self.assertEqual(result["model"], "google/gemini-2.0-flash:free")
+        self.assertTrue(any("was busy" in w for w in result["warnings"]))
+        self.assertEqual(settings.status()["providers"]["openrouter"]["model"], "google/gemini-2.0-flash:free")
 
 
 class SavedSettings(WithConfig):
     def test_keys_are_saved_privately_masked_and_overridable_by_the_environment(self):
         self.assertEqual(settings.status()["provider"], None)
-        settings.set_key("anthropic", KEY, "claude-haiku-5-5")
+        settings.set_key("groq", KEY, "llama-3.3-70b-versatile")
         path = Path(self._tmp.name) / "llm.json"
         if sys.platform != "win32":
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)                           # readable by the user only
-        self.assertEqual(settings.get_key("anthropic"), KEY)
+        self.assertEqual(settings.get_key("groq"), KEY)
         state = settings.status()
-        self.assertEqual((state["provider"], state["providers"]["anthropic"]["model"]), ("anthropic", "claude-haiku-5-5"))
+        self.assertEqual((state["provider"], state["providers"]["groq"]["model"]), ("groq", "llama-3.3-70b-versatile"))
         self.assertNotIn(KEY, json.dumps(state))                                                 # the full key never reaches the GUI
-        self.assertTrue(state["providers"]["anthropic"]["key"].startswith("sk-") and state["providers"]["anthropic"]["key"].endswith("ghij"))
-        os.environ["OPENAI_API_KEY"] = "from-environment-0123456789"
-        self.assertTrue(settings.status()["providers"]["openai"]["connected"])
-        self.assertEqual(settings.status()["providers"]["openai"]["source"], "environment")
-        settings.choose("openai", "gpt-4o")
-        self.assertEqual(settings.status()["provider"], "openai")
-        settings.remove_key("anthropic")
-        self.assertFalse(settings.status()["providers"]["anthropic"]["connected"])
+        self.assertTrue(state["providers"]["groq"]["key"].startswith("sk-") and state["providers"]["groq"]["key"].endswith("ghij"))
+        os.environ["OPENROUTER_API_KEY"] = "from-environment-0123456789"
+        self.assertEqual(settings.status()["providers"]["openrouter"]["source"], "environment")
+        settings.choose("openrouter", "meta-llama/llama-3.3-70b-instruct:free")
+        self.assertEqual(settings.status()["provider"], "openrouter")
+        settings.remove_key("groq")
+        self.assertFalse(settings.status()["providers"]["groq"]["connected"])
+        os.environ.pop("OPENROUTER_API_KEY")
         with self.assertRaisesRegex(providers.LLMError, "not connected"):
-            settings.choose("gemini")
+            settings.choose("groq")
 
-    def test_gemini_accepts_either_environment_variable(self):
-        os.environ["GOOGLE_API_KEY"] = "google-key-0123456789"
-        self.assertEqual(settings.get_key("gemini"), "google-key-0123456789")
+    def test_a_provider_that_no_longer_exists_in_the_saved_file_is_ignored(self):
+        (Path(self._tmp.name) / "llm.json").write_text(json.dumps(
+            {"provider": "gemini", "keys": {"gemini": "old-key-0123456789", "groq": KEY}, "models": {"gemini": "gemini-2.5-flash"}}))
+        state = settings.status()
+        self.assertEqual(state["provider"], "groq")                                              # falls back to one that is connected
+        self.assertEqual(set(state["providers"]), {"openrouter", "groq"})
 
     def test_a_corrupt_file_is_treated_as_nothing_saved(self):
         (Path(self._tmp.name) / "llm.json").write_text("{not json")
@@ -298,19 +319,19 @@ class Generator(WithConfig):
     def ask(self, answer, **kw):
         fake = FakeProvider(answer)
         try:
-            return generator.feedback_from_digest(self.digest, provider="anthropic", key=KEY, base_url=fake.url, **kw), fake
+            return generator.feedback_from_digest(self.digest, provider="groq", key=KEY, base_url=fake.url, **kw), fake
         finally:
             fake.close()
 
     def test_good_answer_is_shaped_and_only_the_digest_is_sent(self):
         answer = {**GOOD_ANSWER, "priorities": [{**GOOD_ANSWER["priorities"][0], "bars": [self.bar]}]}
         result, fake = self.ask(answer)
-        self.assertEqual((result["provider"], result["model"]), ("anthropic", "claude-sonnet-5-5"))
+        self.assertEqual((result["provider"], result["model"]), ("groq", "llama-3.3-70b-versatile"))
         self.assertEqual(result["priorities"][0]["bars"], [self.bar])
         self.assertEqual(result["warnings"], [])
-        self.assertEqual(result["usage"], {"input": 11, "output": 7})
+        self.assertEqual(result["usage"], {"input": 12, "output": 8})
         sent = fake.requests[-1]
-        self.assertIn(json.dumps(self.digest["scores_0_to_100"], separators=(",", ":")), sent["body"]["messages"][0]["content"])
+        self.assertIn(json.dumps(self.digest["scores_0_to_100"], separators=(",", ":")), sent["body"]["messages"][1]["content"])
         self.assertNotIn(KEY, json.dumps(sent["body"]))                                         # the key is only a header
 
     def test_invented_bars_are_removed_and_reported(self):
@@ -331,30 +352,18 @@ class Generator(WithConfig):
         with self.assertRaisesRegex(providers.LLMError, "No AI provider is connected"):
             generator.feedback_from_digest(self.digest)
         with self.assertRaisesRegex(providers.LLMError, "not connected"):
-            generator.feedback_from_digest(self.digest, provider="gemini")
+            generator.feedback_from_digest(self.digest, provider="openrouter")
 
     def test_saved_provider_and_model_are_used_and_the_result_stored_on_the_performance(self):
         fake = FakeProvider()
         self.addCleanup(fake.close)
-        settings.set_key("openai", KEY, "o3-mini")
+        settings.set_key("openrouter", KEY, "meta-llama/llama-3.3-70b-instruct:free")
         perf = sample_perf()
-        with mock.patch.object(providers.PROVIDERS["openai"], "base_url", fake.url):
+        with mock.patch.object(providers.PROVIDERS["openrouter"], "base_url", fake.url):
             result = generator.generate_feedback(perf)
-        self.assertEqual((result["provider"], result["model"]), ("openai", "o3-mini"))
+        self.assertEqual((result["provider"], result["model"]), ("openrouter", "meta-llama/llama-3.3-70b-instruct:free"))
         self.assertIs(perf.feedback, result)
-        self.assertEqual(fake.requests[-1]["body"]["model"], "o3-mini")
-
-    def test_an_unavailable_model_is_replaced_remembered_and_reported(self):
-        fake = FakeProvider()
-        self.addCleanup(fake.close)
-        fake.missing = {"gemini-2.5-flash"}                                # the Google 404: the saved model is not offered to this key
-        settings.set_key("gemini", KEY, "gemini-2.5-flash")
-        with mock.patch.object(providers.PROVIDERS["gemini"], "base_url", fake.url):
-            result = generator.feedback_from_digest(self.digest)
-        self.assertEqual(result["model"], "gemini-2.0-flash")
-        self.assertTrue(any("gemini-2.5-flash was not available" in w for w in result["warnings"]))
-        self.assertEqual(settings.status()["providers"]["gemini"]["model"], "gemini-2.0-flash")            # next time it is not even tried
-        self.assertEqual(result["summary"], GOOD_ANSWER["summary"])
+        self.assertEqual(fake.requests[-1]["body"]["model"], "meta-llama/llama-3.3-70b-instruct:free")
 
 
 class Conversation(WithConfig):
@@ -365,18 +374,19 @@ class Conversation(WithConfig):
         self.addCleanup(self.fake.close)
 
     def ask(self, history, question, feedback=None):
-        return chat.reply(self.digest, feedback, history, question, provider="anthropic", key=KEY, base_url=self.fake.url)
+        return chat.reply(self.digest, feedback, history, question, provider="groq", key=KEY, base_url=self.fake.url)
 
     def test_the_model_gets_the_measurements_the_feedback_and_the_earlier_turns(self):
         feedback = {"summary": "SUMMARY-GIVEN", "priorities": [], "strengths": ["STRENGTH-GIVEN"]}
-        history = [{"role": "user", "content": "first question"}, {"role": "assistant", "content": "first answer"}]
+        history = [*user("first question"), {"role": "assistant", "content": "first answer"}]
         answer = self.ask(history, "  second question  ", feedback)
         self.assertEqual(answer["reply"], "Probably the shift overshoots.")
         sent = self.fake.requests[-1]["body"]
-        self.assertEqual(sent["messages"], history + [{"role": "user", "content": "second question"}])
-        self.assertIn(json.dumps(self.digest["scores_0_to_100"], separators=(",", ":")), sent["system"])
-        self.assertIn("SUMMARY-GIVEN", sent["system"])
-        self.assertIn("ONLY from those measurements", sent["system"])
+        self.assertEqual(sent["messages"][1:], history + user("second question"))
+        system = sent["messages"][0]["content"]
+        self.assertIn(json.dumps(self.digest["scores_0_to_100"], separators=(",", ":")), system)
+        self.assertIn("SUMMARY-GIVEN", system)
+        self.assertIn("ONLY from those measurements", system)
         self.assertNotIn(KEY, json.dumps(sent))
 
     def test_empty_long_and_dangling_questions(self):
@@ -387,7 +397,7 @@ class Conversation(WithConfig):
         old = [{"role": "assistant", "content": "orphan answer"}] + [{"role": "user", "content": f"q{i}"} if i % 2 == 0 else
                                                                     {"role": "assistant", "content": f"a{i}"} for i in range(2 * chat.MAX_TURNS)]
         self.ask(old, "latest")
-        messages = self.fake.requests[-1]["body"]["messages"]
+        messages = self.fake.requests[-1]["body"]["messages"][1:]
         self.assertEqual(messages[0]["role"], "user")                                                # a window starts with the student
         self.assertLessEqual(len(messages), chat.MAX_TURNS + 1)
         self.assertEqual(messages[-1]["content"], "latest")
@@ -489,35 +499,38 @@ class Endpoints(WithConfig):
             return e.code, json.loads(e.read())
 
     def test_connect_select_disconnect_and_nothing_secret_comes_back(self):
-        status, data = self.call("/api/llm/connect", {"provider": "anthropic", "api_key": KEY})
+        self.fake.models = ["llama-3.3-70b-versatile", "gemma2-9b-it", "whisper-large-v3"]
+        status, data = self.call("/api/llm/connect", {"provider": "groq", "api_key": KEY})
         self.assertEqual(status, 200)
-        self.assertEqual([m["id"] for m in data["models"]], ["claude-sonnet-5-5", "claude-haiku-5-5"])
-        self.assertEqual(data["status"]["provider"], "anthropic")
-        self.assertEqual(data["status"]["providers"]["anthropic"]["model"], "claude-sonnet-5-5")
+        self.assertEqual([m["id"] for m in data["models"]], ["gemma2-9b-it", "llama-3.3-70b-versatile"])      # no speech model
+        self.assertEqual(data["status"]["provider"], "groq")
+        self.assertEqual(data["status"]["providers"]["groq"]["model"], "llama-3.3-70b-versatile")
         self.assertNotIn(KEY, json.dumps(data))
         status, data = self.call("/api/llm")
-        self.assertTrue(data["providers"]["anthropic"]["connected"] and not data["providers"]["openai"]["connected"])
+        self.assertTrue(data["providers"]["groq"]["connected"] and not data["providers"]["openrouter"]["connected"])
         self.assertNotIn(KEY, json.dumps(data))
-        self.call("/api/llm/connect", {"provider": "openai", "api_key": KEY})
-        status, data = self.call("/api/llm/select", {"provider": "anthropic", "model": "claude-haiku-5-5"})
-        self.assertEqual((data["status"]["provider"], data["status"]["providers"]["anthropic"]["model"]), ("anthropic", "claude-haiku-5-5"))
-        status, data = self.call("/api/llm/models", {"provider": "anthropic"})
-        self.assertEqual(len(data["models"]), 2)
-        status, data = self.call("/api/llm/disconnect", {"provider": "anthropic"})
-        self.assertFalse(data["status"]["providers"]["anthropic"]["connected"])
-        self.assertEqual(data["status"]["provider"], "openai")
+        self.fake.models = FREE + ["openai/gpt-4o"]
+        status, data = self.call("/api/llm/connect", {"provider": "openrouter", "api_key": KEY})
+        self.assertEqual(data["status"]["providers"]["openrouter"]["model"], "meta-llama/llama-3.3-70b-instruct:free")     # a free model
+        status, data = self.call("/api/llm/select", {"provider": "groq", "model": "gemma2-9b-it"})
+        self.assertEqual((data["status"]["provider"], data["status"]["providers"]["groq"]["model"]), ("groq", "gemma2-9b-it"))
+        status, data = self.call("/api/llm/models", {"provider": "openrouter"})
+        self.assertEqual(len(data["models"]), 4)
+        status, data = self.call("/api/llm/disconnect", {"provider": "groq"})
+        self.assertFalse(data["status"]["providers"]["groq"]["connected"])
+        self.assertEqual(data["status"]["provider"], "openrouter")
 
-    def test_a_bad_key_is_refused_and_not_saved(self):
+    def test_a_bad_key_is_refused_and_not_saved_and_old_providers_are_unknown(self):
         self.fake.models_status = 401
-        status, data = self.call("/api/llm/connect", {"provider": "gemini", "api_key": "wrong-key-0123456789"})
+        status, data = self.call("/api/llm/connect", {"provider": "groq", "api_key": "wrong-key-0123456789"})
         self.assertEqual(status, 400)
         self.assertIn("API key is not valid", data["error"])
-        self.assertFalse(settings.status()["providers"]["gemini"]["connected"])
-        self.assertEqual(self.call("/api/llm/connect", {"provider": "gemini", "api_key": "  "})[0], 400)
-        self.assertEqual(self.call("/api/llm/connect", {"provider": "llama", "api_key": KEY})[0], 400)
+        self.assertFalse(settings.status()["providers"]["groq"]["connected"])
+        self.assertEqual(self.call("/api/llm/connect", {"provider": "groq", "api_key": "  "})[0], 400)
+        self.assertEqual(self.call("/api/llm/connect", {"provider": "gemini", "api_key": KEY})[0], 400)
 
     def test_feedback_is_written_once_per_analysis(self):
-        settings.set_key("anthropic", KEY)
+        settings.set_key("groq", KEY)
         digest = prompts.build_digest(sample_perf())
         bar = next(e["bar"] for e in digest["problem_events"] if e["bar"] is not None)
         self.fake.answer = {**GOOD_ANSWER, "priorities": [{**GOOD_ANSWER["priorities"][0], "bars": [bar]}]}
@@ -526,32 +539,25 @@ class Endpoints(WithConfig):
         status, data = self.call("/api/feedback", {"run": "a" * 32})
         self.assertEqual(status, 200)
         self.assertEqual(data["priorities"][0]["bars"], [bar])
-        calls = len([r for r in self.fake.requests if r["method"] == "POST"])
-        self.assertEqual(self.call("/api/feedback", {"run": "a" * 32})[1], data)                  # the saved answer: no second paid call
-        self.assertEqual(len([r for r in self.fake.requests if r["method"] == "POST"]), calls)
+        calls = len(self.fake.posts())
+        self.assertEqual(self.call("/api/feedback", {"run": "a" * 32})[1], data)                  # the saved answer: no second call
+        self.assertEqual(len(self.fake.posts()), calls)
         self.assertEqual(self.call("/api/feedback", {"run": "b" * 32})[0], 404)
 
-
-    def test_a_custom_service_needs_its_url_and_remembers_it(self):
-        self.fake.openai_models = ["mistral-large-latest", "mistral-embed"]
-        status, data = self.call("/api/llm/connect", {"provider": "custom", "api_key": KEY})
-        self.assertEqual(status, 400)
-        self.assertIn("base URL", data["error"])
-        status, data = self.call("/api/llm/connect", {"provider": "custom", "api_key": KEY, "base_url": self.fake.url + "/v1"})
+    def test_a_busy_model_is_reported_in_the_feedback_not_as_a_failure(self):
+        settings.set_key("openrouter", KEY, "meta-llama/llama-3.3-70b-instruct:free")
+        self.fake.models = FREE
+        self.fake.busy = {"meta-llama/llama-3.3-70b-instruct:free": 9}
+        digest = prompts.build_digest(sample_perf())
+        gui_server.RUNS["e" * 32] = {"digest": digest}
+        self.addCleanup(gui_server.RUNS.pop, "e" * 32, None)
+        status, data = self.call("/api/feedback", {"run": "e" * 32})
         self.assertEqual(status, 200)
-        self.assertEqual([m["id"] for m in data["models"]], ["mistral-large-latest"])
-        custom = data["status"]["providers"]["custom"]
-        self.assertEqual((custom["needs_url"], custom["base_url"], custom["model"]), (True, self.fake.url + "/v1", "mistral-large-latest"))
-        status, data = self.call("/api/llm/models", {"provider": "custom"})                       # later calls use the saved URL
-        self.assertEqual(status, 200)
-        self.assertEqual(self.call("/api/llm/disconnect", {"provider": "custom"})[1]["status"]["providers"]["custom"]["base_url"], "")
-
-    def test_connecting_gemini_picks_a_working_default_model(self):
-        status, data = self.call("/api/llm/connect", {"provider": "gemini", "api_key": KEY})
-        self.assertEqual(data["status"]["providers"]["gemini"]["model"], "gemini-2.5-flash")      # not a preview, lite or old model
+        self.assertEqual(data["model"], "google/gemini-2.0-flash:free")
+        self.assertTrue(any("busy" in w for w in data["warnings"]))
 
     def test_chat_keeps_the_conversation_per_analysis_and_can_restart_it(self):
-        settings.set_key("anthropic", KEY)
+        settings.set_key("groq", KEY)
         self.fake.answer = "Work on the shift in bar 2."
         digest = prompts.build_digest(sample_perf())
         gui_server.RUNS["c" * 32] = {"digest": digest, "feedback": {"summary": "S", "priorities": [], "strengths": []}}
@@ -560,7 +566,7 @@ class Endpoints(WithConfig):
         self.assertEqual((status, data["reply"], data["turns"]), (200, "Work on the shift in bar 2.", 1))
         status, data = self.call("/api/chat", {"run": "c" * 32, "message": "And then?"})
         self.assertEqual(data["turns"], 2)
-        self.assertEqual([m["content"] for m in self.fake.requests[-1]["body"]["messages"]],
+        self.assertEqual([m["content"] for m in self.fake.requests[-1]["body"]["messages"][1:]],
                          ["What first?", "Work on the shift in bar 2.", "And then?"])             # the second call carries the first turn
         self.assertEqual(len(self.call("/api/chat", {"run": "c" * 32, "history": True})[1]["messages"]), 4)
         self.assertEqual(self.call("/api/chat", {"run": "c" * 32, "reset": True})[1], {"turns": 0})
@@ -575,7 +581,7 @@ class Endpoints(WithConfig):
 
     def test_sign_in_with_openrouter_end_to_end(self):
         oauth._pending.clear()
-        self.fake.openai_models = ["meta-llama/llama-3.3-70b-instruct:free", "openai/gpt-4o"]
+        self.fake.models = ["meta-llama/llama-3.3-70b-instruct:free", "openai/gpt-4o"]
         exchanged = []
 
         def exchange(state, code):
@@ -604,8 +610,7 @@ class Endpoints(WithConfig):
         self.assertTrue(status["providers"]["openrouter"]["connected"])
         self.assertEqual(status["providers"]["openrouter"]["model"], "meta-llama/llama-3.3-70b-instruct:free")      # a free model
         self.assertEqual(status["provider"], "openrouter")
-        # a callback that does not belong to a sign-in started here saves nothing
-        settings.remove_key("openrouter")
+        settings.remove_key("openrouter")                                                      # a callback not started here saves nothing
         c = conn()
         c.request("GET", "/auth/openrouter/callback/forged-state?code=abc123")
         r = c.getresponse()
@@ -619,12 +624,12 @@ class Endpoints(WithConfig):
         self.assertEqual(r.status, 403)
 
     def test_other_web_pages_cannot_drive_these_endpoints(self):
-        settings.set_key("anthropic", KEY)
+        settings.set_key("groq", KEY)
         self.assertEqual(self.call("/api/llm", headers={"Origin": "https://evil.example"})[0], 403)           # cross-site page
         self.assertEqual(self.call("/api/llm", headers={"Host": "evil.example"})[0], 403)                      # DNS rebinding
-        self.assertEqual(self.call("/api/llm/disconnect", {"provider": "anthropic"}, {"Origin": "http://evil.example"})[0], 403)
-        self.assertTrue(settings.status()["providers"]["anthropic"]["connected"])                                # nothing was changed
-        self.assertEqual(self.call("/api/llm/disconnect", raw=b"provider=anthropic", headers={"Content-Type": "text/plain"})[0], 400)
+        self.assertEqual(self.call("/api/llm/disconnect", {"provider": "groq"}, {"Origin": "http://evil.example"})[0], 403)
+        self.assertTrue(settings.status()["providers"]["groq"]["connected"])                                    # nothing was changed
+        self.assertEqual(self.call("/api/llm/disconnect", raw=b"provider=groq", headers={"Content-Type": "text/plain"})[0], 400)
         self.assertEqual(self.call("/api/llm/disconnect", raw=b"[1]")[0], 400)
         self.assertEqual(self.call("/api/analyze", raw=b"x", headers={"Origin": "http://evil.example"})[0], 403)
         self.assertEqual(self.call("/api/llm", headers={"Origin": self.url})[0], 200)                         # the page itself is fine
@@ -641,7 +646,7 @@ class Page(WithConfig):
         cls._tmp.cleanup()
 
     def test_page_carries_the_digest_and_the_run_but_never_a_key(self):
-        settings.set_key("anthropic", KEY)
+        settings.set_key("groq", KEY)
         html = build_page(self.perf, "media.mp4", run="r" * 32)
         data = page_data(html)
         self.assertEqual(data["run"], "r" * 32)
@@ -670,7 +675,7 @@ class Page(WithConfig):
         self.assertEqual(result["errors"], [])
         return result["out"]
 
-    CONNECTED = (200, {"provider": "gemini", "providers": {"gemini": {"label": "Gemini (Google)", "connected": True, "model": "m"}}})
+    CONNECTED = (200, {"provider": "groq", "providers": {"groq": {"label": "Groq (free tier)", "connected": True, "model": "m"}}})
 
     @unittest.skipUnless(HAS_BROWSER, "needs node + playwright")
     def test_a_failure_shows_the_providers_message_not_undefined_and_offers_a_retry(self):
@@ -684,7 +689,7 @@ class Page(WithConfig):
 
     @unittest.skipUnless(HAS_BROWSER, "needs node + playwright")
     def test_feedback_is_written_automatically_and_the_chat_works_as_text(self):
-        feedback = {"provider": "gemini", "model": "m", "summary": "Auto summary.", "warnings": [],
+        feedback = {"provider": "groq", "model": "m", "summary": "Auto summary.", "warnings": [],
                     "priorities": [{"title": "Shifts", "bars": [2], "why": "why text", "practice": "practice text"}], "strengths": ["Steady"]}
         out = self.run_page({"/api/llm": self.CONNECTED, "/api/feedback": (200, feedback),
                              "/api/chat#history": (200, {"messages": [{"role": "user", "content": "earlier question"},
@@ -713,7 +718,7 @@ class Page(WithConfig):
     @unittest.skipUnless(HAS_BROWSER, "needs node + playwright")
     def test_model_text_is_shown_as_text_never_as_html(self):
         evil = "<img src=x onerror=\"window.pwned=1\"><b>bold</b>"
-        self.perf.feedback = {"provider": "anthropic", "model": "m", "summary": evil, "warnings": ["</script>"],
+        self.perf.feedback = {"provider": "groq", "model": "m", "summary": evil, "warnings": ["</script>"],
                               "priorities": [{"title": evil, "bars": [1], "why": evil, "practice": evil}], "strengths": [evil]}
         try:
             with tempfile.TemporaryDirectory() as tmp:

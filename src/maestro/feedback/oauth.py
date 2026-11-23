@@ -6,7 +6,7 @@
 #   2. the user logs in on OpenRouter and agrees; OpenRouter redirects to the callback with ?code=...;
 #   3. the app POSTs {code, code_verifier, code_challenge_method: "S256"} to OPENROUTER_EXCHANGE_URL and receives {"key": "sk-or-..."}:
 #      a normal API key whose usage is the user's own, which is saved like a pasted key (feedback/settings.py).
-# The Claude.ai, ChatGPT and Gemini apps offer no such sign-in for their subscriptions, so they stay on pasted API keys. gui/server.py serves
+# (The Claude.ai, ChatGPT and Gemini apps offer no such sign-in for their subscriptions.) gui/server.py serves
 # /auth/openrouter/start and /auth/openrouter/callback/<state> with the two functions here. The state in the callback path is a random
 # one-time secret that ties the callback to the sign-in this server started, and expires after STATE_LIFETIME seconds.
 import base64

@@ -1,18 +1,22 @@
 # The LLM providers behind one interface (new file; standard library only).
 #
-# Anthropic (Claude), OpenAI (ChatGPT models), Google (Gemini) and OpenAI-compatible services (OpenRouter, Groq, or any other
-# service with that API): each `Provider` can `list_models(key)` and `complete(key, model, system, messages)`, over plain HTTPS with
-# urllib, so no vendor SDK is needed. They need an API key from the provider's developer console (or, for OpenRouter, a
-# sign-in: gui/server.py); a Claude.ai, ChatGPT or Gemini app subscription is a different product and cannot be linked (none of
-# the three offers third-party sign-in to it). Used by feedback/generator.py and feedback/chat.py. Errors are `LLMError`s whose
-# message is fit to show to the user (bad key, quota, unknown model, offline ...); `.status` carries the HTTP status if there was one.
-# `base_url` can be overridden (tests point it at a local server; the "custom" provider has no other).
+# OpenRouter and Groq, both with free tiers and both speaking the OpenAI chat-completions API: each `Provider` can `list_models(key)` and
+# `complete(key, model, system, messages)` over plain HTTPS with urllib, so no vendor SDK is needed. A key comes from the provider's
+# console, or, for OpenRouter, from a sign-in (feedback/oauth.py, gui/server.py). (Claude, ChatGPT and Gemini were tried and dropped: their
+# app subscriptions cannot be linked, and a free Gemini key was often overloaded.) Free models are shared and get busy, so
+# `complete_with_fallback` retries a busy model once and then tries other models. Used by feedback/generator.py and feedback/chat.py.
+# Errors are `LLMError`s whose message is fit to show to the user (bad key, quota, unknown model, offline ...); `.status` carries the HTTP
+# status if there was one. `base_url` can be overridden (tests point it at a local server).
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 
 TIMEOUT = 120                      # seconds for one request: a long answer from a large model takes a while
+BUSY = (429, 502, 503, 504)        # statuses that mean 'busy or rate limited': worth a retry and then another model
+RETRY_DELAY = 2.0                  # seconds before the retry of a busy model
+MAX_ALTERNATIVES = 2               # other models tried after the chosen one failed
 
 
 class LLMError(RuntimeError):
@@ -53,30 +57,39 @@ def _http_message(error):
     return f"{meaning[0].upper()}{meaning[1:]}" + (f" ({detail})" if detail else "") + "."
 
 
-def _version(model_id):
-    """Numbers in a model id as a sortable tuple: 'gemini-2.5-flash' -> (2, 5)."""
-    return tuple(int(n) for n in re.findall(r"\d+", model_id)[:3])
-
-
 class Provider:
+    """A service with the OpenAI chat-completions API. Subclasses give the name, console links, base URL and model preferences."""
     name = label = key_url = default_model = base_url = ""
     env_vars = ()
-    needs_url = False                  # True for the "custom" service: the user must give its base URL
     prefer = ()                        # substrings of model ids preferred when choosing a default, in order
+    _NOT_CHAT = ("embed", "whisper", "tts", "dall-e", "image", "moderation", "realtime", "transcribe", "audio", "rerank", "guard")
+
+    def _headers(self, key):
+        return {"Authorization": f"Bearer {key}"}
 
     def list_models(self, key):
-        """[{"id", "label"}] of the models this key can use for text generation."""
-        raise NotImplementedError
+        """[{"id", "label"}] of the models this key can use for text generation (embedding, speech and image models left out)."""
+        data = http_json(f"{self.base_url}/v1/models", self._headers(key))
+        ids = sorted(m["id"] for m in data.get("data", []))
+        return [{"id": i, "label": i + (" (free)" if i.endswith(":free") else "")} for i in ids if not any(w in i.lower() for w in self._NOT_CHAT)]
 
     def complete(self, key, model, system, messages, max_tokens=2000, json_mode=False):
         """`messages`: [{"role": "user" | "assistant", "content": text}, ...], starting and ending with the user.
-        -> {"text": the answer, "usage": {"input": tokens, "output": tokens} (0 if not reported)}."""
-        raise NotImplementedError
+        -> {"text": the answer, "usage": {"input": tokens, "output": tokens} (0 if not reported)}. (`json_mode` is accepted for the callers'
+        sake; the prompt asks for JSON, since not every model on these services supports a response-format option.)"""
+        body = {"model": model, "messages": [{"role": "system", "content": system}, *messages], "max_tokens": max_tokens}
+        data = http_json(f"{self.base_url}/v1/chat/completions", self._headers(key), body)
+        usage = data.get("usage") or {}
+        try:
+            text = data["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError, TypeError):
+            raise LLMError("The provider returned no answer.") from None
+        return {"text": text, "usage": {"input": usage.get("prompt_tokens", 0), "output": usage.get("completion_tokens", 0)}}
 
-    def pick_model(self, models):
-        """The model to use by default among `models` ([{"id"}]): the provider's default if offered, else the first of the
-        preferred kinds, else the first one; None if there are none."""
-        ids = [m["id"] for m in models]
+    def pick_model(self, models, exclude=()):
+        """The model to use among `models` ([{"id"}], minus `exclude`): the provider's default if offered, else the first of the preferred
+        kinds, else the first one; None if there is none."""
+        ids = [m["id"] for m in models if m["id"] not in exclude]
         if self.default_model in ids:
             return self.default_model
         for word in self.prefer:
@@ -86,183 +99,86 @@ class Provider:
         return ids[0] if ids else None
 
 
-class Anthropic(Provider):
-    name, label = "anthropic", "Claude (Anthropic)"
-    key_url = "https://console.anthropic.com/settings/keys"
-    env_vars = ("ANTHROPIC_API_KEY",)
-    default_model = "claude-sonnet-5-5"
-    base_url = "https://api.anthropic.com"
-
-    def _headers(self, key):
-        return {"x-api-key": key, "anthropic-version": "2023-06-01"}
-
-    def list_models(self, key):
-        data = http_json(f"{self.base_url}/v1/models?limit=100", self._headers(key))
-        return [{"id": m["id"], "label": m.get("display_name") or m["id"]} for m in data.get("data", [])]
-
-    def complete(self, key, model, system, messages, max_tokens=2000, json_mode=False):
-        data = http_json(f"{self.base_url}/v1/messages", self._headers(key),
-                         {"model": model, "max_tokens": max_tokens, "system": system, "messages": messages})
-        text = "".join(block.get("text", "") for block in data.get("content", []) if block.get("type") == "text")
-        usage = data.get("usage", {})
-        return {"text": text, "usage": {"input": usage.get("input_tokens", 0), "output": usage.get("output_tokens", 0)}}
-
-
-class OpenAI(Provider):
-    name, label = "openai", "ChatGPT (OpenAI)"
-    key_url = "https://platform.openai.com/api-keys"
-    env_vars = ("OPENAI_API_KEY",)
-    default_model = "gpt-4o"
-    base_url = "https://api.openai.com"
-    compatible = False                 # True for other services with this API (no response_format, max_tokens)
-    _NOT_CHAT = ("embedding", "whisper", "tts", "dall-e", "image", "moderation", "realtime", "transcribe", "audio", "search",
-                 "davinci", "babbage", "instruct", "codex", "guard", "rerank", "vision-preview")
-
-    _NOT_CHAT_COMPATIBLE = ("embed", "whisper", "tts", "dall-e", "image", "moderation", "realtime", "transcribe", "audio", "rerank",
-                            "guard")                              # ("instruct" is how most open chat models are named)
-
-    def _headers(self, key):
-        return {"Authorization": f"Bearer {key}"}
-
-    def list_models(self, key):
-        data = http_json(f"{self.base_url}/v1/models", self._headers(key))
-        ids = sorted(m["id"] for m in data.get("data", []))
-        if self.compatible:
-            chat = [i for i in ids if not any(w in i.lower() for w in self._NOT_CHAT_COMPATIBLE)]
-        else:
-            chat = [i for i in ids if i.startswith(("gpt", "chatgpt", "o1", "o3", "o4", "o5")) and not any(w in i for w in self._NOT_CHAT)]
-        return [{"id": i, "label": i + (" (free)" if i.endswith(":free") else "")} for i in chat]
-
-    def complete(self, key, model, system, messages, max_tokens=2000, json_mode=False):
-        body = {"model": model, "messages": [{"role": "system", "content": system}, *messages]}
-        if self.compatible:                                        # the common subset: max_tokens, and the prompt asks for JSON
-            body["max_tokens"] = max_tokens
-        else:
-            body["max_completion_tokens"] = max_tokens
-            if json_mode:
-                body["response_format"] = {"type": "json_object"}
-        data = http_json(f"{self.base_url}/v1/chat/completions", self._headers(key), body)
-        usage = data.get("usage") or {}
-        try:
-            text = data["choices"][0]["message"]["content"] or ""
-        except (KeyError, IndexError, TypeError):
-            raise LLMError("The provider returned no answer.") from None
-        return {"text": text, "usage": {"input": usage.get("prompt_tokens", 0), "output": usage.get("completion_tokens", 0)}}
-
-
-class OpenRouter(OpenAI):
-    """OpenRouter: many models (some free) through one OpenAI-style API; the key can come from a sign-in (OAuth PKCE)."""
+class OpenRouter(Provider):
+    """OpenRouter: many models (some free) through one API; the key can come from a sign-in (OAuth PKCE)."""
     name, label = "openrouter", "OpenRouter (free models available)"
     key_url = "https://openrouter.ai/keys"
     env_vars = ("OPENROUTER_API_KEY",)
-    default_model = "openrouter/auto"
+    default_model = "meta-llama/llama-3.3-70b-instruct:free"
     base_url = "https://openrouter.ai/api"
-    compatible = True
-    prefer = ("llama-3.3-70b-instruct:free", "gemini", "deepseek", "qwen", ":free")
+    prefer = ("llama-3.3-70b-instruct:free", "gemini", "deepseek", "qwen", "mistral", ":free")
 
     def list_models(self, key):
-        models = super().list_models(key)
-        return sorted(models, key=lambda m: not m["id"].endswith(":free"))               # free ones first
+        return sorted(super().list_models(key), key=lambda m: not m["id"].endswith(":free"))               # free ones first
 
-    def pick_model(self, models):
+    def pick_model(self, models, exclude=()):
+        """A free model (the free tier is the point of using this); only if there is none, the best of the rest."""
         free = [m for m in models if m["id"].endswith(":free")]
-        return super().pick_model(free) if free else super().pick_model(models)
+        return super().pick_model(free, exclude) or super().pick_model(models, exclude)
 
 
-class Groq(OpenAI):
+class Groq(Provider):
     name, label = "groq", "Groq (free tier)"
     key_url = "https://console.groq.com/keys"
     env_vars = ("GROQ_API_KEY",)
     default_model = "llama-3.3-70b-versatile"
     base_url = "https://api.groq.com/openai"
-    compatible = True
     prefer = ("llama-3.3-70b", "70b", "llama")
 
 
-class Custom(OpenAI):
-    """Any other service with the OpenAI chat-completions API (Mistral, Together, a company gateway ...): the user gives its URL."""
-    name, label = "custom", "Other OpenAI-compatible service"
-    key_url = ""
-    env_vars = ()
-    default_model = ""
-    base_url = ""
-    needs_url = True
-    compatible = True
-
-
-class Gemini(Provider):
-    name, label = "gemini", "Gemini (Google)"
-    key_url = "https://aistudio.google.com/apikey"
-    env_vars = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
-    default_model = "gemini-2.5-flash"
-    base_url = "https://generativelanguage.googleapis.com"
-    _AVOID = ("preview", "exp", "lite", "8b", "thinking", "image", "tts", "live", "audio", "vision", "learnlm", "gemma", "robotics",
-              "computer-use", "embedding", "aqa")
-
-    def _headers(self, key):
-        return {"x-goog-api-key": key}
-
-    def list_models(self, key):
-        data = http_json(f"{self.base_url}/v1beta/models?pageSize=200", self._headers(key))
-        return [{"id": m["name"].split("/", 1)[-1], "label": m.get("displayName") or m["name"]} for m in data.get("models", [])
-                if "generateContent" in m.get("supportedGenerationMethods", []) and m["name"].split("/", 1)[-1].startswith("gemini")]
-
-    def pick_model(self, models):
-        """The newest stable Flash model on offer (fast, free-tier friendly), else the newest stable Pro, else the default."""
-        ids = [m["id"] for m in models]
-        for kind in ("flash", "pro"):
-            stable = [i for i in ids if f"-{kind}" in i and not any(w in i for w in self._AVOID)]
-            if stable:
-                return max(stable, key=_version)
-        return super().pick_model(models)
-
-    def complete(self, key, model, system, messages, max_tokens=2000, json_mode=False):
-        config = {"maxOutputTokens": max_tokens}
-        if json_mode:
-            config["responseMimeType"] = "application/json"
-        contents = [{"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]} for m in messages]
-        data = http_json(f"{self.base_url}/v1beta/models/{model}:generateContent", self._headers(key),
-                         {"systemInstruction": {"parts": [{"text": system}]}, "contents": contents, "generationConfig": config})
-        try:
-            parts = data["candidates"][0]["content"]["parts"]
-        except (KeyError, IndexError):
-            reason = (data.get("promptFeedback") or {}).get("blockReason")
-            raise LLMError("Gemini returned no answer" + (f" (blocked: {reason})." if reason else ".")) from None
-        usage = data.get("usageMetadata", {})
-        return {"text": "".join(p.get("text", "") for p in parts),
-                "usage": {"input": usage.get("promptTokenCount", 0), "output": usage.get("candidatesTokenCount", 0)}}
-
-
-PROVIDERS = {p.name: p for p in (Anthropic(), OpenAI(), Gemini(), OpenRouter(), Groq(), Custom())}
+PROVIDERS = {p.name: p for p in (OpenRouter(), Groq())}
 
 
 def get(name, base_url=None):
-    """The provider called `name`, optionally with another base URL (tests, the custom service). The custom service has no
-    default URL: LLMError if none is given."""
+    """The provider called `name` ("openrouter" or "groq"), optionally with another base URL (tests, proxies)."""
     if name not in PROVIDERS:
         raise LLMError(f"Unknown provider {name!r}: choose one of {', '.join(PROVIDERS)}.")
     provider = PROVIDERS[name]
-    if base_url or provider.needs_url:
-        if not base_url:
-            raise LLMError("Enter the service's base URL first (for example https://api.mistral.ai).")
-        if not re.match(r"https?://", base_url):
-            raise LLMError("The base URL must start with http:// or https://.")
+    if base_url:
         provider = type(provider)()
         provider.base_url = re.sub(r"/v1$", "", base_url.rstrip("/"))      # the paths we call start with /v1 already
     return provider
 
 
 def complete_with_fallback(provider, key, model, system, messages, max_tokens=2000, json_mode=False):
-    """provider.complete, but if the model is unknown to the account (HTTP 404: retired or never available to this key) the
-    provider's own model list is consulted and the best other model tried once. -> (reply, model used, note or None)."""
+    """provider.complete, made robust against what free models do:
+      - busy or rate limited (429, 502, 503, 504): wait RETRY_DELAY seconds and retry once, then try other models;
+      - unknown to the account (404: retired or never available to this key): try other models;
+      - any other error (bad key, bad request, offline) is raised as it is.
+    At most MAX_ALTERNATIVES other models are tried, best first (a free model is only replaced by another free one, so a fallback never
+    spends money). -> (reply, model used, note or None)."""
+    def attempt(m):
+        return provider.complete(key, m, system, messages, max_tokens, json_mode)
+
     try:
-        return provider.complete(key, model, system, messages, max_tokens, json_mode), model, None
-    except LLMError as e:
-        if e.status != 404:
+        return attempt(model), model, None
+    except LLMError as first:
+        if first.status not in (404, *BUSY):
             raise
-        others = [m for m in provider.list_models(key) if m["id"] != model]
-        alternative = provider.pick_model(others)
-        if not alternative:
-            raise
-        reply = provider.complete(key, alternative, system, messages, max_tokens, json_mode)
-        return reply, alternative, f"model {model} was not available to this key, so {alternative} was used"
+        error = first
+        if first.status in BUSY:
+            time.sleep(RETRY_DELAY)
+            try:
+                return attempt(model), model, "the model was busy; the second try worked"
+            except LLMError as again:
+                if again.status not in (404, *BUSY):
+                    raise
+                error = again
+        tried, models = {model}, provider.list_models(key)
+        if model.endswith(":free"):                                  # never turn a free request into a paid one
+            models = [m for m in models if m["id"].endswith(":free")]
+        for _ in range(MAX_ALTERNATIVES):
+            alternative = provider.pick_model(models, exclude=tried)
+            if alternative is None:
+                break
+            tried.add(alternative)
+            try:
+                reply = attempt(alternative)
+            except LLMError as failed:
+                if failed.status not in (404, *BUSY):
+                    raise
+                error = failed
+                continue
+            why = "busy" if first.status in BUSY else "not available to this key"
+            return reply, alternative, f"model {model} was {why}, so {alternative} was used"
+        raise error

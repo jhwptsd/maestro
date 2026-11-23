@@ -2,7 +2,7 @@
 #
 # Stored per user, not in the project: `llm.json` in the config folder ($MAESTRO_CONFIG, else %APPDATA%\maestro on Windows,
 # ~/.config/maestro elsewhere), written readable by the user only where the OS supports that. An environment variable
-# (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY / GOOGLE_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY) is used when no key was saved. Keys never go into the
+# (OPENROUTER_API_KEY, GROQ_API_KEY) is used when no key was saved. Keys never go into the
 # report page, the logs or the digest sent to the model; the GUI only ever shows `masked(key)`. gui/server.py edits these settings
 # for the "connect" panel, and feedback/generator.py reads them.
 import json
@@ -26,13 +26,12 @@ def _path():
 
 
 def load():
-    """{"provider": chosen provider or None, "keys": {provider: key}, "models": {provider: model}, "urls": {provider: base URL}}."""
+    """{"provider": chosen provider or None, "keys": {provider: key}, "models": {provider: model}}."""
     try:
         data = json.loads(_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         data = {}
-    return {"provider": data.get("provider"), "keys": dict(data.get("keys", {})), "models": dict(data.get("models", {})),
-            "urls": dict(data.get("urls", {}))}
+    return {"provider": data.get("provider"), "keys": dict(data.get("keys", {})), "models": dict(data.get("models", {}))}
 
 
 def _save(data):
@@ -64,18 +63,10 @@ def get_key(provider):
     return next((os.environ[v] for v in _known(provider).env_vars if os.environ.get(v)), None)
 
 
-def get_base_url(provider):
-    """The saved base URL of a provider that needs one (the custom service), else None."""
-    return load()["urls"].get(provider)
-
-
-def set_key(provider, key, model=None, base_url=None):
-    """Save a key (and make this the chosen provider). `model` defaults to the provider's default; `base_url` is for the custom
-    service."""
-    providers.get(provider, base_url)
+def set_key(provider, key, model=None):
+    """Save a key (and make this the chosen provider). `model` defaults to the provider's default."""
+    _known(provider)
     data = load()
-    if base_url:
-        data["urls"][provider] = base_url.strip()
     data["keys"][provider] = key.strip()
     data["models"].setdefault(provider, model or providers.PROVIDERS[provider].default_model)
     if model:
@@ -100,7 +91,6 @@ def remove_key(provider):
     data = load()
     data["keys"].pop(provider, None)
     data["models"].pop(provider, None)
-    data["urls"].pop(provider, None)
     if data["provider"] == provider:
         data["provider"] = next(iter(data["keys"]), None)
     _save(data)
@@ -118,7 +108,7 @@ def status():
     for name, p in providers.PROVIDERS.items():
         key, saved = get_key(name), data["keys"].get(name)
         out[name] = {"label": p.label, "connected": bool(key), "key": masked(key), "source": "saved" if saved else ("environment" if key else ""),
-                     "model": data["models"].get(name) or p.default_model, "key_url": p.key_url, "needs_url": p.needs_url,
-                     "base_url": data["urls"].get(name, "")}
-    chosen = data["provider"] if data["provider"] and out[data["provider"]]["connected"] else next((n for n, s in out.items() if s["connected"]), None)
+                     "model": data["models"].get(name) or p.default_model, "key_url": p.key_url}
+    saved = out.get(data["provider"])                                  # (a provider that no longer exists, e.g. Gemini, is ignored)
+    chosen = data["provider"] if saved and saved["connected"] else next((n for n, s in out.items() if s["connected"]), None)
     return {"provider": chosen, "providers": out}

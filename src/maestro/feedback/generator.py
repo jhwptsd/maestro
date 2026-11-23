@@ -1,8 +1,7 @@
 # Generates written feedback from an LLM (rewritten from the outline).
 #
 # `generate_feedback(perf)` builds the digest of the analysis (prompts.build_digest), sends it with the system prompt to the
-# provider the user connected (providers.py, settings.py: Claude, ChatGPT, Gemini or an OpenAI-compatible service such as OpenRouter or
-# Groq, through the user's own key) and stores the
+# provider the user connected (providers.py, settings.py: OpenRouter or Groq, through the user's own key or sign-in) and stores the
 # result in Performance.feedback:
 #   {"provider", "model", "summary", "priorities": [{"title", "bars", "why", "practice"}], "strengths": [...],
 #    "warnings": [...], "usage": {"input", "output"}}
@@ -61,8 +60,8 @@ def resolve(provider=None, model=None, key=None, base_url=None):
     if nothing is connected or the model is unknown."""
     chosen = provider or settings.status()["provider"]
     if not chosen:
-        raise providers.LLMError("No AI provider is connected: add an API key for Claude, ChatGPT, Gemini or another service first.")
-    p = providers.get(chosen, base_url or settings.get_base_url(chosen))
+        raise providers.LLMError("No AI provider is connected: add an API key for Groq or OpenRouter (or sign in to OpenRouter) first.")
+    p = providers.get(chosen, base_url)
     key = key or settings.get_key(chosen)
     if not key:
         raise providers.LLMError(f"{p.label} is not connected: add its API key first.")
@@ -82,7 +81,7 @@ def remember_model(chosen, model):
 
 def feedback_from_digest(digest, provider=None, model=None, key=None, base_url=None):
     """Ask the provider for feedback on a digest -> the feedback dict. provider/model/key default to the saved settings.
-    If the model is not available to the key (HTTP 404) another one is tried once and remembered (noted in "warnings").
+    If the model is busy or not available to the key another one is tried and remembered (noted in "warnings").
     Raises providers.LLMError (readable message) if no provider is connected or the call fails."""
     p, key, model, chosen = resolve(provider, model, key, base_url)
     reply, used, note = providers.complete_with_fallback(p, key, model, prompts.SYSTEM,
