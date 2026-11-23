@@ -14,7 +14,7 @@ button:disabled{background:#999;cursor:wait}
 h2{margin-top:2em;font-size:1.1em}
 .row{display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center;padding:8px 0;border-top:1px solid #eee}
 .row:first-child{border-top:0}.row small{color:#666}.add{display:flex;gap:8px;flex-wrap:wrap}.add input,.add select{padding:7px;font-size:.95em}
-.add input{flex:1;min-width:200px}
+.add input{flex:1;min-width:200px}a.btn{display:inline-block;padding:7px 12px;border-radius:6px;background:#eee;color:#222;text-decoration:none;font-size:.9em}
 </style>
 <h1>Maestro: violin feedback</h1>
 <p>Upload a video (or audio) of yourself playing and the score you played from.</p>
@@ -27,18 +27,23 @@ h2{margin-top:2em;font-size:1.1em}
   <div id="status" role="status"></div>
 </form>
 
-<h2 id="ai">Written feedback from an AI (optional)</h2>
+<h2 id="ai">Written feedback from an AI</h2>
 <div class="box">
-  <p class="hint" style="margin:0">After an analysis you can ask Claude, ChatGPT or Gemini to turn the results into feedback. Connect one with
-  <b>your own API key</b> (a Claude, ChatGPT or Gemini app subscription cannot be linked: the providers only offer keys for developers,
-  billed by use). Get a key: <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Claude</a>,
+  <p class="hint" style="margin:0">Once connected, every report writes feedback for you automatically and lets you ask the AI follow-up questions.
+  Connect <b>Claude, ChatGPT, Gemini</b> or another service with <b>your own API key</b> (a Claude, ChatGPT or Gemini app subscription cannot be
+  linked: the providers only offer keys for developers, billed by use; Gemini and Groq have free tiers). Get a key:
+  <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Claude</a>,
   <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">OpenAI</a>,
-  <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>.
+  <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>,
+  <a href="https://console.groq.com/keys" target="_blank" rel="noopener">Groq</a>,
+  <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">OpenRouter</a>. Or skip the key: sign in to OpenRouter, which has free models.
   The key is kept on this computer only. What is sent to the provider is a short summary of numbers (bar numbers, errors in cents and milliseconds,
-  scores): never your recording, video or score; you can read it on the report page before asking.</p>
+  scores) and what you type in the chat: never your recording, video or score; the report page shows the summary.</p>
+  <div><a class="btn" href="/auth/openrouter/start">Sign in with OpenRouter</a> <span class="hint">(free models available; no key to copy)</span></div>
   <div id="ai-list"></div>
   <div class="add">
     <select id="prov"></select>
+    <input id="url" placeholder="Service URL, e.g. https://api.mistral.ai/v1" autocomplete="off" hidden>
     <input id="key" type="password" placeholder="Paste API key" autocomplete="off">
     <button id="connect" class="small">Connect</button>
   </div>
@@ -62,7 +67,9 @@ f.addEventListener("submit", async (e) => {
 
 // ---- AI provider connection ------------------------------------------------------------------------------------------
 const list = document.getElementById("ai-list"), prov = document.getElementById("prov"), keyBox = document.getElementById("key"),
-      aiStatus = document.getElementById("ai-status");
+      urlBox = document.getElementById("url"), aiStatus = document.getElementById("ai-status");
+let needsUrl = {};
+prov.onchange = () => { urlBox.hidden = !needsUrl[prov.value]; };
 const post = async (url, body) => {
   const res = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
   const data = await res.json();
@@ -77,6 +84,7 @@ function render(state, models = {}) {
   prov.textContent = "";
   Object.entries(state.providers).forEach(([name, p]) => {
     const option = document.createElement("option"); option.value = name; option.textContent = p.label; prov.appendChild(option);
+    needsUrl[name] = p.needs_url;
     if (!p.connected) return;
     const row = document.createElement("div"); row.className = "row";
     const info = document.createElement("div");
@@ -85,6 +93,7 @@ function render(state, models = {}) {
     const select = document.createElement("select");
     (models[name] || [{id: p.model, label: p.model}]).forEach((m) => { const o = document.createElement("option"); o.value = m.id; o.textContent = m.label; o.selected = m.id === p.model; select.appendChild(o); });
     select.onchange = guard(async () => { render((await post("/api/llm/select", {provider: name, model: select.value})).status, models); say("Model saved."); });
+    if (p.base_url) small.textContent += `${p.base_url} `;
     info.append(title, document.createElement("br"), small, select);
     const buttons = document.createElement("div");
     if (state.provider !== name) {
@@ -102,10 +111,14 @@ function render(state, models = {}) {
 }
 document.getElementById("connect").onclick = guard(async () => {
   say("Checking the key...");
-  const data = await post("/api/llm/connect", {provider: prov.value, api_key: keyBox.value});
+  const data = await post("/api/llm/connect", {provider: prov.value, api_key: keyBox.value, base_url: urlBox.hidden ? "" : urlBox.value});
   keyBox.value = "";
   render(data.status, {[prov.value]: data.models});
-  say("Connected. You can now ask for written feedback on any report.");
+  say("Connected. Reports will now write feedback automatically.");
 });
-fetch("/api/llm").then((r) => r.json()).then((s) => render(s)).catch(() => {});
+fetch("/api/llm").then((r) => r.json()).then((s) => { render(s); prov.onchange(); }).catch(() => {});
+const returned = new URLSearchParams(location.search);          // back from "Sign in with OpenRouter"
+if (returned.get("ai") === "connected") say("Signed in to OpenRouter. Reports will now write feedback automatically.");
+if (returned.get("ai_error")) say(returned.get("ai_error"), true);
+if (returned.has("ai") || returned.has("ai_error")) history.replaceState(null, "", location.pathname + "#ai");
 </script>

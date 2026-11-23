@@ -11,7 +11,8 @@
 # AI feedback (feedback/): GET /api/llm and POST /api/llm/{connect,models,select,disconnect} manage which provider (Claude,
 # ChatGPT or Gemini) the user connected with an API key (feedback/settings.py: stored per user, only ever shown masked), and
 # POST /api/feedback {"run": id} writes feedback for an analysis with the chosen model (feedback/generator.py), sending only the
-# digest of numbers. These endpoints spend the user's money and handle their keys, so a web page on another site must not be able to
+# digest of numbers; POST /api/chat {"run": id, "message": text} continues a conversation with the model about it (feedback/chat.py);
+# GET /auth/openrouter/start and /auth/openrouter/callback/<state> are the "Sign in with OpenRouter" flow (feedback/oauth.py). These endpoints spend the user's money and handle their keys, so a web page on another site must not be able to
 # call them: every request must name this server in its Host header (against DNS rebinding), a request with an Origin must come
 # from this server, and POST bodies must be application/json (which a cross-site page cannot send without a preflight, which
 # this server never answers).
@@ -23,6 +24,7 @@ import shutil
 import sys
 import tempfile
 import traceback
+import urllib.parse
 import uuid
 from email.parser import BytesParser
 from email.policy import HTTP
@@ -30,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from maestro import analyze
-from maestro.feedback import generator, prompts, providers, settings
+from maestro.feedback import chat, generator, oauth, prompts, providers, settings
 from maestro.gui.report import build_page, media_source
 from maestro.utils.errors import InputError, ToolMissingError
 
@@ -41,6 +43,7 @@ RUNS_DIR = Path(tempfile.mkdtemp(prefix="maestro_runs_"))     # one folder per a
 atexit.register(shutil.rmtree, RUNS_DIR, ignore_errors=True)
 RUNS = {}                                                     # id -> {"page": html, "media": path, "digest": dict, "feedback": dict once written}
 CHUNK = 1 << 20
+MAX_CHAT_EXCHANGES = 20                                      # questions per analysis (each is a paid call)
 
 
 def parse_multipart(content_type, body):
@@ -120,21 +123,24 @@ class Handler(BaseHTTPRequestHandler):
             if "feedback" not in run:                                  # one paid call per analysis, then the saved answer
                 run["feedback"] = generator.feedback_from_digest(run["digest"])
             return 200, run["feedback"]
+        if route == "/api/chat":
+            return self._chat(body)
         provider = str(body.get("provider", ""))
-        providers.get(provider)                                        # unknown name -> LLMError
+        settings._known(provider)                                      # unknown name -> LLMError
         if route == "/api/llm/connect":
             key = str(body.get("api_key", "")).strip()
             if not key:
                 return 400, {"error": "Paste the API key first."}
-            models = providers.get(provider).list_models(key)         # a bad key fails here, before anything is saved
-            pick = next((m["id"] for m in models if m["id"] == providers.PROVIDERS[provider].default_model), models[0]["id"] if models else None)
-            settings.set_key(provider, key, pick)
+            base_url = str(body.get("base_url", "")).strip() or None
+            p = providers.get(provider, base_url)
+            models = p.list_models(key)                                # a bad key (or URL) fails here, before anything is saved
+            settings.set_key(provider, key, p.pick_model(models), base_url)
             return 200, {"status": settings.status(), "models": models}
         if route == "/api/llm/models":
             key = settings.get_key(provider)
             if not key:
                 return 400, {"error": f"{providers.PROVIDERS[provider].label} is not connected."}
-            return 200, {"models": providers.get(provider).list_models(key)}
+            return 200, {"models": providers.get(provider, settings.get_base_url(provider)).list_models(key)}
         if route == "/api/llm/select":
             settings.choose(provider, str(body.get("model", "")) or None)
             return 200, {"status": settings.status()}
@@ -143,7 +149,51 @@ class Handler(BaseHTTPRequestHandler):
             return 200, {"status": settings.status()}
         return 404, {"error": "Not found"}
 
+    def _chat(self, body):
+        """POST /api/chat {run, message} -> {reply, ...}: the next turn of the conversation about an analysis (kept server-side);
+        {run, reset: true} starts it afresh."""
+        run = RUNS.get(str(body.get("run", "")))
+        if run is None:
+            return 404, {"error": "Unknown analysis: open the report again."}
+        if body.get("reset"):
+            run["chat"] = []
+            return 200, {"turns": 0}
+        if body.get("history"):                                        # a reloaded page asks for the conversation so far
+            return 200, {"messages": run.get("chat", [])}
+        history = run.setdefault("chat", [])
+        if len(history) >= 2 * MAX_CHAT_EXCHANGES:
+            return 400, {"error": "This conversation has got long: clear it to start a new one."}
+        answer = chat.reply(run["digest"], run.get("feedback"), history, str(body.get("message", "")))
+        history += [{"role": "user", "content": str(body["message"]).strip()}, {"role": "assistant", "content": answer["reply"]}]
+        return 200, {**answer, "turns": len(history) // 2}
+
+    def _redirect(self, location):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _openrouter_sign_in(self):
+        """GET /auth/openrouter/start and /auth/openrouter/callback/<state>?code=... (see feedback/oauth.py)."""
+        url = urllib.parse.urlsplit(self.path)
+        port = self.server.server_address[1]
+        if url.path == "/auth/openrouter/start":
+            if self._local_request():
+                self._redirect(oauth.authorization_url(f"http://localhost:{port}/auth/openrouter/callback"))
+            return
+        state = url.path.rsplit("/", 1)[-1]
+        code = urllib.parse.parse_qs(url.query).get("code", [""])[0]
+        try:
+            key = oauth.exchange(state, code)
+            p = providers.PROVIDERS["openrouter"]
+            settings.set_key("openrouter", key, p.pick_model(p.list_models(key)))
+            self._redirect("/?ai=connected#ai")
+        except providers.LLMError as e:
+            self._redirect("/?ai_error=" + urllib.parse.quote(str(e)) + "#ai")
+
     def do_GET(self):
+        if self.path.startswith("/auth/openrouter/"):
+            return self._openrouter_sign_in()
         if self.path == "/api/llm":
             if self._local_request():
                 self._json(200, settings.status())
@@ -163,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "Not found", "text/plain")
 
     def do_POST(self):
-        if self.path == "/api/feedback" or self.path.startswith("/api/llm/"):
+        if self.path in ("/api/feedback", "/api/chat") or self.path.startswith("/api/llm/"):
             if not self._local_request():
                 return
             body = self._read_json()

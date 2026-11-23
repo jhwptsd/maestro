@@ -1,7 +1,8 @@
 # Generates written feedback from an LLM (rewritten from the outline).
 #
 # `generate_feedback(perf)` builds the digest of the analysis (prompts.build_digest), sends it with the system prompt to the
-# provider the user connected (providers.py, settings.py: Claude, ChatGPT or Gemini, through the user's own API key) and stores the
+# provider the user connected (providers.py, settings.py: Claude, ChatGPT, Gemini or an OpenAI-compatible service such as OpenRouter or
+# Groq, through the user's own key) and stores the
 # result in Performance.feedback:
 #   {"provider", "model", "summary", "priorities": [{"title", "bars", "why", "practice"}], "strengths": [...],
 #    "warnings": [...], "usage": {"input", "output"}}
@@ -55,25 +56,48 @@ def shape(answer, digest):
     return {"summary": str(answer.get("summary", "")).strip(), "priorities": priorities, "strengths": strengths, "warnings": warnings}
 
 
-def feedback_from_digest(digest, provider=None, model=None, key=None, base_url=None):
-    """Ask the provider for feedback on a digest -> the feedback dict. provider/model/key default to the saved settings.
-    Raises providers.LLMError (readable message) if no provider is connected or the call fails."""
+def resolve(provider=None, model=None, key=None, base_url=None):
+    """The provider to call -> (Provider, key, model, name). Anything not given comes from the saved settings; LLMError (readable)
+    if nothing is connected or the model is unknown."""
     chosen = provider or settings.status()["provider"]
     if not chosen:
-        raise providers.LLMError("No AI provider is connected: add an API key for Claude, ChatGPT or Gemini first.")
-    p = providers.get(chosen, base_url)
+        raise providers.LLMError("No AI provider is connected: add an API key for Claude, ChatGPT, Gemini or another service first.")
+    p = providers.get(chosen, base_url or settings.get_base_url(chosen))
     key = key or settings.get_key(chosen)
     if not key:
         raise providers.LLMError(f"{p.label} is not connected: add its API key first.")
     model = model or settings.load()["models"].get(chosen) or p.default_model
-    reply = p.complete(key, model, prompts.SYSTEM, prompts.user_message(digest), MAX_TOKENS, json_mode=True)
+    if not model:
+        raise providers.LLMError(f"Choose a model for {p.label} first.")
+    return p, key, model, chosen
+
+
+def remember_model(chosen, model):
+    """Save `model` as the one to use for `chosen` after a fallback (silently nothing if that provider is not saved)."""
+    try:
+        settings.choose(chosen, model)
+    except providers.LLMError:
+        pass
+
+
+def feedback_from_digest(digest, provider=None, model=None, key=None, base_url=None):
+    """Ask the provider for feedback on a digest -> the feedback dict. provider/model/key default to the saved settings.
+    If the model is not available to the key (HTTP 404) another one is tried once and remembered (noted in "warnings").
+    Raises providers.LLMError (readable message) if no provider is connected or the call fails."""
+    p, key, model, chosen = resolve(provider, model, key, base_url)
+    reply, used, note = providers.complete_with_fallback(p, key, model, prompts.SYSTEM,
+                                                         [{"role": "user", "content": prompts.user_message(digest)}], MAX_TOKENS, json_mode=True)
+    if note:
+        remember_model(chosen, used)
     answer = _parse(reply["text"])
     if answer is None:                                           # not JSON: show the text as it is rather than nothing
         result = {"summary": reply["text"].strip(), "priorities": [], "strengths": [],
                   "warnings": ["the model did not answer in the expected format; its text is shown as it came"]}
     else:
         result = shape(answer, digest)
-    return {"provider": chosen, "model": model, **result, "usage": reply["usage"]}
+    if note:
+        result["warnings"].append(note)
+    return {"provider": chosen, "model": used, **result, "usage": reply["usage"]}
 
 
 def generate_feedback(perf, **options):

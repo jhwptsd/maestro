@@ -63,7 +63,7 @@ skill, a timeline of problem areas, one button per bar coloured by its worst pro
 row to jump there; clicking the timeline seeks). The score viewer (written vs played notation) is folded away at the bottom.
 
 **Command line**: `python src/scripts/analyze.py performance.mp4 score.musicxml out/ [--pitch-backend crepe|yin|pyin|basic_pitch]
-[--neural clap] [--feedback anthropic|openai|gemini] [--model NAME]` writes `out/report.html` (open it next to the media it saved there), `out/assessment.json` (all events) and the
+[--neural clap] [--feedback NAME] [--no-feedback] [--model NAME]` writes `out/report.html` (open it next to the media it saved there), `out/assessment.json` (all events) and the
 intermediate files (`pose.json`, converted video, ...).
 
 **Python**:
@@ -127,32 +127,41 @@ override it, `VIOPOSE_AUDIO=0` runs VioPose without the recording's audio (by de
 the video-only weights). Without VioPose the audio analysis works as before and the report omits the movement parts. Details
 and the visual pitch method are in `src/docs/README.md`.
 
-### Written feedback (Claude, ChatGPT or Gemini)
+### Written feedback and chat (Claude, ChatGPT, Gemini, OpenRouter, Groq ...)
 
 The analysis gives numbers; an AI model turns them into feedback a student can use: a short summary, up to three priorities (the bars
-involved, what is probably going wrong, one concrete practice suggestion each) and what is going well (`maestro/feedback/`).
-It is optional and uses **your own API key** for one of the three providers; a Claude, ChatGPT or Gemini *app subscription* cannot
-be linked, because none of the three offers third-party sign-in to it (they issue API keys for developers, billed by use):
-[Claude](https://console.anthropic.com/settings/keys), [OpenAI](https://platform.openai.com/api-keys),
-[Google AI Studio](https://aistudio.google.com/apikey).
+involved, what is probably going wrong, one concrete practice suggestion each) and what is going well, and then answers follow-up
+questions in a chat (`maestro/feedback/`). It is optional and uses **your own** connection to one provider. A Claude, ChatGPT or
+Gemini *app subscription* cannot be linked, because none of the three offers third-party sign-in to it; what exists is:
+
+| way to connect | providers | cost |
+|---|---|---|
+| paste an **API key** | [Claude](https://console.anthropic.com/settings/keys), [OpenAI](https://platform.openai.com/api-keys), [Google AI Studio](https://aistudio.google.com/apikey) (Gemini), [Groq](https://console.groq.com/keys), [OpenRouter](https://openrouter.ai/keys), or any service with the OpenAI chat API ("Other OpenAI-compatible service": give its URL, e.g. `https://api.mistral.ai/v1`) | Claude and OpenAI are billed by use; **Gemini, Groq and OpenRouter (`:free` models) have free tiers** with rate limits |
+| **Sign in with OpenRouter** (OAuth, no key to copy) | OpenRouter: you log in there and Maestro receives an API key for your own account (`feedback/oauth.py`) | free models available |
 
 - **Connect** on the start page of the GUI ("Written feedback from an AI"): choose the provider, paste the key (it is checked by
-  listing the models it can use, and only then saved), pick a model, and connect several providers if you like and choose which
-  one to use. Keys are kept in your user config folder (`%APPDATA%\maestro\llm.json`, `~/.config/maestro/llm.json`; readable by you
-  only, `MAESTRO_CONFIG` moves it) and are only ever shown masked. The environment variables `ANTHROPIC_API_KEY`,
-  `OPENAI_API_KEY` and `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) work too.
-- **Ask** with the "Write feedback" button on a report (one paid call per analysis, the answer is kept). From the command line:
-  `analyze.py ... --feedback anthropic [--model NAME]` also writes `feedback.json` and puts it in the report.
-- **What is sent**: only a digest of numbers (scores, the 30 most severe problems with bar, time, size and likely causes, the bars with
-  most problems), never the recording, the video, the score or file names; the report page shows it ("What is sent to the AI provider")
-  before you ask. The model is told to use only those measurements, and every bar it cites is checked against the bars the analysis
-  flagged: an invented bar is removed and a warning shown. Its text is displayed as plain text.
+  listing the models it can use, and only then saved) or sign in, pick a model, and connect several providers if you like and choose
+  which one to use. Keys are kept in your user config folder (`%APPDATA%\maestro\llm.json`, `~/.config/maestro/llm.json`; readable by
+  you only, `MAESTRO_CONFIG` moves it) and are only ever shown masked. The environment variables `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+  `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), `OPENROUTER_API_KEY` and `GROQ_API_KEY` work too. The default model is chosen from what your key
+  can actually use (for Gemini the newest stable Flash); if a model turns out to be unavailable to the key (HTTP 404), another is
+  tried once, remembered and noted in the feedback.
+- **Feedback is written automatically** when a report is opened and a provider is connected (one call per analysis; the answer is kept,
+  and a failure shows the provider's message with a retry button). **Chat**: below the feedback, ask anything about your playing ("why is
+  my intonation sharp in bar 12?"); the model sees the same digest and the feedback, plus the conversation (up to 20 questions per
+  analysis; "New conversation" clears it). From the command line `analyze.py` also writes `feedback.json` when a provider is connected
+  (`--feedback NAME [--model M]` picks one, `--no-feedback` skips it).
+- **What is sent**: a digest of numbers (scores, the 30 most severe problems with bar, time, size and likely causes, the bars with most
+  problems) and what you type in the chat, never the recording, the video, the score or file names; the report page shows the digest
+  ("What is sent to the AI provider"). The model is told to use only those measurements, and every bar it cites in the feedback is checked
+  against the bars the analysis flagged: an invented bar is removed and a warning shown. Its text is displayed as plain text only.
+  (Free tiers may use prompts to improve the provider's products, e.g. Gemini's outside the EEA, UK and Switzerland; the digest is only numbers.)
 - The server only accepts these requests from its own page (Host and Origin are checked and bodies must be JSON), so another
   website cannot spend your quota or read or change your keys.
 
 The providers are called over plain HTTPS (`feedback/providers.py`, no vendor SDK); `feedback/prompts.py` holds the system prompt and
-the digest, `feedback/generator.py` the call, parsing and bar check. Offline evaluation against teachers' comments
-(`feedback/evidence.py`, `feedback/validate.py`) is still an outline.
+the digest, `feedback/generator.py` the call, parsing and bar check, `feedback/chat.py` the conversation. Offline evaluation against
+teachers' comments (`feedback/evidence.py`, `feedback/validate.py`) is still an outline.
 
 ### Assessment events and root causes
 
@@ -201,6 +210,6 @@ causes come from the measured features inside each window. It is zero-shot and c
 
 Implemented: audio extraction, selectable pitch/transcription backends, score conversion, score-audio alignment, assessment of
 pitch, timing, expression, tone, bowing and posture as quantitative events with causes, denoising, the player GUI, VioPose
-movement analysis, GPU-aware pitch estimation and written feedback from Claude, ChatGPT or Gemini. The `fusion/` folder (learned
+movement analysis, GPU-aware pitch estimation and written feedback and chat from Claude, ChatGPT, Gemini, OpenRouter, Groq or any OpenAI-compatible service. The `fusion/` folder (learned
 encoders, multimodal fusion, prediction heads), the professional reference (`reference/`) and the offline evaluation of the feedback
 against teachers' comments are outlined but not implemented yet.

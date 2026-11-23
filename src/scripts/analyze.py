@@ -7,7 +7,8 @@ from maestro import analyze
 from maestro.audio.pitch import DEFAULT_PITCH_BACKEND, list_pitch_backends
 from maestro.gui.report import build_page, copy_media
 from maestro.feedback.generator import generate_feedback
-from maestro.feedback.providers import LLMError
+from maestro.feedback import settings
+from maestro.feedback.providers import PROVIDERS as PROVIDER_NAMES, LLMError
 from maestro.utils.errors import InputError, ToolMissingError
 
 
@@ -25,9 +26,10 @@ def main():
     parser.add_argument("--crepe-model", choices=("tiny", "full"), default="full")
     parser.add_argument("--neural", choices=("clap",), default=None,
                         help="add the pretrained CLAP tone/expression judgement (needs transformers + torch)")
-    parser.add_argument("--feedback", choices=("anthropic", "openai", "gemini"), default=None,
-                        help="also write feedback with this provider (needs its API key: saved in the GUI or in ANTHROPIC_API_KEY / "
-                             "OPENAI_API_KEY / GEMINI_API_KEY); only a summary of numbers is sent")
+    parser.add_argument("--feedback", choices=tuple(PROVIDER_NAMES), default=None,
+                        help="write feedback with this provider (default: the one connected in the GUI or through an API key variable "
+                             "such as ANTHROPIC_API_KEY, if any); only a summary of numbers is sent")
+    parser.add_argument("--no-feedback", action="store_true", help="do not write AI feedback even if a provider is connected")
     parser.add_argument("--model", default=None, help="model for --feedback (default: the provider's default or the saved choice)")
     args = parser.parse_args()
 
@@ -50,9 +52,10 @@ def main():
     except (InputError, ToolMissingError, ImportError, ValueError) as exc:
         parser.exit(2, f"error: {exc}\n")
 
-    if args.feedback:
+    chosen = args.feedback or (None if args.no_feedback else settings.status()["provider"])
+    if chosen:
         try:
-            generate_feedback(perf, provider=args.feedback, model=args.model)
+            generate_feedback(perf, provider=chosen, model=args.model)
             (out / "feedback.json").write_text(json.dumps(perf.feedback, indent=1), encoding="utf-8")
         except LLMError as exc:
             print(f"feedback: {exc}")

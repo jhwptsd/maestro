@@ -74,7 +74,7 @@ class Page(unittest.TestCase):
             self.assertEqual(set(e), {"id", "module", "category", "start", "end", "measure", "beat", "severity", "value",
                                       "expected", "unit", "causes"})
             self.assertTrue(all(isinstance(c, str) and " " not in c and isinstance(p, float) for c, p in e["causes"]))
-        for gone in ("How to read it", "explanation", "hypothesis", "message"):
+        for gone in ("How to read it", "explanation", "hypothesis", '"message"'):             # (the page script itself reads e.message)
             self.assertNotIn(gone, self.html)
 
     def test_the_score_viewer_is_kept_but_folded_away(self):

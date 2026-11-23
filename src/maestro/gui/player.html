@@ -33,7 +33,10 @@ th{font-size:12px;color:var(--mute);cursor:pointer}tr.row{cursor:pointer}tr.row:
 #feedback .fb{background:white;border:1px solid var(--line);border-left:5px solid var(--blue);border-radius:6px;padding:10px 14px;margin-bottom:12px}
 #feedback h2{margin:0 0 6px}#feedback ol{padding-left:20px;margin:6px 0}#feedback li{margin-bottom:8px}
 #feedback .bars{display:inline-block;background:#eef3fb;border-radius:10px;padding:0 8px;font-size:12px;margin-left:6px}
-#feedback .note{color:var(--mute);font-size:12px}#feedback pre{max-height:240px;overflow:auto;background:#f6f6f6;padding:8px;font-size:11px}
+#feedback .note{color:var(--mute);font-size:12px}#feedback .log{max-height:320px;overflow:auto;margin-bottom:8px}#feedback .bubble{padding:6px 10px;border-radius:10px;margin:4px 0;white-space:pre-wrap}
+#feedback .bubble.me{background:#eef3fb;margin-left:15%}#feedback .bubble.ai{background:#f6f6f6;margin-right:15%}
+#feedback form{display:flex;gap:6px}#feedback form input{flex:1;padding:7px;font-size:14px}#feedback button.plain{background:#eee;color:#333}
+#feedback pre{max-height:240px;overflow:auto;background:#f6f6f6;padding:8px;font-size:11px}
 #feedback button{padding:6px 12px;border:0;border-radius:6px;background:var(--blue);color:white;cursor:pointer}#feedback button:disabled{background:#999}
 details{margin-top:20px}summary{cursor:pointer;font-weight:600}
 </style>
@@ -66,11 +69,15 @@ const noteName = (m) => NOTE[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
 const fmtTime = (t) => Math.floor(t / 60) + ":" + String(Math.floor(t % 60)).padStart(2, "0");
 const fmtNum = (v) => v === null || v === undefined ? "" : Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2);
 
-// ---- written feedback (an AI provider the user connected; the text is untrusted, so it is only ever inserted as text) -----------
+// ---- written feedback and chat (an AI provider the user connected; the text is untrusted, so it is only ever inserted as text) ------
 (function feedbackCard() {
   const box = $("#feedback");
   const el = (tag, text, cls) => { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; };
+  const post = (url, body) => fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})
+    .then(async (res) => { const data = await res.json(); if (!res.ok) throw new Error(data.error || "Request failed."); return data; });
   const card = el("div", undefined, "fb");
+  const sent = D.digest && el("details");
+  if (sent) { sent.append(el("summary", "What is sent to the AI provider (numbers only)"), el("pre", JSON.stringify(D.digest, null, 1))); }
   function show(fb) {
     card.textContent = "";
     card.append(el("h2", "Feedback"), el("p", fb.summary));
@@ -83,31 +90,54 @@ const fmtNum = (v) => v === null || v === undefined ? "" : Math.abs(v) >= 100 ? 
     }
     if (fb.strengths.length) { card.appendChild(el("b", "Going well")); const ul = el("ul"); fb.strengths.forEach((t) => ul.appendChild(el("li", t))); card.appendChild(ul); }
     card.appendChild(el("div", `Written by ${fb.model} (${fb.provider}) from the measurements below the video; like any AI text it can be wrong. ` + fb.warnings.join(" "), "note"));
+    if (sent) card.appendChild(sent);
   }
-  const sent = D.digest && el("details");
-  if (sent) { sent.append(el("summary", "What is sent to the AI provider (numbers only)"), el("pre", JSON.stringify(D.digest, null, 1))); }
-  if (D.feedback) { show(D.feedback); box.append(card); return; }
-  if (!D.run) return;                                     // a saved report has no server to ask
-  const button = el("button", "Write feedback"), hint = el("span", "", "note");
-  card.append(el("h2", "Feedback"), button, hint);
+
+  function chatPanel() {                                  // follow-up questions about this recording
+    const panel = el("div", undefined, "fb chat"), log = el("div", undefined, "log"), form = el("form"), input = el("input"),
+          send = el("button", "Ask"), clear = el("button", "New conversation"), err = el("div", "", "note");
+    input.maxLength = 1000; input.placeholder = "Ask about your playing, e.g. why is my intonation sharp in bar 12?"; input.setAttribute("aria-label", "Your question");
+    send.type = "submit"; clear.type = "button"; clear.className = "plain";
+    form.append(input, send, clear);
+    panel.append(el("h2", "Ask the AI about your playing"), log, form, err);
+    box.append(panel);
+    const bubble = (who, text) => { const d = el("div", text, "bubble " + who); log.append(d); log.scrollTop = log.scrollHeight; return d; };
+    post("/api/chat", {run: D.run, history: true}).then((d) => d.messages.forEach((m) => bubble(m.role === "user" ? "me" : "ai", m.content))).catch(() => {});
+    form.onsubmit = async (ev) => {
+      ev.preventDefault();
+      const text = input.value.trim(); if (!text) return;
+      input.value = ""; err.textContent = ""; send.disabled = true;
+      bubble("me", text); const wait = bubble("ai", "...");
+      try { wait.textContent = (await post("/api/chat", {run: D.run, message: text})).reply; }
+      catch (e) { wait.remove(); err.textContent = e.message; }
+      finally { send.disabled = false; input.focus(); }
+    };
+    clear.onclick = () => post("/api/chat", {run: D.run, reset: true}).then(() => { log.textContent = ""; err.textContent = ""; }).catch((e) => { err.textContent = e.message; });
+  }
+
+  if (D.feedback && !D.run) { show(D.feedback); box.append(card); return; }       // a saved report: feedback only, there is no server to ask
+  if (!D.run) return;
+  const status = el("div", "", "note"), retry = el("button", "Write feedback");
+  retry.hidden = true;
+  card.append(el("h2", "Feedback"), status, retry);
   if (sent) card.appendChild(sent);
   box.append(card);
-  const choose = () => fetch("/api/llm").then((r) => r.json()).then((st) => {
+  async function ask() {                                  // automatic: one call per analysis (the server keeps the answer)
+    retry.hidden = true; status.textContent = "Writing feedback...";
+    try { show(await post("/api/feedback", {run: D.run})); }
+    catch (e) { status.textContent = e.message; retry.hidden = false; }
+  }
+  retry.onclick = ask;
+  fetch("/api/llm").then((r) => r.json()).then((st) => {
     const p = st.provider && st.providers[st.provider];
-    button.disabled = !p; button.textContent = p ? `Write feedback with ${p.label.split(" ")[0]} (${p.model})` : "Write feedback";
-    hint.textContent = p ? " " : " Connect an AI provider with your own API key on the start page first.";
-    if (!p) { const a = el("a", "Open the start page"); a.href = "/#ai"; hint.append(" ", a); }
-  }).catch(() => { button.disabled = true; });
-  choose();
-  button.onclick = async () => {
-    button.disabled = true; hint.textContent = " Writing...";
-    try {
-      const res = await fetch("/api/feedback", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({run: D.run})});
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Could not write feedback.");
-      show(data); if (sent) card.appendChild(sent);
-    } catch (e) { hint.textContent = " " + e.hint; button.disabled = false; }
-  };
+    if (!p) {
+      status.textContent = "To get written feedback and ask the AI questions, connect a provider with your own API key (or sign in to OpenRouter) on the start page. ";
+      const a = el("a", "Open the start page"); a.href = "/#ai"; status.append(a);
+      return;
+    }
+    chatPanel();
+    ask();
+  }).catch(() => { status.textContent = "Could not reach the server."; });
 })();
 
 // ---- media ---------------------------------------------------------------------------------------------------------
