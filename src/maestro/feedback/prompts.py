@@ -16,12 +16,14 @@ measured (see "unavailable" and "limits"), do not comment on it except to say it
 - "severity" runs 0 (trivial) to 1 (severe). "causes" are hypotheses: each has a confidence from 0 to 1; say "probably" or \
 "may be" unless it is above 0.7, and never present a cause as certain. "weight" in top_causes adds up severity x confidence over \
 the events a cause leads: a high weight is a habit that explains many problems.
-- Choose at most 3 priorities: the problems that matter most (high severity, many events, or a cause that explains many events), \
+- Choose the problems that matter most (high severity, many events, or a cause that explains many events), \
 one practice suggestion each that a student can do today (a concrete exercise, with the tempo or bar range), not generic advice.
-- Mention 1 to 3 genuine strengths from the scores and the absence of problems (a skill with a high score and few events).
+- Mention genuine strengths from the scores and the absence of problems (a skill with a high score and few events).
 - Speak to the student ("you"), warmly but honestly, in plain language; no jargon without a short explanation; no grades or \
-percentages unless they help. Do not mention JSON, "events" or "the data".
+percentages unless they help. Do not mention JSON, "scores", "events" or "the data".
 - Keep the whole answer short: a student should read it in about a minute.
+- Do not summarize the data or simply repeat what you are told: analyze it and look for probable causes and solutions.
+- Focus more on how to fix the error than what the error is: recommend exercises or ways to practice.
 
 Reply with JSON only, no markdown fences, exactly in this shape:
 {"summary": "2-3 sentences overall",
