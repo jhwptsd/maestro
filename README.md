@@ -178,10 +178,14 @@ YouTube link) in the start page ("Optional: compare with a professional recordin
 6. **Subjective choices are marked.** Every category has a *nature*: `objective` (pitch, attack: the target is the same for everyone) or `interpretive`
    (tempo, rubato, dynamics, articulation, vibrato, bowing, tone colour). The soloist's visible decisions are listed in `choices` with their numbers
    (`tempo_choice`, `local_tempo_shift`, `dynamic_shaping`, `vibrato_use`, `played_short`, `bowing_choice`, `expressive_intonation` for a note more than
-   12 cents from equal temperament). `compare.py` sets your numbers beside theirs (`assessment["reference"]`: `differences` with `nature`, `summary` per
-   category, `gaps`, `reference_choices`; also `reference.json` from the command line); a difference in an interpretive category is "a different reading",
-   and a note where the soloist chose expressive intonation is compared as interpretive, not as the target. The feedback model sees a short version
-   and is told never to call a difference from a choice a mistake.
+   12 cents from equal temperament).
+7. **The comparison is events, like everything else** (`assessment/reference.py`): each difference from the soloist's interpretation is an event of the module
+   `reference` in the common format (`tempo_vs_reference`, `dynamics_vs_reference`, ... with bar, beat, your value, the soloist's value and unit). Its
+   cause is always `soloist_interpretive_choice` (evidence: both values and, when it applies, the soloist's own `soloist_choice`), its severity is
+   capped at 0.3 so it never outranks a real problem, and the module has no score and is left out of the problem bars and leading causes. Accuracy
+   (pitch, attack) is judged by the intonation and tone modules and appears only in the report card's table. The events go through the synthesis into
+   the player's event list and into the digest that the feedback model reads, exactly like the other modules' (it gets its own slots among the events,
+   plus the soloist's choices and the gaps), and it is told never to call such a difference a mistake. `reference.json` (command line) has the baseline.
 
 Not yet: playing the reference alongside the student in the player, portamento and fingering/bowing-direction detection.
 

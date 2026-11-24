@@ -103,14 +103,15 @@ def _pose(perf):
 
 
 def _reference(perf):
-    """The reference comparison for the page's card (without the long per-note list), or None when no reference was asked for."""
+    """The reference comparison for the page's card (the events themselves are in the events list like every other module's), or None when
+    no reference was asked for."""
     ref = (perf.assessment or {}).get("reference")
     if not ref:
         return None
     if not ref.get("available"):
-        return {"available": False, "reason": ref.get("reason", "")}
-    return {"available": True, "source": {"origin": ref["source"]["origin"], "title": ref["source"]["title"]}, "clip": ref["clip"],
-            "summary": ref["summary"], "gaps": ref["gaps"], "choices": ref["reference_choices"]}
+        return {"available": False, "reason": (ref.get("summary") or {}).get("reason", "")}
+    s = ref["summary"]
+    return {"available": True, "source": s["source"], "clip": s["clip"], "summary": s["by_category"], "gaps": s["gaps"], "choices": s["choices"]}
 
 
 def player_data(perf, media_url, media_kind, run=None, digest=None):

@@ -24,10 +24,11 @@ percentages unless they help. Do not mention JSON, "scores", "events" or "the da
 - Keep the whole answer short: a student should read it in about a minute.
 - Do not summarize the data or simply repeat what you are told: analyze it and look for probable causes and solutions.
 - Focus more on how to fix the error than what the error is: recommend exercises or ways to practice.
-- If "reference" is present, the recording was also compared with a professional's. Categories marked "objective" (pitch, attack) are \
-accuracy targets everyone shares. Categories marked "interpretive" (tempo, dynamics, vibrato, articulation, bowing) and anything in \
-"soloist_choices" are the professional's own musical decisions: never call a difference from them a mistake; offer them as another reading \
-the student could try. Where "reference.gaps" says the professional could not be measured, say nothing about that part.
+- Events with skill "reference" compare the student with a professional's recording of the same bars: "value" is the student's, "expected" the \
+professional's. They are not faults: their cause "soloist_interpretive_choice" says the difference is one of the professional's own musical \
+decisions (tempo, dynamics, articulation, vibrato, bowing, expressive intonation), so never call it a mistake or a target; offer it as another reading \
+the student could try, and only where it helps the student's priorities. "reference.soloist_choices" lists the professional's decisions in general, \
+and "reference.gaps" what could not be measured (say nothing about those).
 
 Reply with JSON only, no markdown fences, exactly in this shape:
 {"summary": "2-3 sentences overall",
@@ -36,7 +37,7 @@ Reply with JSON only, no markdown fences, exactly in this shape:
  "strengths": ["short sentence", ...]}"""
 
 MAX_EVENTS = 30                    # events listed in the digest (the most severe); the rest are only counted
-MAX_BARS, MAX_CAUSES, MAX_LINKS, MAX_CHOICES = 10, 6, 5, 8
+MAX_BARS, MAX_CAUSES, MAX_LINKS, MAX_CHOICES, MAX_REFERENCE_EVENTS = 10, 6, 5, 8, 8
 
 
 def _round(x, digits=2):
@@ -63,7 +64,9 @@ def build_digest(perf):
     for e in events:
         counts.setdefault(e["module"], {}).setdefault(e["category"], 0)
         counts[e["module"]][e["category"]] += 1
-    top = sorted(events, key=lambda e: -e["severity"])[:MAX_EVENTS]
+    by_severity = lambda es: sorted(es, key=lambda e: -e["severity"])
+    top = (by_severity([e for e in events if e["module"] != "reference"])[:MAX_EVENTS]       # (the comparison events are informational: they get
+           + by_severity([e for e in events if e["module"] == "reference"])[:MAX_REFERENCE_EVENTS])   # their own slots, or they would never rank)
     bars = sorted(synthesis["by_measure"].items(), key=lambda kv: -kv[1]["max_severity"])[:MAX_BARS]
     digest = {
         "piece": _clean({"bars_played_from": section.get("first_measure"), "bars_played_to": section.get("last_measure"),
@@ -85,11 +88,10 @@ def build_digest(perf):
         "unavailable": synthesis["unavailable"],
         "limits": [],
     }
-    ref = a.get("reference") or {}
-    if ref.get("available"):
+    ref = (a.get("reference") or {}).get("summary") or {}
+    if ref.get("clip"):
         digest["reference"] = {"bars": [ref["clip"]["first_measure"], ref["clip"]["last_measure"]],
-                               "compared": {c: {k: _round(v) for k, v in s.items() if k != "unit"} | {"unit": s["unit"]} for c, s in ref["summary"].items()},
-                               "soloist_choices": [_clean({k: c.get(k) for k in ("slug", "measure", "value", "unit")}) for c in ref["reference_choices"][:MAX_CHOICES]],
+                               "soloist_choices": [_clean({k: c.get(k) for k in ("slug", "measure", "value", "unit")}) for c in ref["choices"][:MAX_CHOICES]],
                                "gaps": {"notes_not_audible": ref["gaps"]["notes"], "bars_without_video": ref["gaps"]["bars_without_video"],
                                         "video_seconds_lost": _round(sum(g["end"] - g["start"] for g in ref["gaps"]["video"]), 1)}}
     status = a.get("visual_status") or {}
@@ -101,14 +103,16 @@ def build_digest(perf):
     return digest
 
 
-COMPACT_EVENTS, COMPACT_BARS, COMPACT_CAUSES = 10, 5, 4
+COMPACT_EVENTS, COMPACT_BARS, COMPACT_CAUSES, COMPACT_REFERENCE_EVENTS = 10, 5, 4, 4
 
 
 def compact(digest):
     """A much shorter digest for small local models (short context, easily distracted): the most severe events with one cause each,
     the worst bars and main causes, the scores and the limits; the per-skill summaries and simultaneity links are dropped."""
     return {"piece": digest["piece"], "scores_0_to_100": digest["scores_0_to_100"],
-            "problem_events": [{**e, "causes": e["causes"][:1]} for e in digest["problem_events"][:COMPACT_EVENTS]],
+            "problem_events": [{**e, "causes": e["causes"][:1]} for e in
+                               [e for e in digest["problem_events"] if e["skill"] != "reference"][:COMPACT_EVENTS]
+                               + [e for e in digest["problem_events"] if e["skill"] == "reference"][:COMPACT_REFERENCE_EVENTS]],
             "event_counts": {m: sum(c.values()) for m, c in digest["event_counts"].items()},
             "bars_with_most_problems": digest["bars_with_most_problems"][:COMPACT_BARS],
             "top_causes": digest["top_causes"][:COMPACT_CAUSES], "unavailable": digest["unavailable"], "limits": digest["limits"],

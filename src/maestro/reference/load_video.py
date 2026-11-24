@@ -11,14 +11,27 @@ from pathlib import Path
 
 from maestro.utils.convert_video_type import probe
 from maestro.utils.errors import InputError, ToolMissingError
+from maestro.utils.ffmpeg import tool
 
 MAX_SECONDS = 60 * 60            # longer recordings (a whole opera) are refused: pitch tracking them would take hours
 YOUTUBE = re.compile(r"^https?://((www|m|music)\.)?(youtube\.com|youtu\.be)/", re.I)
-FORMAT = "bv*[height<=720]+ba/b[height<=720]/b"      # best video up to 720 p with the best audio, else the best single file
+FORMAT = "bv*[height<=720]+ba/b[height<=720]/bv*+ba/b"      # best video up to 720 p with the best audio, else the best single file, else the best
 
 
 def is_youtube(source):
     return bool(YOUTUBE.match(str(source).strip()))
+
+
+def _why(error):
+    """yt-dlp's own message, cleaned, plus what usually fixes the common failures."""
+    text = re.sub(r"\x1b\[[0-9;]*m", "", str(error)).strip().splitlines()[-1].removeprefix("ERROR: ")[:300]
+    hint = ("YouTube changes often, so first update the downloader: pip install -U yt-dlp. "
+            + ("This video asks for a sign-in (age or bot check) and cannot be fetched: download it yourself and give its file. "
+               if re.search(r"sign in|confirm you.re not a bot|age", text, re.I) else "")
+            + ("A JavaScript runtime is needed for this video: pip install -U \"yt-dlp[default]\" and install Node.js. "
+               if re.search(r"javascript|js runtime|n challenge|signature", text, re.I) else "")
+            + "Or download the video yourself and give its file.")
+    return f"Could not download that YouTube video ({text}). {hint}"
 
 
 def _download(url, out_dir):
@@ -30,19 +43,20 @@ def _download(url, out_dir):
                                "give its file instead).") from None
     out_dir.mkdir(parents=True, exist_ok=True)
     options = {"quiet": True, "no_warnings": True, "noplaylist": True, "format": FORMAT, "merge_output_format": "mp4",
-               "outtmpl": str(out_dir / "reference.%(ext)s")}
+               "outtmpl": str(out_dir / "reference.%(ext)s"),
+               "ffmpeg_location": str(Path(tool("ffmpeg")).parent),        # merging video and audio needs ffmpeg, which may not be on PATH (Windows)
+               "match_filter": yt_dlp.utils.match_filter_func(f"duration < {MAX_SECONDS}")}
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if (info.get("duration") or 0) > MAX_SECONDS:
-                raise InputError(f"That video is {info['duration'] / 60:.0f} minutes long; the limit is {MAX_SECONDS // 60}.")
-            ydl.download([url])
-    except yt_dlp.utils.DownloadError as e:
-        raise InputError(f"Could not download that YouTube video: {str(e).splitlines()[-1][:200]}") from None
-    path = next(iter(sorted(out_dir.glob("reference.*"))), None)
+            info = ydl.extract_info(url, download=True)                    # (one extraction: a second one is slower and can fail on its own)
+    except (yt_dlp.utils.YoutubeDLError, OSError) as e:
+        raise InputError(_why(e)) from None
+    downloads = (info or {}).get("requested_downloads") or []
+    path = next((d["filepath"] for d in downloads if d.get("filepath") and Path(d["filepath"]).is_file()), None)
+    path = path or next(iter(sorted(out_dir.glob("reference.*"))), None)
     if path is None:
-        raise InputError("The YouTube download produced no file.")
-    return {"path": str(path), "title": info.get("title") or "YouTube video", "url": url}
+        raise InputError(f"That video was not downloaded: it may be longer than {MAX_SECONDS // 60} minutes, or unavailable to download.")
+    return {"path": str(path), "title": (info or {}).get("title") or "YouTube video", "url": url}
 
 
 def load_reference(source, out_dir):

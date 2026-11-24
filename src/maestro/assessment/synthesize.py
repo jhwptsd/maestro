@@ -1,6 +1,6 @@
 # Synthesize every assessment into one JSON report (new file).
 #
-# Input: Performance.assessment after assessment/{intonation,rhythm,expression,tone,bowing,posture}.py have run (each a
+# Input: Performance.assessment after assessment/{intonation,rhythm,expression,tone,bowing,posture,reference}.py have run (each a
 # {"module", "available", "score", "summary", "events"} dict, see assessment/events.py). Output, stored as
 # assessment["synthesis"] (plain JSON types, safe for json.dumps):
 #   {"version", "scores": {module: 0-100 or None, "overall"}, "n_events",
@@ -16,7 +16,8 @@ import numpy as np
 
 from maestro.assessment.events import jsonable
 
-MODULES = ("intonation", "rhythm", "expression", "tone", "bowing", "posture")
+MODULES = ("intonation", "rhythm", "expression", "tone", "bowing", "posture", "reference")
+UNSCORED = ("reference",)      # modules whose events inform but are not faults (assessment/reference.py): no score, not counted among problem bars or causes
 WEIGHTS = {"intonation": 0.25, "rhythm": 0.25, "expression": 0.2, "tone": 0.15, "bowing": 0.1, "posture": 0.05}
 LINK_MARGIN_S = 0.5            # events this close in time (gap between their spans) are linked
 LINK_MIN_SEVERITY = 0.4        # only substantial events are linked, otherwise every pair would be
@@ -49,11 +50,13 @@ def synthesize_assessment(assessment):
     for name in MODULES:
         res = assessment.get(name)
         if not res:
-            unavailable[name] = "not run"
+            if name not in UNSCORED:                             # (an optional module that was not asked for is not "unavailable")
+                unavailable[name] = "not run"
         elif not res.get("available", True):
             unavailable[name] = (res.get("summary") or {}).get("reason") or res.get("reason", "unavailable")
         else:
-            scores[name] = res["score"]
+            if name not in UNSCORED:
+                scores[name] = res["score"]
             events += res["events"]
     events.sort(key=lambda e: (e["start"], e["module"]))
     for k, e in enumerate(events):
@@ -65,7 +68,7 @@ def synthesize_assessment(assessment):
 
     causes = {}
     for e in events:
-        if e["causes"]:
+        if e["causes"] and e["module"] not in UNSCORED:
             top = e["causes"][0]
             c = causes.setdefault(top["cause"], {"cause": top["cause"], "count": 0, "weight": 0.0, "modules": set(), "events": []})
             c["count"] += 1
@@ -78,7 +81,7 @@ def synthesize_assessment(assessment):
 
     by_measure = {}
     for e in events:
-        if e["measure"] is not None:
+        if e["measure"] is not None and e["module"] not in UNSCORED:
             m = by_measure.setdefault(str(e["measure"]), {"events": 0, "max_severity": 0.0, "modules": set()})
             m["events"] += 1
             m["max_severity"] = max(m["max_severity"], e["severity"])

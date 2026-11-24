@@ -66,7 +66,7 @@ const $ = (s) => document.querySelector(s);
 const COLORS = {good: "#2a9d3f", ok: "#f08c00", bad: "#d62828", blue: "#4a6fa5", orange: "#e76f00", grey: "#9a9a9a"};
 const sevColor = (s) => s < 0.34 ? "#d4a800" : s < 0.67 ? COLORS.ok : COLORS.bad;     // minor / moderate / severe problem
 const scoreColor = (v) => v >= 85 ? COLORS.good : v >= 60 ? COLORS.ok : COLORS.bad;
-const MODULES = ["intonation", "rhythm", "expression", "tone", "bowing", "posture"];
+const MODULES = ["intonation", "rhythm", "expression", "tone", "bowing", "posture", "reference"];
 const NOTE = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const noteName = (m) => NOTE[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
 const fmtTime = (t) => Math.floor(t / 60) + ":" + String(Math.floor(t % 60)).padStart(2, "0");

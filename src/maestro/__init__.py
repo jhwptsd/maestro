@@ -8,7 +8,7 @@ from pathlib import Path
 
 from maestro.alignment.align_audio_score import align_audio_score
 from maestro.alignment.correspondence import check_correspondence, played_section
-from maestro.assessment.events import Context
+from maestro.assessment.events import Context, unavailable
 from maestro.assessment.expression import assess_expression
 from maestro.assessment.intonation import assess_intonation
 from maestro.assessment.neural import analyze_windows, load_backend, NeuralUnavailable
@@ -29,6 +29,7 @@ from maestro.utils.Performance import Performance
 from maestro.utils.errors import InputError, PoseUnavailableError, ToolMissingError
 from maestro.assessment.bowing import assess_bowing
 from maestro.assessment.posture import assess_posture
+from maestro.assessment.reference import assess_reference
 from maestro.vision.motion_features import extract_motion
 from maestro.vision.pose_estimation import estimate_pose
 from maestro.vision.pose_io import save_pose
@@ -125,8 +126,9 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     transformers + torch and downloads ~600 MB once; if it cannot load, the analysis continues without it).
     reference: a professional recording (file path or YouTube link) to compare with. It is processed after the student's analysis (reference/):
     clipped to the bars the student played, the soloist isolated, gaps kept where the camera or the sound is lost, and its measurements
-    become a baseline with the soloist's interpretive choices marked; the result is assessment["reference"] and perf.reference. A reference
-    that cannot be used does not fail the analysis: assessment["reference"] then says why. reference_options: keyword arguments of
+    become a baseline with the soloist's interpretive choices marked; the differences are events of the module "reference" (assessment/reference.py,
+    in the synthesis like the other modules, with interpretive choices as their cause) and the baseline is perf.reference. A reference
+    that cannot be used does not fail the analysis: assessment["reference"] is then an unavailable module that says why. reference_options: keyword arguments of
     reference.process.process_reference (measures, separate, pose_file).
     assessment["synthesis"] is the single JSON report built from every module (assessment/synthesize.py).
 
@@ -151,31 +153,29 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pose")
     pose_job = pool.submit(_generate_pose, perf, pose_file, work, visual_audio, cancel)
     try:
-        _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend, pitch_options, neural, pose_job, step)
+        _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend, pitch_options, neural, pose_job, step, reference, reference_options or {})
     except BaseException:
         cancel.set()
         raise
     finally:
         pool.shutdown(wait=False)
-    if reference:
-        _compare_with_reference(perf, reference, work, pitch_backend, pitch_options, step, reference_options or {})
     if out_dir:
         score_to_svg(perf.score, perf.assessment["intonation"], work / "score.svg")
     step("done")
     return perf
 
 
-def _compare_with_reference(perf, reference, work, pitch_backend, pitch_options, step, options):
-    """The reference stage of analyze(): process the professional recording and compare; an unusable reference is reported, not raised."""
+def _process_reference(perf, reference, work, pitch_backend, pitch_options, step, options):
+    """The reference stage of analyze(): process the professional recording. An unusable reference is reported (as an unavailable
+    "reference" module), not raised."""
     try:
         with _timed(perf, "reference"):
             process_reference(perf, reference, work, pitch_backend=pitch_backend, pitch_options=pitch_options, progress=step, **options)
-            compare_to_reference(perf)
     except (InputError, ToolMissingError) as e:                 # (MismatchError is an InputError)
-        perf.assessment["reference"] = {"available": False, "reason": str(e)}
+        perf.assessment["reference"] = unavailable("reference", str(e))
 
 
-def _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend, pitch_options, neural, pose_job, step):
+def _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend, pitch_options, neural, pose_job, step, reference=None, reference_options=None):
     """The stages of analyze() that follow preprocessing (split out so the pose job can be cancelled around them)."""
     y, sr = perf.audio["samples"], perf.audio["sr"]
     perf.score_features = extract_symbolic_features(perf.score)
@@ -219,6 +219,8 @@ def _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend
                 perf.assessment["neural"] = analyze_windows(y, sr, backend)
         except NeuralUnavailable as e:
             perf.assessment["neural"] = {"error": str(e)}
+    if reference:                                        # after the student's own analysis (it needs the bars played and the movement), before assess
+        _process_reference(perf, reference, work, pitch_backend, pitch_options, step, reference_options or {})
     step("assess")
     with _timed(perf, "assess"):
         ctx = Context(perf)
@@ -227,6 +229,8 @@ def _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend
         a["rhythm"] = assess_rhythm(perf.score_features, notes, perf.alignment, ctx=ctx)
         a["expression"] = assess_expression(perf.score_features, notes, perf.alignment, ctx=ctx)
         a["tone"] = assess_tone(perf.score_features, notes, perf.alignment, ctx=ctx)
+        if perf.reference:                               # the comparison as events in the common format, like every other module
+            a["reference"] = assess_reference(compare_to_reference(perf), ctx)
         a["synthesis"] = synthesize_assessment(a)
 
 

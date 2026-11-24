@@ -18,8 +18,8 @@ STAGES = (                       # (name, weight, label)
     ("pose", 0.35, "Waiting for the body-movement analysis (the slowest step)"),
     ("visual", 0.05, "Measuring bowing and posture"),
     ("neural", 0.03, "Asking the CLAP model about tone and expression"),
-    ("assess", 0.06, "Judging intonation, rhythm, tone and expression"),
     ("reference", 0.15, "Analysing the professional recording to compare"),
+    ("assess", 0.06, "Judging intonation, rhythm, tone and expression"),
     ("report", 0.07, "Building the report"),
 )
 

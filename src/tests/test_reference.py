@@ -59,7 +59,11 @@ class Loading(unittest.TestCase):
         with mock.patch.dict("sys.modules", {"yt_dlp": None}), tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(ToolMissingError, "yt-dlp"):
             load_video.load_reference("https://youtu.be/abc", tmp)
 
-    def test_a_youtube_video_is_downloaded_with_one_video_no_playlist_and_a_length_limit(self):
+    def fake_yt_dlp(self, behaviour):
+        """A stand-in for the yt_dlp module: YoutubeDL(options).extract_info(url, download=True) runs `behaviour(options)`."""
+        class YoutubeDLError(Exception):
+            pass
+
         class FakeDL:
             def __init__(self, options):
                 FakeDL.options = options
@@ -71,20 +75,40 @@ class Loading(unittest.TestCase):
                 return False
 
             def extract_info(self, url, download):
-                return {"title": "A Violin Concerto", "duration": FakeDL.duration}
+                return behaviour(FakeDL.options)
 
-            def download(self, urls):
-                write_wav(Path(FakeDL.options["outtmpl"].replace("%(ext)s", "wav")), synth([(69, 0.2, 1.0)]))
+        return mock.MagicMock(YoutubeDL=FakeDL, utils=mock.MagicMock(YoutubeDLError=YoutubeDLError, match_filter_func=lambda expr: expr)), FakeDL
 
-        fake = mock.MagicMock(YoutubeDL=FakeDL, utils=mock.MagicMock(DownloadError=RuntimeError))
+    def test_a_youtube_video_is_downloaded_with_one_video_no_playlist_and_ffmpeg_found(self):
+        def download(options):
+            path = Path(options["outtmpl"].replace("%(ext)s", "wav"))
+            write_wav(path, synth([(69, 0.2, 1.0)]))
+            return {"title": "A Violin Concerto", "requested_downloads": [{"filepath": str(path)}]}
+
+        fake, dl = self.fake_yt_dlp(download)
         with mock.patch.dict("sys.modules", {"yt_dlp": fake}), tempfile.TemporaryDirectory() as tmp:
-            FakeDL.duration = 600
             found = load_video.load_reference("https://youtu.be/abc", tmp)
-            self.assertEqual((found["origin"], found["title"], found["url"]), ("youtube", "A Violin Concerto", "https://youtu.be/abc"))
-            self.assertTrue(FakeDL.options["noplaylist"] and "height<=720" in FakeDL.options["format"])
-            FakeDL.duration = 4 * 3600
-            with self.assertRaisesRegex(InputError, "limit"):
+        self.assertEqual((found["origin"], found["title"], found["url"]), ("youtube", "A Violin Concerto", "https://youtu.be/abc"))
+        self.assertTrue(dl.options["noplaylist"] and "height<=720" in dl.options["format"])
+        self.assertTrue(Path(dl.options["ffmpeg_location"]).is_dir())                    # merging needs ffmpeg, which is not always on PATH
+        self.assertIn(str(load_video.MAX_SECONDS), dl.options["match_filter"])            # the length limit is applied before downloading
+
+    def test_a_video_skipped_by_the_length_filter_is_explained(self):
+        fake, _ = self.fake_yt_dlp(lambda options: {"title": "Very long"})
+        with mock.patch.dict("sys.modules", {"yt_dlp": fake}), tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(InputError, "longer than 60 minutes"):
+            load_video.load_reference("https://youtu.be/abc", tmp)
+
+    def test_download_failures_show_the_real_reason_and_what_to_try(self):
+        for message, expected in (("ERROR: [youtube] abc: Sign in to confirm you're not a bot", "sign-in"),
+                                  ("ERROR: [youtube] abc: Requested format is not available", "pip install -U yt-dlp"),
+                                  ("ERROR: [youtube] abc: n challenge solving failed: no JavaScript runtime", "Node.js")):
+            fake, _ = self.fake_yt_dlp(lambda options: (_ for _ in ()).throw(fake.utils.YoutubeDLError(message)))
+            with mock.patch.dict("sys.modules", {"yt_dlp": fake}), tempfile.TemporaryDirectory() as tmp, self.assertRaises(InputError) as caught:
                 load_video.load_reference("https://youtu.be/abc", tmp)
+            text = str(caught.exception)
+            self.assertIn(message.removeprefix("ERROR: ")[:40], text)                      # yt-dlp's own words are kept
+            self.assertIn(expected, text)
+            self.assertIn("pip install -U yt-dlp", text)
 
 
 class Isolation(unittest.TestCase):
@@ -255,42 +279,64 @@ class EndToEnd(unittest.TestCase):
         self.assertGreaterEqual(len(measured), 10)
         self.assertLess(np.median([abs(e["cents"]) for e in measured]), 15)
 
-    def test_the_comparison_separates_objective_differences_from_choices(self):
+    def test_the_comparison_is_events_in_the_common_format_with_the_choice_as_cause(self):
         result = self.perf.assessment["reference"]
-        self.assertTrue(result["available"])
-        by_cat = result["summary"]
-        self.assertEqual(by_cat["pitch"]["nature"], "objective")
+        self.assertEqual((result["module"], result["available"], result["score"]), ("reference", True, None))      # never scored
+        by_cat = result["summary"]["by_category"]
+        self.assertEqual(by_cat["pitch"]["nature"], "objective")                                           # accuracy figures stay in the table
         self.assertEqual({c: s["nature"] for c, s in by_cat.items() if c in ("tempo", "dynamics", "vibrato", "articulation")},
                          {c: "interpretive" for c in ("tempo", "dynamics", "vibrato", "articulation") if c in by_cat})
         self.assertGreater(by_cat["tempo"]["median_delta"], 0.1)                                          # the student is faster than the soloist
-        pitch = [r for r in result["differences"] if r["category"] == "pitch"]
-        self.assertTrue(pitch)
-        self.assertTrue(all(r["nature"] == ("interpretive" if r["reference_choice"] else "objective") for r in pitch))
-        self.assertEqual(result["gaps"]["notes"], 0)
+        self.assertEqual(result["summary"]["gaps"]["notes"], 0)
+        events = result["events"]
+        self.assertTrue(events)
+        fields = {"module", "category", "start", "end", "measure", "beat", "score_idx", "perf_idx", "severity", "value", "expected", "unit", "causes"}
+        self.assertTrue(all(fields <= set(e) for e in events))                                           # the same shape as every other module's
+        self.assertTrue(all(e["module"] == "reference" and e["category"].endswith("_vs_reference") for e in events))
+        self.assertTrue(all(0 < e["severity"] <= 0.3 for e in events))                                    # informational: never outranks a real problem
+        self.assertTrue(all(e["causes"][0]["cause"] == "soloist_interpretive_choice" and e["causes"][0]["confidence"] == 1.0 for e in events))
+        tempo = [e for e in events if e["category"] == "tempo_vs_reference"]
+        self.assertTrue(tempo)
+        self.assertTrue(all(e["measure"] in (3, 4, 5) and 0.9 < e["value"] < 1.2 and 0.7 < e["expected"] < 0.9 for e in tempo))     # student ~1.0, soloist ~0.8
+        self.assertEqual(tempo[0]["causes"][0]["evidence"]["soloist_choice"], "tempo_choice")
+        self.assertFalse([e for e in events if e["category"] in ("attack_vs_reference",) or e["category"] == "pitch_vs_reference"])   # judged elsewhere
         json.dumps(result)
         summary = reference_summary(self.perf.reference)
         self.assertNotIn("samples", summary)
         json.dumps(summary)
 
-    def test_the_digest_carries_the_comparison_with_choices_marked_and_the_prompt_forbids_calling_them_mistakes(self):
+    def test_the_synthesis_lists_the_events_but_gives_no_score_and_no_problem_bars_or_causes_for_them(self):
+        synthesis = self.perf.assessment["synthesis"]
+        reference_ids = {e["id"] for e in synthesis["events"] if e["module"] == "reference"}
+        self.assertTrue(reference_ids)
+        self.assertNotIn("reference", synthesis["scores"])
+        self.assertNotIn("soloist_interpretive_choice", [c["cause"] for c in synthesis["causes"]])
+        self.assertEqual(synthesis["unavailable"].get("reference"), None)
+
+    def test_the_feedback_model_gets_the_comparison_as_events_like_everything_else(self):
         from maestro.feedback import prompts
         digest = prompts.build_digest(self.perf)
-        ref = digest["reference"]
-        self.assertEqual(ref["bars"], [3, 5])
-        self.assertEqual(ref["compared"]["pitch"]["nature"], "objective")
-        self.assertEqual(ref["compared"]["tempo"]["nature"], "interpretive")
-        self.assertIn("tempo_choice", [c["slug"] for c in ref["soloist_choices"]])
-        self.assertEqual(prompts.compact(digest)["reference"], ref)
-        text = json.dumps(digest)
-        self.assertNotIn("pro.wav", text)                                                              # no file names
-        self.assertIn("never call a difference from them a mistake", prompts.SYSTEM)
+        events = [e for e in digest["problem_events"] if e["skill"] == "reference"]
+        self.assertTrue(events)
+        self.assertLessEqual(len(events), prompts.MAX_REFERENCE_EVENTS)
+        self.assertTrue(all(set(e) >= {"skill", "kind", "bar", "severity", "value", "expected", "unit", "causes"} for e in events))      # the same keys as every event
+        self.assertEqual(events[0]["causes"][0][0], "soloist_interpretive_choice")
+        self.assertNotIn("compared", digest["reference"])                                                 # no separate read-out of the comparison table
+        self.assertEqual(digest["reference"]["bars"], [3, 5])
+        self.assertIn("tempo_choice", [c["slug"] for c in digest["reference"]["soloist_choices"]])
+        small = prompts.compact(digest)
+        self.assertTrue([e for e in small["problem_events"] if e["skill"] == "reference"])
+        self.assertEqual(small["reference"], digest["reference"])
+        self.assertNotIn("pro.wav", json.dumps(digest))                                                   # no file names
+        self.assertIn("never call it a mistake", prompts.SYSTEM)
 
     def test_a_reference_of_another_piece_is_reported_not_raised(self):
         other = [60 + (i * 5) % 17 for i in range(len(MIDIS))]                   # a different tune
         write_wav(self.d / "other.wav", synth([(m, 0.3 + 0.5 * i, 0.4) for i, m in enumerate(other)]))
         perf = analyze(self.d / "student.wav", self.d / "score.musicxml", pitch_backend="yin", reference=self.d / "other.wav")
         self.assertFalse(perf.assessment["reference"]["available"])
-        self.assertIn("does not match the score", perf.assessment["reference"]["reason"])
+        self.assertIn("does not match the score", perf.assessment["reference"]["summary"]["reason"])
+        self.assertIn("does not match the score", perf.assessment["synthesis"]["unavailable"]["reference"])
         self.assertIsNone(perf.reference)
 
     def test_progress_includes_the_reference_stage_only_when_asked_for(self):
@@ -299,7 +345,8 @@ class EndToEnd(unittest.TestCase):
         tracker = Tracker(lambda info: names.append(info["stage"]), skip=("neural",))
         analyze(self.d / "student.wav", self.d / "score.musicxml", pitch_backend="yin", reference=self.d / "pro.wav", progress=tracker)
         self.assertIn("reference", names)
-        self.assertLess(names.index("assess"), names.index("reference"))
+        self.assertLess(names.index("visual"), names.index("reference"))           # after the student's own analysis, before the judging
+        self.assertLess(names.index("reference"), names.index("assess"))
 
 
 class WithVideo(unittest.TestCase):
@@ -328,9 +375,9 @@ class WithVideo(unittest.TestCase):
             blind = [m for m, v in ref["profile"]["measures"].items() if v["bow_changes"] is None]
             self.assertTrue(blind)                                                                    # bars inside the gap have no bowing numbers
             result = perf.assessment["reference"]
-            self.assertEqual(sorted(result["gaps"]["bars_without_video"]), sorted(blind))
+            self.assertEqual(sorted(result["summary"]["gaps"]["bars_without_video"]), sorted(blind))
             self.assertEqual(blind, [5])
-            self.assertFalse([r for r in result["differences"] if r["category"] == "bowing" and r["measure"] in blind])
+            self.assertFalse([e for e in result["events"] if e["category"] == "bowing_vs_reference" and e["measure"] in blind])
 
 
 class InTheGui(unittest.TestCase):
@@ -385,7 +432,7 @@ class InTheGui(unittest.TestCase):
         self.assertTrue(card["available"])
         self.assertEqual((card["clip"]["first_measure"], card["clip"]["last_measure"]), (3, 5))
         self.assertEqual(card["summary"]["pitch"]["nature"], "objective")
-        self.assertNotIn("differences", card)                                                # the long per-note list stays out of the page
+        self.assertTrue(any(e["module"] == "reference" for e in page_data(page)["events"]))                # the events are in the list like every other module's
 
     def test_the_bar_includes_the_reference_stage_only_when_a_reference_is_given(self):
         with mock.patch.object(gui_server, "analyze", side_effect=InputError("stop")) as fake:
@@ -405,16 +452,17 @@ class InTheGui(unittest.TestCase):
     def test_the_card_shows_choices_and_gaps_as_text_and_reports_an_unusable_reference(self):
         import subprocess
         evil = "<img src=x onerror=window.pwned=1>"
-        card = {"available": True, "source": {"origin": "youtube", "title": evil}, "clip": {"first_measure": 3, "last_measure": 5},
-                "summary": {"pitch": {"nature": "objective", "compared": 12, "median_delta": 3.0, "unit": "cents"},
+        card = {"module": "reference", "available": True, "score": None, "events": [], "summary": {
+                "source": {"origin": "youtube", "title": evil}, "clip": {"first_measure": 3, "last_measure": 5},
+                "by_category": {"pitch": {"nature": "objective", "compared": 12, "median_delta": 3.0, "unit": "cents"},
                             "tempo": {"nature": "interpretive", "compared": 3, "median_delta": 0.2, "unit": "x_marked_tempo"}},
                 "gaps": {"notes": 2, "bars_without_video": [4], "audio": [{"start": 1, "end": 2.5, "reason": "x"}], "video": [{"start": 3, "end": 4, "reason": "y"}]},
-                "differences": [], "reference_choices": [{"slug": "tempo_choice", "value": 0.8, "measure": None}, {"slug": "local_tempo_shift", "value": 1.2, "measure": 4},
-                            {"slug": "expressive_intonation", "value": 20, "measure": None}]}
+                "choices": [{"slug": "tempo_choice", "value": 0.8, "measure": None}, {"slug": "local_tempo_shift", "value": 1.2, "measure": 4},
+                            {"slug": "expressive_intonation", "value": 20, "measure": None}]}}
         results = []
         with tempfile.TemporaryDirectory() as tmp:
             perf = performance(Path(tmp))
-            for reference in (card, {"available": False, "reason": "The reference does not match the score."}, None):
+            for reference in (card, {"module": "reference", "available": False, "summary": {"reason": "The reference does not match the score."}, "events": []}, None):
                 perf.assessment["reference"] = reference
                 page = Path(tmp) / "r.html"
                 page.write_text(build_page(perf, "media.mp4"), encoding="utf-8")
