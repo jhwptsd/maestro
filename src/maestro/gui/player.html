@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Maestro</title>
+<style>
+/*CSS*/
+:root{--good:#2a9d3f;--ok:#f08c00;--bad:#d62828;--ink:#222;--mute:#777;--line:#e6e6e6;--blue:#4a6fa5;--orange:#e76f00}
+*{box-sizing:border-box}body{font:14px/1.4 system-ui,sans-serif;color:var(--ink);margin:0;background:#fafafa}
+main{max-width:1180px;margin:0 auto;padding:12px 16px 60px}
+h2{font-size:15px;margin:22px 0 8px}
+.scores{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin-bottom:10px}
+.chip{background:white;border:1px solid var(--line);border-left:5px solid var(--mute);border-radius:6px;padding:5px 10px;min-width:90px}
+.chip small{display:block;color:var(--mute);font-size:11px;text-transform:capitalize}.chip b{font-size:18px}
+.chip.main b{font-size:26px}
+.stage{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:12px;align-items:start}
+.stage.audio{grid-template-columns:1fr}
+video{width:100%;background:#000;border-radius:6px;max-height:60vh}audio{width:100%}
+#skel{width:100%;aspect-ratio:4/3;background:white;border:1px solid var(--line);border-radius:6px}
+#hud{display:flex;flex-wrap:wrap;gap:6px 18px;background:white;border:1px solid var(--line);border-radius:6px;padding:6px 10px;margin-top:8px;font-variant-numeric:tabular-nums}
+#hud span small{color:var(--mute);margin-right:4px}
+.chart{background:white;border:1px solid var(--line);border-radius:6px;margin-bottom:8px;position:relative}
+.chart canvas{width:100%;height:120px;display:block}.chart.tall canvas{height:170px}
+.chart .t{position:absolute;left:8px;top:4px;font-size:11px;color:var(--mute);pointer-events:none}
+#timeline canvas{width:100%;display:block;cursor:pointer}
+.bar-strip{display:flex;flex-wrap:wrap;gap:3px}
+.bar-strip button{width:34px;height:26px;border:0;border-radius:4px;color:white;font-size:11px;cursor:pointer}
+.filters{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.filters label{background:white;border:1px solid var(--line);border-radius:14px;padding:2px 10px;cursor:pointer;user-select:none}
+table{width:100%;border-collapse:collapse;background:white;border:1px solid var(--line)}
+th,td{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left;font-variant-numeric:tabular-nums}
+th{font-size:12px;color:var(--mute);cursor:pointer}tr.row{cursor:pointer}tr.row:hover,tr.active{background:#eef3fb}
+.sev{display:inline-block;width:10px;height:10px;border-radius:50%}
+#feedback .fb{background:white;border:1px solid var(--line);border-left:5px solid var(--blue);border-radius:6px;padding:10px 14px;margin-bottom:12px}
+#feedback h2{margin:0 0 6px}#feedback ol{padding-left:20px;margin:6px 0}#feedback li{margin-bottom:8px}
+#feedback .bars{display:inline-block;background:#eef3fb;border-radius:10px;padding:0 8px;font-size:12px;margin-left:6px}
+#feedback .note{color:var(--mute);font-size:12px}#feedback .log{max-height:320px;overflow:auto;margin-bottom:8px}#feedback .bubble{padding:6px 10px;border-radius:10px;margin:4px 0;white-space:pre-wrap}
+#feedback .bubble.me{background:#eef3fb;margin-left:15%}#feedback .bubble.ai{background:#f6f6f6;margin-right:15%}
+#feedback form{display:flex;gap:6px}#feedback form input{flex:1;padding:7px;font-size:14px}#feedback button.plain{background:#eee;color:#333}
+#feedback pre{max-height:240px;overflow:auto;background:#f6f6f6;padding:8px;font-size:11px}
+#feedback button{padding:6px 12px;border:0;border-radius:6px;background:var(--blue);color:white;cursor:pointer}#feedback button:disabled{background:#999}
+details{margin-top:20px}summary{cursor:pointer;font-weight:600}
+</style>
+<main>
+<div class="scores" id="scores"></div>
+<div id="feedback"></div>
+<div class="stage" id="stage"><div id="mediaBox"></div><div><canvas id="skel" width="640" height="480"></canvas></div></div>
+<div id="hud"></div>
+<h2>Live traces</h2>
+<div id="charts"></div>
+<h2>Problem areas</h2>
+<div id="timeline"><canvas height="110"></canvas></div>
+<div class="bar-strip" id="bars" style="margin-top:8px"></div>
+<h2>Events</h2>
+<div class="filters" id="filters"></div>
+<table id="events"><thead><tr><th data-k="start">time</th><th data-k="measure">bar</th><th data-k="module">skill</th><th data-k="category">category</th>
+<th data-k="value">value</th><th>expected</th><th>causes (confidence)</th><th data-k="severity">severity</th></tr></thead><tbody></tbody></table>
+/*VIEWER*/
+</main>
+<script>
+/*VIEWER_JS*/
+const D = /*DATA*/;
+const $ = (s) => document.querySelector(s);
+const COLORS = {good: "#2a9d3f", ok: "#f08c00", bad: "#d62828", blue: "#4a6fa5", orange: "#e76f00", grey: "#9a9a9a"};
+const sevColor = (s) => s < 0.34 ? "#d4a800" : s < 0.67 ? COLORS.ok : COLORS.bad;     // minor / moderate / severe problem
+const scoreColor = (v) => v >= 85 ? COLORS.good : v >= 60 ? COLORS.ok : COLORS.bad;
+const MODULES = ["intonation", "rhythm", "expression", "tone", "bowing", "posture"];
+const NOTE = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const noteName = (m) => NOTE[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
+const fmtTime = (t) => Math.floor(t / 60) + ":" + String(Math.floor(t % 60)).padStart(2, "0");
+const fmtNum = (v) => v === null || v === undefined ? "" : Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2);
+
+// ---- written feedback and chat (an AI provider the user connected; the text is untrusted, so it is only ever inserted as text) ------
+(function feedbackCard() {
+  const box = $("#feedback");
+  const el = (tag, text, cls) => { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; };
+  const post = (url, body) => fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})
+    .then(async (res) => { const data = await res.json(); if (!res.ok) throw new Error(data.error || "Request failed."); return data; });
+  const card = el("div", undefined, "fb");
+  const sent = D.digest && el("details");
+  if (sent) { sent.append(el("summary", "What is sent to the AI provider (numbers only)"), el("pre", JSON.stringify(D.digest, null, 1))); }
+  function show(fb) {
+    card.textContent = "";
+    card.append(el("h2", "Feedback"), el("p", fb.summary));
+    if (fb.priorities.length) {
+      const list = el("ol");
+      fb.priorities.forEach((p) => { const li = el("li"); li.append(el("b", p.title));
+        if (p.bars.length) li.append(el("span", (p.bars.length > 1 ? "bars " : "bar ") + p.bars.join(", "), "bars"));
+        li.append(el("div", p.why), el("div", "Practice: " + p.practice)); list.appendChild(li); });
+      card.appendChild(list);
+    }
+    if (fb.strengths.length) { card.appendChild(el("b", "Going well")); const ul = el("ul"); fb.strengths.forEach((t) => ul.appendChild(el("li", t))); card.appendChild(ul); }
+    card.appendChild(el("div", `Written by ${fb.model} (${fb.provider}) from the measurements below the video; like any AI text it can be wrong. ` + fb.warnings.join(" "), "note"));
+    if (sent) card.appendChild(sent);
+  }
+
+  function chatPanel() {                                  // follow-up questions about this recording
+    const panel = el("div", undefined, "fb chat"), log = el("div", undefined, "log"), form = el("form"), input = el("input"),
+          send = el("button", "Ask"), clear = el("button", "New conversation"), err = el("div", "", "note");
+    input.maxLength = 1000; input.placeholder = "Ask about your playing, e.g. why is my intonation sharp in bar 12?"; input.setAttribute("aria-label", "Your question");
+    send.type = "submit"; clear.type = "button"; clear.className = "plain";
+    form.append(input, send, clear);
+    panel.append(el("h2", "Ask the AI about your playing"), log, form, err);
+    box.append(panel);
+    const bubble = (who, text) => { const d = el("div", text, "bubble " + who); log.append(d); log.scrollTop = log.scrollHeight; return d; };
+    post("/api/chat", {run: D.run, history: true}).then((d) => d.messages.forEach((m) => bubble(m.role === "user" ? "me" : "ai", m.content))).catch(() => {});
+    form.onsubmit = async (ev) => {
+      ev.preventDefault();
+      const text = input.value.trim(); if (!text) return;
+      input.value = ""; err.textContent = ""; send.disabled = true;
+      bubble("me", text); const wait = bubble("ai", "...");
+      try { wait.textContent = (await post("/api/chat", {run: D.run, message: text})).reply; }
+      catch (e) { wait.remove(); err.textContent = e.message; }
+      finally { send.disabled = false; input.focus(); }
+    };
+    clear.onclick = () => post("/api/chat", {run: D.run, reset: true}).then(() => { log.textContent = ""; err.textContent = ""; }).catch((e) => { err.textContent = e.message; });
+  }
+
+  if (D.feedback && !D.run) { show(D.feedback); box.append(card); return; }       // a saved report: feedback only, there is no server to ask
+  if (!D.run) return;
+  const status = el("div", "", "note"), retry = el("button", "Write feedback");
+  retry.hidden = true;
+  card.append(el("h2", "Feedback"), status, retry);
+  if (sent) card.appendChild(sent);
+  box.append(card);
+  async function ask() {                                  // automatic: one call per analysis (the server keeps the answer)
+    retry.hidden = true; status.textContent = "Writing feedback...";
+    try { show(await post("/api/feedback", {run: D.run})); }
+    catch (e) { status.textContent = e.message; retry.hidden = false; }
+  }
+  retry.onclick = ask;
+  fetch("/api/llm").then((r) => r.json()).then((st) => {
+    const p = st.provider && st.providers[st.provider];
+    if (!p) {
+      status.textContent = "To get written feedback and ask the AI questions, connect a provider with your own API key (or sign in to OpenRouter) on the start page. ";
+      const a = el("a", "Open the start page"); a.href = "/#ai"; status.append(a);
+      return;
+    }
+    chatPanel();
+    ask();
+  }).catch(() => { status.textContent = "Could not reach the server."; });
+})();
+
+// ---- media ---------------------------------------------------------------------------------------------------------
+const media = document.createElement(D.media.kind);
+media.src = D.media.url; media.controls = true; media.preload = "auto";
+$("#mediaBox").appendChild(media);
+if (D.media.kind === "audio" || !D.pose) $("#stage").classList.add("audio");
+if (!D.pose) $("#skel").parentElement.remove();
+const seek = (t, play) => { media.currentTime = Math.max(0, t); if (play) media.play(); draw(); };
+
+// ---- score chips ---------------------------------------------------------------------------------------------------
+(function () {
+  const box = $("#scores");
+  const chip = (name, v, main) => {
+    const c = document.createElement("div"); c.className = "chip" + (main ? " main" : "");
+    c.style.borderLeftColor = v === null ? COLORS.grey : scoreColor(v);
+    c.innerHTML = `<small>${name}</small><b>${v === null ? "n/a" : Math.round(v)}</b>`; box.appendChild(c);
+  };
+  chip("overall", D.scores.overall, true);
+  MODULES.filter((m) => m in D.scores).forEach((m) => chip(m, D.scores[m]));
+  Object.entries(D.unavailable).forEach(([m, r]) => { const c = document.createElement("div"); c.className = "chip"; c.title = r;
+    c.innerHTML = `<small>${m}</small><b style="color:#aaa">n/a</b>`; box.appendChild(c); });
+})();
+
+// ---- generic helpers -----------------------------------------------------------------------------------------------
+const lower = (arr, x) => { let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; arr[m] < x ? lo = m + 1 : hi = m; } return lo; };
+const WINDOW_BEFORE = 8, WINDOW_AFTER = 2;
+
+function makeCanvas(el) {            // sizes the backing store for the device pixel ratio
+  const dpr = window.devicePixelRatio || 1, r = el.getBoundingClientRect();
+  if (el.width !== Math.round(r.width * dpr) || el.height !== Math.round(r.height * dpr)) { el.width = Math.round(r.width * dpr); el.height = Math.round(r.height * dpr); }
+  const g = el.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); return [g, r.width, r.height];
+}
+
+// ---- live charts -----------------------------------------------------------------------------------------------------
+// Every chart shows the last WINDOW_BEFORE seconds up to the playhead (drawn as it plays) and a short look ahead for the
+// score; problem events of its skills are shaded behind the trace, upcoming ones only as faint ticks.
+const T = D.traces;
+const percentile = (arr, p) => { const a = arr.filter((v) => v !== null).sort((x, y) => x - y); return a.length ? a[Math.floor(p * (a.length - 1))] : 0; };
+const CHARTS = [];
+function addChart(cfg) { const box = document.createElement("div"); box.className = "chart" + (cfg.kind === "pitch" ? " tall" : "");
+  box.innerHTML = `<div class="t">${cfg.title}</div><canvas></canvas>`; $("#charts").appendChild(box); cfg.canvas = box.querySelector("canvas"); CHARTS.push(cfg); }
+
+function loudnessRange() {      // ignore the silence before and after playing, which would stretch the axis
+  const top = percentile(T.loudness.db, 0.995), played = T.loudness.db.filter((v) => v !== null && v > top - 40);
+  return [percentile(played, 0.02) - 3, top + 3]; }
+addChart({title: "Pitch: played (line) vs written (bars), semitones", modules: ["intonation"], kind: "pitch"});
+addChart({title: "Loudness (dB)", modules: ["expression", "tone"], kind: "line", series: [{t: T.loudness.t, y: T.loudness.db, color: COLORS.blue}],
+          range: loudnessRange()});
+addChart({title: "Timing error per note (ms, late = up)", modules: ["rhythm"], kind: "stems", range: [-200, 200], bands: [[-100, 100]], unitScale: 1});
+if (T.bow) addChart({title: "Bow position (blue) and speed (orange)", modules: ["bowing"], kind: "line",
+  series: [{t: T.bow.t, y: T.bow.pos, color: COLORS.blue}, {t: T.bow.t, y: T.bow.speed, color: COLORS.orange, scaleTo: T.bow.pos}], strokes: T.bow.strokes});
+if (T.posture && T.posture.tilt) addChart({title: "Shoulder tilt (degrees)", modules: ["posture"], kind: "line", series: [{t: T.posture.t, y: T.posture.tilt, color: COLORS.blue}], range: [-25, 25], bands: [[-10, 10]]});
+if (T.posture && (T.posture.left || T.posture.right)) addChart({title: "Elbow angles (left blue, right orange)", modules: ["posture"], kind: "line",
+  series: [T.posture.left && {t: T.posture.t, y: T.posture.left, color: COLORS.blue}, T.posture.right && {t: T.posture.t, y: T.posture.right, color: COLORS.orange}].filter(Boolean)});
+if (T.hand) addChart({title: "Left hand position (semitones above the open string)", modules: ["intonation"], kind: "line", series: [{t: T.hand.t, y: T.hand.semitones, color: COLORS.blue}]});
+
+function drawChart(c, now) {
+  const [g, W, H] = makeCanvas(c.canvas), L = 46, R = 8, Tp = 18, B = 6;
+  const t0 = now - WINDOW_BEFORE, t1 = now + WINDOW_AFTER, x = (t) => L + (t - t0) / (t1 - t0) * (W - L - R);
+  g.clearRect(0, 0, W, H);
+  // value range: fixed, or fitted to what is on screen
+  let lo, hi;
+  if (c.range) [lo, hi] = c.range;
+  else {
+    const vals = [];
+    (c.series || []).forEach((s) => { if (s.scaleTo) return; const a = lower(s.t, t0), b = lower(s.t, Math.min(now, t1)); for (let i = a; i < b; i++) if (s.y[i] !== null) vals.push(s.y[i]); });
+    if (c.kind === "pitch") { const a = lower(T.pitch.t, t0), b = lower(T.pitch.t, now); for (let i = a; i < b; i++) if (T.pitch.midi[i] !== null) vals.push(T.pitch.midi[i]);
+      T.pitch.score.forEach((n) => { if (n.end >= t0 && n.start <= t1) vals.push(n.midi); }); }
+    lo = vals.length ? Math.min(...vals) : 0; hi = vals.length ? Math.max(...vals) : 1;
+    const pad = Math.max((hi - lo) * 0.15, c.kind === "pitch" ? 1.5 : 0.5); lo -= pad; hi += pad;
+  }
+  const y = (v) => Tp + (hi - v) / (hi - lo) * (H - Tp - B);
+  g.font = "10px system-ui"; g.fillStyle = "#999"; g.strokeStyle = "#f0f0f0"; g.lineWidth = 1;
+  if (c.kind === "pitch") {                           // a grid line per semitone, named
+    const every = Math.max(1, Math.ceil(11 / ((H - Tp - B) / (hi - lo))));      // label only as many semitones as fit
+    for (let m = Math.ceil(lo); m <= hi; m++) { g.beginPath(); g.moveTo(L, y(m)); g.lineTo(W - R, y(m)); g.stroke(); if (m % every === 0) g.fillText(noteName(m), 6, y(m) + 3); }
+  } else {
+    const step = niceStep((hi - lo) / 4);
+    for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) { g.beginPath(); g.moveTo(L, y(v)); g.lineTo(W - R, y(v)); g.stroke(); g.fillText(fmtNum(v), 4, y(v) + 3); }
+  }
+  (c.bands || []).forEach(([a, b]) => { g.fillStyle = "rgba(42,157,63,0.10)"; g.fillRect(L, y(b), W - L - R, y(a) - y(b)); });
+  // problem events of this chart's skills
+  D.events.forEach((e) => {
+    if (!c.modules.includes(e.module) || e.end < t0 || e.start > t1) return;
+    const a = Math.max(x(e.start), L), b = Math.max(x(Math.max(e.end, e.start + 0.12)), a + 2);
+    g.fillStyle = e.start <= now ? sevColor(e.severity) + "55" : "#bbbbbb44"; g.fillRect(a, Tp, b - a, H - Tp - B);
+  });
+  (c.strokes || []).forEach((s) => { if (s.end < t0 || s.end > now) return; g.strokeStyle = "#ddd"; g.beginPath(); g.moveTo(x(s.end), Tp); g.lineTo(x(s.end), H - B); g.stroke(); });
+  if (c.kind === "pitch") {
+    T.pitch.score.forEach((n) => { if (n.end < t0 || n.start > t1) return; g.fillStyle = n.start <= now ? "rgba(74,111,165,0.35)" : "rgba(74,111,165,0.15)";
+      g.fillRect(x(n.start), y(n.midi + 0.5), Math.max(x(n.end) - x(n.start), 1), y(n.midi - 0.5) - y(n.midi + 0.5)); });
+    drawLine(g, T.pitch.t, T.pitch.midi, COLORS.orange, t0, now, x, y, 1.8);
+  }
+  if (c.kind === "line") (c.series || []).forEach((s) => {
+    if (s.scaleTo) drawLine(g, s.t, scaled(s, lo, hi), s.color, t0, now, x, y, 1.4); else drawLine(g, s.t, s.y, s.color, t0, now, x, y, 1.6); });
+  if (c.kind === "stems") T.notes.forEach((n) => { if (n.ms === null || n.start < t0 || n.start > now) return; const a = Math.abs(n.ms);
+    g.strokeStyle = g.fillStyle = a <= 40 ? COLORS.good : a <= 100 ? COLORS.ok : COLORS.bad; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(x(n.start), y(0)); g.lineTo(x(n.start), y(Math.max(lo, Math.min(hi, n.ms)))); g.stroke(); g.beginPath(); g.arc(x(n.start), y(Math.max(lo, Math.min(hi, n.ms))), 3, 0, 7); g.fill(); });
+  g.strokeStyle = "#222"; g.lineWidth = 1.5; g.beginPath(); g.moveTo(x(now), Tp - 4); g.lineTo(x(now), H - B); g.stroke();   // playhead
+}
+function niceStep(raw) { const m = Math.pow(10, Math.floor(Math.log10(raw || 1))); return [1, 2, 2.5, 5, 10].map((k) => k * m).find((s) => s >= raw) || m; }
+function scaled(s, lo, hi) {   // a second signal drawn over the first one's range (speed over position)
+  if (!s._scaled) { const ref = s.scaleTo.filter((v) => v !== null), lo0 = Math.min(...ref), hi0 = Math.max(...ref), top = percentile(s.y, 0.99) || 1;
+    s._scaled = s.y.map((v) => v === null ? null : lo0 + Math.min(v / top, 1) * (hi0 - lo0)); } return s._scaled; }
+function drawLine(g, t, v, color, t0, now, x, y, w) {
+  g.strokeStyle = color; g.lineWidth = w; g.beginPath(); let pen = false;
+  for (let i = lower(t, t0 - 0.5); i < t.length && t[i] <= now; i++) {
+    if (v[i] === null) { pen = false; continue; }
+    pen ? g.lineTo(x(t[i]), y(v[i])) : g.moveTo(x(t[i]), y(v[i])); pen = true;
+  }
+  g.stroke();
+}
+
+// ---- skeleton --------------------------------------------------------------------------------------------------------
+const P = D.pose;
+let skelBox = null;
+if (P) {                    // fixed scale from the whole performance so the figure does not jump
+  const all = [].concat(...P.xyz).filter(Boolean);
+  const range = (k) => [Math.min(...all.map((j) => j[k])), Math.max(...all.map((j) => j[k]))];
+  skelBox = {x: range(0), y: range(1), z: range(2)};
+}
+function drawSkeleton(now) {
+  if (!P) return;
+  const [g, W, H] = makeCanvas($("#skel")); g.clearRect(0, 0, W, H);
+  const f = P.xyz[Math.min(P.xyz.length - 1, Math.max(0, Math.round(now * P.fps)))]; if (!f) return;
+  const idx = Object.fromEntries(P.joints.map((n, i) => [n, i]));
+  const views = [{u: 0, label: "front", box: skelBox.x}, {u: 2, label: "side", box: skelBox.z}];
+  const yr = skelBox.y, scale = Math.min((W / 2 - 24) / Math.max(...views.map((v) => v.box[1] - v.box[0])), (H - 30) / (yr[1] - yr[0]));
+  const active = D.events.filter((e) => e.start <= now && now <= Math.max(e.end, e.start + 0.4) && ["bowing", "posture"].includes(e.module));
+  views.forEach((v, k) => {
+    const ox = k * W / 2 + W / 4 - (v.box[0] + v.box[1]) / 2 * scale, oy = H - 12 + yr[0] * scale;
+    const pt = (j) => [ox + j[v.u] * scale, oy - j[1] * scale];
+    g.strokeStyle = active.length ? COLORS.bad : "#555"; g.lineWidth = 2.5;
+    P.edges.forEach(([a, b]) => { const A = f[idx[a]], B = f[idx[b]]; if (!A || !B) return; g.beginPath(); g.moveTo(...pt(A)); g.lineTo(...pt(B)); g.stroke(); });
+    P.joints.forEach((n, i) => { if (!f[i] || !(n.endsWith("hand") || n.endsWith("wrist") || n.endsWith("shoulder"))) return;
+      g.fillStyle = n === "r_hand" ? COLORS.orange : n === "l_hand" ? COLORS.blue : "#777"; g.beginPath(); g.arc(...pt(f[i]), n.endsWith("hand") ? 6 : 3.5, 0, 7); g.fill(); });
+    g.fillStyle = "#999"; g.font = "11px system-ui"; g.fillText(v.label, k * W / 2 + 8, 14);
+  });
+}
+
+// ---- events: timeline, bars, table -------------------------------------------------------------------------------------
+const hidden = new Set();
+const visibleEvents = () => D.events.filter((e) => !hidden.has(e.module));
+function drawTimeline(now) {
+  const [g, W, H] = makeCanvas($("#timeline canvas")), L = 80, lanes = MODULES.filter((m) => D.events.some((e) => e.module === m) || m in D.scores);
+  g.clearRect(0, 0, W, H); const x = (t) => L + t / D.duration * (W - L - 8), lane = (H - 16) / Math.max(lanes.length, 1);
+  g.font = "11px system-ui";
+  lanes.forEach((m, i) => { g.fillStyle = "#777"; g.textAlign = "right"; g.fillText(m, L - 8, 8 + i * lane + lane / 2 + 4); g.fillStyle = i % 2 ? "#fff" : "#f6f6f6"; g.fillRect(L, 4 + i * lane, W - L - 8, lane); });
+  g.textAlign = "left";
+  visibleEvents().forEach((e) => { const i = lanes.indexOf(e.module); if (i < 0) return;
+    g.fillStyle = sevColor(e.severity); g.fillRect(x(e.start), 6 + i * lane, Math.min(Math.max(x(e.end) - x(e.start), 3), W - 8 - x(e.start)), lane - 4); });
+  for (let t = 0; t <= D.duration; t += Math.max(10, Math.ceil(D.duration / 10 / 10) * 10)) { g.fillStyle = "#999"; g.fillText(fmtTime(t), x(t) - 8, H - 3); }
+  g.strokeStyle = "#222"; g.lineWidth = 1.5; g.beginPath(); g.moveTo(x(now), 2); g.lineTo(x(now), H - 14); g.stroke();
+}
+$("#timeline canvas").addEventListener("click", (ev) => { const r = ev.target.getBoundingClientRect(); seek(((ev.clientX - r.left - 80) / (r.width - 88)) * D.duration, false); });
+
+(function bars() {          // one button per bar, coloured by its worst problem
+  const worst = {};
+  D.events.forEach((e) => { if (e.measure !== null && e.severity > (worst[e.measure] ? worst[e.measure].severity : -1)) worst[e.measure] = e; });
+  const strip = $("#bars");
+  Object.keys(worst).map(Number).sort((a, b) => a - b).forEach((m) => { const b = document.createElement("button");
+    b.textContent = m; b.style.background = sevColor(worst[m].severity); b.title = `bar ${m}: ${worst[m].module} ${worst[m].category}`;
+    b.onclick = () => seek(worst[m].start - 1, true); strip.appendChild(b); });
+  if (!strip.children.length) strip.textContent = "No problem bars.";
+})();
+
+let sortKey = "severity", sortDir = -1;
+function renderTable() {
+  const rows = visibleEvents().slice().sort((a, b) => ((a[sortKey] ?? -1) > (b[sortKey] ?? -1) ? 1 : -1) * sortDir || a.start - b.start).slice(0, 200);
+  const tb = $("#events tbody"); tb.innerHTML = "";
+  rows.forEach((e) => { const tr = document.createElement("tr"); tr.className = "row"; tr.dataset.id = e.id;
+    tr.innerHTML = `<td>${fmtTime(e.start)}</td><td>${e.measure ?? ""}${e.beat ? "." + e.beat : ""}</td><td>${e.module}</td><td>${e.category.replace(/_/g, " ")}</td>
+      <td>${fmtNum(e.value)} ${e.unit ?? ""}</td><td>${fmtNum(e.expected)}</td><td>${e.causes.map(([c, p]) => c.replace(/_/g, " ") + " " + Math.round(p * 100) + "%").join(", ")}</td>
+      <td><span class="sev" style="background:${sevColor(e.severity)}"></span> ${e.severity.toFixed(2)}</td>`;
+    tr.onclick = () => seek(e.start - 1, true); tb.appendChild(tr); });
+}
+document.querySelectorAll("#events th[data-k]").forEach((th) => th.onclick = () => { sortDir = sortKey === th.dataset.k ? -sortDir : -1; sortKey = th.dataset.k; renderTable(); });
+(function filters() {
+  const box = $("#filters");
+  MODULES.filter((m) => D.events.some((e) => e.module === m)).forEach((m) => { const l = document.createElement("label");
+    l.innerHTML = `<input type="checkbox" checked> ${m} (${D.events.filter((e) => e.module === m).length})`;
+    l.firstChild.onchange = (ev) => { ev.target.checked ? hidden.delete(m) : hidden.add(m); renderTable(); draw(); }; box.appendChild(l); });
+})();
+renderTable();
+
+const NOTE_STARTS = T.notes.map((n) => n.start);
+// ---- live readout and the animation loop --------------------------------------------------------------------------------
+function drawHud(now) {
+  const i = lower(NOTE_STARTS, now + 1e-6) - 1, n = T.notes[i], inNote = n && now <= n.end + 0.05;
+  const live = (() => { const k = lower(T.pitch.t, now); return T.pitch.midi[Math.min(k, T.pitch.midi.length - 1)]; })();
+  const active = D.events.filter((e) => e.start <= now && now <= Math.max(e.end, e.start + 0.3) && !hidden.has(e.module));
+  $("#hud").innerHTML = `<span><small>time</small>${fmtTime(now)} / ${fmtTime(D.duration)}</span>` +
+    (inNote ? `<span><small>bar</small>${n.measure ?? "-"}${n.beat ? "." + n.beat : ""}</span><span><small>pitch</small>${n.cents === null ? "-" : (n.cents > 0 ? "+" : "") + n.cents + " cents"}</span><span><small>timing</small>${n.ms === null ? "-" : (n.ms > 0 ? "+" : "") + n.ms + " ms"}</span>` : "") +
+    (live !== null && live !== undefined ? `<span><small>playing</small>${noteName(Math.round(live))}</span>` : "") +
+    active.map((e) => `<span style="color:${sevColor(e.severity)}">&#9679; ${e.module}: ${e.category.replace(/_/g, " ")}</span>`).join("");
+  document.querySelectorAll("#events tr.active").forEach((r) => r.classList.remove("active"));
+  active.forEach((e) => { const r = document.querySelector(`#events tr[data-id="${e.id}"]`); if (r) r.classList.add("active"); });
+}
+function draw() { const now = media.currentTime || 0; CHARTS.forEach((c) => drawChart(c, now)); drawSkeleton(now); drawTimeline(now); drawHud(now); }
+let raf = null;
+function loop() { draw(); raf = media.paused ? null : requestAnimationFrame(loop); }
+media.addEventListener("play", () => { if (!raf) loop(); });
+["seeked", "timeupdate", "pause", "loadedmetadata"].forEach((ev) => media.addEventListener(ev, draw));
+window.addEventListener("resize", draw);
+document.addEventListener("keydown", (e) => { if (e.code === "Space" && !/INPUT|BUTTON/.test(document.activeElement.tagName)) { e.preventDefault(); media.paused ? media.play() : media.pause(); } });
+draw();
+</script>
+</html>

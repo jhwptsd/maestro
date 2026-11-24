@@ -11,6 +11,8 @@
 # Not handled: grace notes/ornaments (skipped), transposing parts.
 import re
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from typing import Optional
 
 from maestro.score.repeats import Measure, playback_order, words_to_navigation
 from maestro.score.score_representation import Note, Score, midi_to_name
@@ -48,12 +50,96 @@ def _endings(spec):
     return tuple(out)
 
 
+@dataclass
+class _State:
+    """Musical context carried from one measure to the next."""
+    divisions: int = 1                  # <divisions> per quarter note
+    beats: int = 4
+    beat_type: int = 4
+    ending: tuple = ()                  # volta numbers currently open
+    key_fifths: Optional[int] = None    # first key / time signature seen (for notation display)
+    time_signature: Optional[tuple] = None
+    repeat_size: int = 0                # measure-repeat sign: measures in the group / still to fill
+    repeat_left: int = 0
+    dynamic: Optional[str] = None       # last dynamic mark seen ("p", "mf", ...): applies until the next one
+    hairpin: Optional[str] = None       # "crescendo" / "diminuendo" while a wedge is open
+
+
+def _read_barlines(mel, m, st):
+    """Repeat and ending marks. Left barlines open repeats/endings, right barlines close them."""
+    bars = [(bar.find("repeat"), bar.find("ending")) for bar in mel.findall("barline")]
+    for rep, ending in bars:
+        if rep is not None and rep.get("direction") == "forward":
+            m.fwd = True
+        if ending is not None and ending.get("type") == "start":
+            st.ending = _endings(ending.get("number", "1"))
+    m.endings = st.ending
+    for rep, ending in bars:
+        if rep is not None and rep.get("direction") == "backward":
+            m.back = int(rep.get("times", 2))
+        if ending is not None and ending.get("type") in ("stop", "discontinue"):
+            st.ending = ()
+
+
+def _read_attributes(el, st):
+    """<attributes>: divisions, time and key signature, measure-repeat sign."""
+    st.divisions = int(el.findtext("divisions", st.divisions))
+    st.beats = int(el.findtext("time/beats", str(st.beats)).split("+")[0])
+    st.beat_type = int(el.findtext("time/beat-type", st.beat_type))
+    if st.key_fifths is None and el.findtext("key/fifths") is not None:
+        st.key_fifths = int(el.findtext("key/fifths"))
+    if st.time_signature is None and el.find("time") is not None:
+        st.time_signature = (st.beats, st.beat_type)
+    sign = el.find("measure-style/measure-repeat")
+    if sign is not None and sign.get("type") == "start":
+        st.repeat_size = st.repeat_left = int((sign.text or "1").strip() or 1)
+
+
+def _read_directions(el, m, cursor):
+    """Tempo changes and jump marks (D.C., D.S., segno, coda, Fine) from <direction>/<sound>, preferring
+    <sound> attributes and falling back to the printed words."""
+    for sound in ([el] if el.tag == "sound" else el.iter("sound")):
+        a = sound.attrib
+        if "tempo" in a:
+            m.tempos.append((cursor, float(a["tempo"])))
+        m.dacapo |= a.get("dacapo") == "yes"
+        for key in ("dalsegno", "tocoda", "segno", "coda"):
+            if key in a:
+                setattr(m, key, a[key])
+        m.fine |= "fine" in a
+    for words in el.iter("words"):
+        for key, value in words_to_navigation(words.text or "").items():
+            if not getattr(m, key):
+                setattr(m, key, value)
+    if el.find("direction-type/segno") is not None and m.segno is None:
+        m.segno = ""
+    if el.find("direction-type/coda") is not None and m.coda is None:
+        m.coda = ""
+
+
+def _read_dynamics(el, st):
+    """Dynamic marks (<dynamics><mf/>) and hairpins (<wedge>) of a <direction> -> st.dynamic / st.hairpin."""
+    for dyn in el.iter("dynamics"):
+        if len(dyn):
+            st.dynamic = dyn[0].tag
+    for wedge in el.iter("wedge"):
+        st.hairpin = {"crescendo": "crescendo", "diminuendo": "diminuendo"}.get(wedge.get("type"))
+
+
+def _note_record(el, st, onset, dur):
+    """One pitched <note> as a plain dict (onset relative to the measure, in quarters)."""
+    ties = {t.get("type") for t in el.findall("tie")} | {t.get("type") for t in el.findall("notations/tied")}
+    art = el.find("notations/articulations")
+    return {"midi": _midi(el.find("pitch")), "onset": onset, "dur": dur,
+            "art": art[0].tag if art is not None and len(art) else None,
+            "dyn": st.dynamic, "hairpin": st.hairpin,
+            "beat_type": st.beat_type, "tie_start": "start" in ties, "tie_stop": "stop" in ties}
+
+
 def _read_measures(part):
-    """Raw per-measure data (notes with onsets relative to the measure, repeat/jump markings)."""
-    measures = []
-    divisions, beats, beat_type = 1, 4, 4
-    current_ending = ()
-    repeat_n = repeat_left = 0     # measure-repeat sign: group size / measures of the group still to fill
+    """Raw per-measure data (notes with onsets relative to the measure, repeat/jump markings) + the first
+    key/time signature."""
+    st, measures = _State(), []
     for idx, mel in enumerate(part.findall("measure"), start=1):
         try:
             number = int(mel.get("number", idx))
@@ -61,74 +147,31 @@ def _read_measures(part):
             number = idx
         m = Measure(number=number, length=0.0)
         cursor = last_onset = end = 0.0         # quarters from the start of this measure
-
-        # Barlines: left ones open repeats/endings, right ones close them. Handle left first.
-        for bar in mel.findall("barline"):
-            rep, end_el = bar.find("repeat"), bar.find("ending")
-            if rep is not None and rep.get("direction") == "forward":
-                m.fwd = True
-            if end_el is not None and end_el.get("type") == "start":
-                current_ending = _endings(end_el.get("number", "1"))
-        m.endings = current_ending
-        for bar in mel.findall("barline"):
-            rep, end_el = bar.find("repeat"), bar.find("ending")
-            if rep is not None and rep.get("direction") == "backward":
-                m.back = int(rep.get("times", 2))
-            if end_el is not None and end_el.get("type") in ("stop", "discontinue"):
-                current_ending = ()
-
+        _read_barlines(mel, m, st)
         for el in mel:
             if el.tag == "attributes":
-                divisions = int(el.findtext("divisions", divisions))
-                beats = int(el.findtext("time/beats", str(beats)).split("+")[0])
-                beat_type = int(el.findtext("time/beat-type", beat_type))
-                rep = el.find("measure-style/measure-repeat")
-                if rep is not None and rep.get("type") == "start":
-                    repeat_n = repeat_left = int((rep.text or "1").strip() or 1)
+                _read_attributes(el, st)
             elif el.tag in ("direction", "sound"):
-                for s in ([el] if el.tag == "sound" else el.iter("sound")):
-                    a = s.attrib
-                    if "tempo" in a:
-                        m.tempos.append((cursor, float(a["tempo"])))
-                    m.dacapo |= a.get("dacapo") == "yes"
-                    for key in ("dalsegno", "tocoda", "segno", "coda"):
-                        if key in a:
-                            setattr(m, key, a[key])
-                    m.fine |= "fine" in a
-                for w in el.iter("words"):          # fallback when no <sound> carries the jump
-                    for k, v in words_to_navigation(w.text or "").items():
-                        if not getattr(m, k):
-                            setattr(m, k, v)
-                if el.find("direction-type/segno") is not None and m.segno is None:
-                    m.segno = ""
-                if el.find("direction-type/coda") is not None and m.coda is None:
-                    m.coda = ""
-            elif el.tag == "backup":
-                cursor -= int(el.findtext("duration")) / divisions
-            elif el.tag == "forward":
-                cursor += int(el.findtext("duration")) / divisions
-            elif el.tag == "note":
-                if el.find("grace") is not None or el.find("cue") is not None:
-                    continue
-                dur = int(el.findtext("duration")) / divisions
-                if el.find("chord") is None:        # chord notes share the previous onset
+                _read_directions(el, m, cursor)
+                _read_dynamics(el, st)
+            elif el.tag in ("backup", "forward"):
+                step = int(el.findtext("duration")) / st.divisions
+                cursor += step if el.tag == "forward" else -step
+            elif el.tag == "note" and el.find("grace") is None and el.find("cue") is None:
+                dur = int(el.findtext("duration")) / st.divisions
+                if el.find("chord") is None:    # chord notes share the previous onset
                     last_onset, cursor = cursor, cursor + dur
                 end = max(end, cursor)
-                if el.find("rest") is not None:
-                    continue
-                ties = {t.get("type") for t in el.findall("tie")} | {t.get("type") for t in el.findall("notations/tied")}
-                art = el.find("notations/articulations")
-                m.notes.append({"midi": _midi(el.find("pitch")), "onset": last_onset, "dur": dur,
-                                "art": art[0].tag if art is not None and len(art) else None,
-                                "beat_type": beat_type, "tie_start": "start" in ties, "tie_stop": "stop" in ties})
+                if el.find("rest") is None:
+                    m.notes.append(_note_record(el, st, last_onset, dur))
 
-        m.length = end if end else beats * 4.0 / beat_type   # empty measure: use the time signature
-        if repeat_left > 0 and len(measures) >= repeat_n:       # measure-repeat sign: copy the
-            src = measures[len(measures) - repeat_n]            # measure `repeat_n` back (so a
-            m.notes, m.length = [dict(n) for n in src.notes], src.length   # 2-measure sign copies 2)
-            repeat_left -= 1
+        m.length = end if end else st.beats * 4.0 / st.beat_type     # empty measure: use the time signature
+        if st.repeat_left > 0 and len(measures) >= st.repeat_size:   # measure-repeat sign: copy the measure
+            src = measures[len(measures) - st.repeat_size]           # `repeat_size` back (a 2-measure sign
+            m.notes, m.length = [dict(n) for n in src.notes], src.length   # copies two measures)
+            st.repeat_left -= 1
         measures.append(m)
-    return measures
+    return measures, {"key_fifths": st.key_fifths, "time_signature": st.time_signature}
 
 
 def parse_musicxml(path, part=None, expand_repeats=True):
@@ -137,7 +180,7 @@ def parse_musicxml(path, part=None, expand_repeats=True):
     part: part id to read (default: the violin part, else the first part).
     expand_repeats: unroll repeats/voltas/D.C./D.S. (False = notes in written order, once).
     """
-    measures = _read_measures(_pick_part(ET.parse(path).getroot(), part))
+    measures, meta = _read_measures(_pick_part(ET.parse(path).getroot(), part))
     order = playback_order(measures) if expand_repeats else range(len(measures))
 
     tempo_map = [(0.0, DEFAULT_TEMPO)]       # (absolute quarter position, bpm)
@@ -159,7 +202,8 @@ def parse_musicxml(path, part=None, expand_repeats=True):
                     del open_ties[n["midi"]]
                 continue
             rec = {"measure": m.number, "beat": 1.0 + n["onset"] * n["beat_type"] / 4.0, "midi": n["midi"],
-                   "dur": n["dur"], "art": n["art"], "onset": onset}
+                   "dur": n["dur"], "art": n["art"], "onset": onset,
+                   "dyn": n["dyn"], "hairpin": n["hairpin"]}
             recs.append(rec)
             if n["tie_start"]:
                 open_ties[n["midi"]] = rec
@@ -177,6 +221,6 @@ def parse_musicxml(path, part=None, expand_repeats=True):
         return sec
 
     notes = [Note(r["measure"], r["beat"], midi_to_name(r["midi"]), r["midi"], r["dur"], r["art"],
-                  seconds(r["onset"]), seconds(r["onset"] + r["dur"])) for r in recs]
+                  seconds(r["onset"]), seconds(r["onset"] + r["dur"]), r["dyn"], r["hairpin"]) for r in recs]
     notes.sort(key=lambda n: (n.onset, n.midi_pitch))
-    return Score(notes, tempo_map[0][1])
+    return Score(notes, tempo_map[0][1], meta["key_fifths"], meta["time_signature"])

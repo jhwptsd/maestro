@@ -17,7 +17,7 @@
 # against audio directly; they assume one constant tempo (the first tempo marking, default 120).
 import json
 from dataclasses import dataclass, asdict, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
@@ -37,6 +37,8 @@ class Note:
     articulation: Optional[str]   # e.g. "staccato", "accent" or None
     onset: float                  # seconds from the start of the score
     offset: float                 # seconds
+    dynamic: Optional[str] = None   # dynamic mark in force at this note ("pp" ... "ff", "sf"), None if none was written
+    hairpin: Optional[str] = None   # "crescendo" / "diminuendo" if inside a wedge, else None
 
     def to_dict(self):
         return asdict(self)
@@ -46,11 +48,15 @@ class Note:
 class Score:
     notes: List[Note] = field(default_factory=list)  # sorted by (onset, midi_pitch)
     tempo: float = 120.0                             # quarter notes per minute
+    key_fifths: Optional[int] = None                 # key signature: +n sharps / -n flats, None if unknown
+    time_signature: Optional[Tuple[int, int]] = None  # (beats, beat type), None if unknown
 
     def to_json(self, **kw):
-        return json.dumps({"tempo": self.tempo, "notes": [n.to_dict() for n in self.notes]}, **kw)
+        return json.dumps({"tempo": self.tempo, "key_fifths": self.key_fifths, "time_signature": self.time_signature,
+                           "notes": [n.to_dict() for n in self.notes]}, **kw)
 
     @classmethod
     def from_json(cls, text):
         d = json.loads(text)
-        return cls([Note(**n) for n in d["notes"]], d["tempo"])
+        ts = d.get("time_signature")
+        return cls([Note(**n) for n in d["notes"]], d["tempo"], d.get("key_fifths"), tuple(ts) if ts else None)

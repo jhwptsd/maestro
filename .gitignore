@@ -3,3 +3,10 @@ __pycache__/
 out/
 build/
 *.egg-info/
+third_party/
+models/*.pt
+data/*
+!data/README.md
+models/onnx/
+.venv/
+venv/

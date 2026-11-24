@@ -117,6 +117,10 @@ with zipfile.ZipFile(os.path.join(out, stem, stem + ".mxl"), "w") as z:
 """
 
 
+# keeps a real Audiveris install (found via the default Windows locations) out of these tests
+NO_INSTALLED_AUDIVERIS = {"ProgramFiles": "", "LOCALAPPDATA": ""}
+
+
 class PdfScores(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -129,11 +133,17 @@ class PdfScores(unittest.TestCase):
         """Put a fake `audiveris` first on PATH for the duration of the test."""
         bin_dir = self.d / "bin"
         bin_dir.mkdir(exist_ok=True)
-        exe = bin_dir / "audiveris"
-        exe.write_text(FAKE_AUDIVERIS.format(python=sys.executable))
-        exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+        script = bin_dir / "audiveris_fake.py"
+        script.write_text(FAKE_AUDIVERIS.format(python=sys.executable))
+        if os.name == "nt":   # no shebangs on Windows: a .bat shim (found via PATHEXT) runs the script
+            (bin_dir / "audiveris.bat").write_text(f'@"{sys.executable}" "{script}" %*\n')
+        else:
+            exe = bin_dir / "audiveris"
+            exe.write_text(script.read_text())
+            exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
         patcher = mock.patch.dict(os.environ, {"PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
-                                               "FAKE_OMR_XML": str(self.d / "truth.musicxml"), **env})
+                                               "FAKE_OMR_XML": str(self.d / "truth.musicxml"),
+                                               **NO_INSTALLED_AUDIVERIS, **env})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -151,7 +161,7 @@ class PdfScores(unittest.TestCase):
                 self.assertEqual(len(preprocess_score(Performance(), self.d / name, self.d / "out").score.notes), 3)
 
     def test_missing_audiveris_gives_actionable_error(self):
-        with mock.patch.dict(os.environ, {"PATH": str(self.d)}):
+        with mock.patch.dict(os.environ, {"PATH": str(self.d), **NO_INSTALLED_AUDIVERIS}):
             with self.assertRaisesRegex(OMRUnavailableError, "MusicXML"):
                 convert_to_musicxml(self.d / "s.pdf", self.d / "out")
 
@@ -170,7 +180,7 @@ class PdfScores(unittest.TestCase):
                 convert_to_musicxml(self.d / f"{name}.pdf".replace(" ", "_"), self.d / "out")
         # "/Type /Pages" (the page tree node) must not be counted as a page
         (self.d / "tree.pdf").write_bytes(b"%PDF-1.4\n<</Type/Pages>>\n" * 100 + b"%%EOF")
-        with mock.patch.dict(os.environ, {"PATH": str(self.d)}), self.assertRaises(OMRUnavailableError):
+        with mock.patch.dict(os.environ, {"PATH": str(self.d), **NO_INSTALLED_AUDIVERIS}), self.assertRaises(OMRUnavailableError):
             convert_to_musicxml(self.d / "tree.pdf", self.d / "out")
 
 

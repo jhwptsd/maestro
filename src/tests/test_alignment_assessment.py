@@ -2,8 +2,8 @@ import unittest
 
 import numpy as np
 
-from maestro.alignment.align_audio_score import align_audio_score
-from maestro.alignment.correspondence import check_correspondence
+from maestro.alignment.align_audio_score import _pair_leftovers, align_audio_score
+from maestro.alignment.correspondence import check_correspondence, played_section
 from maestro.alignment.dtw import dtw
 from maestro.assessment.intonation import assess_intonation
 from maestro.assessment.rhythm import assess_rhythm
@@ -119,6 +119,79 @@ class Correspondence(unittest.TestCase):
         s.append({"midi_pitch": 62, "hz": 0.0, "onset": 0.5})        # D4 sounds together with B4 (a double stop)
         p = perf_notes([69, 71], [0, 0.5])
         self.assertEqual(check_correspondence(s, p, align_audio_score(s, p))["score_match"], 1.0)
+
+
+class PartialPerformance(unittest.TestCase):
+    """The recording may start halfway down the page, stop early, or cover a middle section."""
+    PIECE = Correspondence.PIECE                                  # 16 notes, 4 per measure below
+
+    def score(self):
+        s = score_notes(self.PIECE)
+        for i, n in enumerate(s):
+            n["measure"] = i // 4 + 1
+        return s
+
+    def align(self, first, last, **kw):
+        played = self.PIECE[first:last]
+        return align_audio_score(self.score(), perf_notes(played, np.arange(len(played))), **kw)
+
+    def test_alignment_starts_and_ends_where_the_playing_does(self):
+        for first, last in ((0, 8), (8, 16), (4, 12), (10, 16)):
+            with self.subTest(first=first, last=last):
+                matched = {a["score_idx"]: a["perf_idx"] for a in self.align(first, last) if a["perf_idx"] is not None}
+                self.assertEqual(matched, {i: i - first for i in range(first, last)})   # only that stretch, one-to-one
+
+    def test_forced_full_alignment_is_still_available(self):
+        a = self.align(8, 16, partial=False)                       # start-to-start: second half stretched over the whole piece
+        matched = [x["score_idx"] for x in a if x["perf_idx"] is not None]
+        self.assertEqual((matched[0], matched[-1]), (0, 15))       # spans the whole score ...
+        self.assertEqual(len(matched), 8)                          # ... but 8 played notes can explain only 8 written ones
+
+    def test_missed_note_and_unexplained_note_in_one_gap_become_a_wrong_note(self):
+        s = score_notes([74, 72, 74], spacing=0.5)                    # written D5 C5 D5
+        p = perf_notes([74, 76, 74], [0.0, 0.5, 1.0])                 # played D5 E5 D5 (E5 for C5)
+        out = [{"score_idx": 0, "perf_idx": 0, "cost": 0}, {"score_idx": 1, "perf_idx": None, "cost": None},
+               {"score_idx": 2, "perf_idx": 2, "cost": 0}]            # what release-shared leaves behind
+        _pair_leftovers(s, p, out)
+        self.assertEqual([e["perf_idx"] for e in out], [0, 1, 2])
+        self.assertAlmostEqual(out[1]["cost"], 4 / 12)
+        # a chord note that simply was not heard (same onset as a matched note) is left alone
+        s2 = score_notes([74, 67], spacing=0.0)
+        out2 = [{"score_idx": 0, "perf_idx": 0, "cost": 0}, {"score_idx": 1, "perf_idx": None, "cost": None}]
+        _pair_leftovers(s2, perf_notes([74, 76], [0.0, 0.01]), out2)
+        self.assertIsNone(out2[1]["perf_idx"])
+
+    def test_a_played_note_is_never_shared_between_written_notes(self):
+        # written G4 G4 (repeated pitch) but only one G4 was played: exactly one of them is "missed"
+        s = score_notes([74, 67, 67, 69], spacing=0.5)
+        a = align_audio_score(s, perf_notes([74, 67, 69], [0.0, 0.5, 1.5]))
+        self.assertEqual([x["perf_idx"] for x in a], [0, 1, None, 2])    # the G4 that fits the timing keeps it
+
+    def test_played_section_reports_measures_and_coverage(self):
+        s = self.score()
+        sec = played_section(s, self.align(4, 12))
+        self.assertEqual((sec["first_measure"], sec["last_measure"], sec["first_note"], sec["last_note"]), (2, 3, 4, 11))
+        self.assertAlmostEqual(sec["coverage"], 0.5)
+        self.assertIsNone(played_section(s, align_audio_score(s, [])))
+
+    def test_partial_performance_passes_the_match_check_wrong_piece_does_not(self):
+        s = self.score()
+        for first, last in ((0, 8), (8, 16), (4, 12)):
+            p = perf_notes(self.PIECE[first:last], np.arange(last - first))
+            self.assertGreater(min(check_correspondence(s, p, align_audio_score(s, p)).values()), 0.9)
+        wrong = perf_notes([67, 67, 74, 74, 76, 76, 74, 72], np.arange(8))
+        with self.assertRaises(MismatchError):
+            check_correspondence(s, wrong, align_audio_score(s, wrong))
+
+    def test_assessments_cover_only_the_played_notes(self):
+        s = self.score()
+        p = perf_notes(self.PIECE[8:16], np.arange(8) * 2 + 10, cents=20)      # played 20 cents sharp, starts late
+        a = align_audio_score(s, p)
+        inton = assess_intonation(s, p, a)
+        self.assertEqual([n["score_idx"] for n in inton["notes"]], list(range(8, 16)))
+        self.assertAlmostEqual(inton["mean_abs_cents"], 20, delta=1)
+        rhythm = assess_rhythm(s, p, a)                                       # start offset must not count as lateness
+        self.assertLess(rhythm["mean_abs_error"], 1e-6)
 
 
 if __name__ == "__main__":

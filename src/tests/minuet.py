@@ -43,23 +43,24 @@ def minuet_musicxml(bpm=100):
             f'<part id="P1">{measures}</part></score-partwise>')
 
 
-def play_minuet(bpm=100, vibrato_cents=30, vibrato_hz=5.5, noise=0.01, reverb=True, tuning_cents=0,
+def play_minuet(bars=slice(None), bpm=100, vibrato_cents=30, vibrato_hz=5.5, noise=0.01, reverb=True, tuning_cents=0,
                 jitter=0.02, seed=0):
     """Synthesise a performance -> float32 audio at SR.
 
     vibrato_cents: vibrato depth (+-); noise: bow-noise level; tuning_cents: how sharp(+)/flat(-) the
-    player is overall; jitter: random note start error (s) per note; seed makes it repeatable.
+    player is overall; jitter: random note start error (s) per note; seed makes it repeatable;
+    bars: which bars of BARS are played, e.g. slice(4, 8) = start halfway down the page (default: all).
     """
     rng = np.random.default_rng(seed)
     spb, t = 60 / bpm, 0.4
     notes = []                                             # [midi, start, dur, slurred]
-    for bar in BARS:
+    for bar in BARS[bars]:
         for m, beats, slur in bar:
             notes.append([m, t + rng.normal(0, jitter), beats * spb, slur])
             t += beats * spb
     n_samples = int((t + 1.0) * SR)
     target, amp = np.zeros(n_samples), np.zeros(n_samples)
-    for i, (m, start, dur, slur) in enumerate(notes):
+    for m, start, dur, slur in notes:
         s, e = int(start * SR), int((start + dur) * SR)
         k = np.arange(e - s)
         a = rng.uniform(0.6, 1.0) * np.minimum(1, k / (0.03 * SR))            # 30 ms bow attack

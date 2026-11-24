@@ -3,41 +3,185 @@
 <title>Maestro</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-/*CSS*/
-form{display:grid;gap:14px;border:1px solid #ddd;border-radius:8px;padding:18px;background:#fafafa}
+body{font-family:system-ui,sans-serif;max-width:640px;margin:2em auto;padding:0 1em;color:#222}
+form,.box{display:grid;gap:14px;border:1px solid #ddd;border-radius:8px;padding:18px;background:#fafafa}
 label{font-weight:600}.hint{font-weight:400;color:#666;font-size:.9em}
 input[type=file]{display:block;margin-top:6px}
 button{padding:10px 18px;font-size:1em;border:0;border-radius:6px;background:#4a6fa5;color:white;cursor:pointer}
+button.small{padding:5px 10px;font-size:.85em}button.plain{background:#eee;color:#333}
 button:disabled{background:#999;cursor:wait}
-#status{min-height:1.4em}.error{color:#b00020;font-weight:600}
+#status,#ai-status{min-height:1.4em}.error{color:#b00020;font-weight:600}
+#progress{display:grid;gap:4px}progress{width:100%;height:18px}#progress-label{font-size:.9em;color:#444}
+h2{margin-top:2em;font-size:1.1em}
+.row{display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center;padding:8px 0;border-top:1px solid #eee}
+.row:first-child{border-top:0}.row small{color:#666}.add{display:flex;gap:8px;flex-wrap:wrap}.add input,.add select{padding:7px;font-size:.95em}
+.add input{flex:1;min-width:200px}a.btn{display:inline-block;padding:7px 12px;border-radius:6px;background:#eee;color:#222;text-decoration:none;font-size:.9em}
 </style>
 <h1>Maestro: violin feedback</h1>
-<p>Upload a video (or audio) of yourself playing and the score you played from. Maestro compares the two and
-shows your pitch and timing, with charts that explain each number.</p>
+<p>Upload a video (or audio) of yourself playing and the score you played from.</p>
 <form id="f">
-  <div><label>Recording <span class="hint">(video or audio: mp4, mov, webm, wav, mp3, m4a …)</span>
+  <div><label>Recording <span class="hint">(video or audio: mp4, mov, webm, wav, mp3, m4a ...)</span>
     <input type="file" name="video" accept="video/*,audio/*" required></label></div>
   <div><label>Score <span class="hint">(MusicXML, .mxl, MIDI, or PDF/image if Audiveris is installed)</span>
     <input type="file" name="score" accept=".musicxml,.xml,.mxl,.mid,.midi,.pdf,.png,.jpg,.jpeg,.tif,.tiff" required></label></div>
   <div><button id="go">Analyze</button></div>
+  <div id="progress" hidden><progress id="bar" max="1000" value="0"></progress><div id="progress-label" role="status"></div></div>
   <div id="status" role="status"></div>
 </form>
-<div id="report"></div>
+
+<h2 id="ai">Written feedback</h2>
+<div class="box">
+  <p class="hint" style="margin:0">Every report writes feedback for you automatically and lets you ask follow-up questions. It is written by a small model
+  that runs <b>on this computer</b> through <a href="https://ollama.com/download" target="_blank" rel="noopener">Ollama</a> (free, private, works
+  offline; the models below are small enough for any recent computer or iPhone). Install Ollama and start it, then download a model once.
+  Only a short summary of numbers (bar numbers, errors in cents and milliseconds, scores) and your chat questions reach the model, never the recording or score.</p>
+  <div class="add" id="pull-row">
+    <select id="pull-model"></select>
+    <button id="pull" class="small">Download and use</button>
+    <progress id="pull-bar" max="1000" value="0" hidden></progress>
+  </div>
+  <details style="margin-top:.8em">
+    <summary class="hint">Optional: use an online service instead (free tiers)</summary>
+    <p class="hint">Sign in to OpenRouter (no key to copy), or paste a free API key from
+    <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">OpenRouter</a> or
+    <a href="https://console.groq.com/keys" target="_blank" rel="noopener">Groq</a>. The key stays on this computer.</p>
+    <div><a class="btn" href="/auth/openrouter/start">Sign in with OpenRouter</a></div>
+    <div id="ai-list"></div>
+    <div class="add">
+      <select id="prov"></select>
+      <input id="key" type="password" placeholder="Paste API key" autocomplete="off">
+      <button id="connect" class="small">Connect</button>
+    </div>
+  </details>
+  <div id="ai-status" role="status"></div>
+</div>
 <script>
-const f = document.getElementById("f"), status = document.getElementById("status"),
-      report = document.getElementById("report"), go = document.getElementById("go");
-f.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  go.disabled = true; report.innerHTML = "";
-  status.className = ""; status.textContent = "Uploading and analyzing… this can take a minute for long videos.";
+const f = document.getElementById("f"), status = document.getElementById("status"), go = document.getElementById("go"),
+      box = document.getElementById("progress"), bar = document.getElementById("bar"), barLabel = document.getElementById("progress-label");
+
+// ---- analysis with a progress bar ------------------------------------------------------------------------------------
+// The upload is the first 5 % (its progress is real); then the server reports the stage it is in and where the stage starts and ends.
+// How far a stage has got is not known, so the bar eases from the start towards the end of the stage while it waits (it never passes
+// the end, and never goes back).
+const UPLOAD_SHARE = 0.05, EASE_SECONDS = 12;
+let shown = 0;
+function setBar(fraction, label) {
+  shown = Math.max(shown, Math.min(fraction, 1));
+  bar.value = Math.round(shown * 1000);
+  barLabel.textContent = `${Math.round(shown * 100)}%  ${label}`;
+}
+function fail(message) { box.hidden = true; status.className = "error"; status.textContent = message; go.disabled = false; }
+
+async function follow(job) {                       // poll the job until it is done or has failed
+  let stage = null, since = Date.now(), last = null;
+  const ease = setInterval(() => {                 // between polls: creep from the start of the stage towards its end
+    if (!last) return;
+    const k = 1 - Math.exp(-((Date.now() - since) / 1000) / EASE_SECONDS);
+    setBar(UPLOAD_SHARE + (1 - UPLOAD_SHARE) * (last.fraction + (last.ceiling - last.fraction) * k), last.label);
+  }, 200);
   try {
-    const res = await fetch("/api/analyze", {method: "POST", body: new FormData(f)});
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Analysis failed.");
-    status.textContent = "";
-    report.innerHTML = data.html;
-  } catch (err) {
-    status.className = "error"; status.textContent = err.message;
-  } finally { go.disabled = false; }
+    for (;;) {
+      let data;
+      try { data = await (await fetch(`/api/job/${job}`)).json(); }
+      catch (e) { await new Promise((r) => setTimeout(r, 1500)); continue; }       // a missed poll is not a failure
+      if (data.state === "error") return fail(data.error || "Analysis failed.");
+      if (data.state === "done") { setBar(1, "Done"); location.href = data.url; return; }
+      if (data.stage !== stage) { stage = data.stage; since = Date.now() - 1000 * (data.seconds_in_stage || 0); }
+      last = data;
+      setBar(UPLOAD_SHARE + (1 - UPLOAD_SHARE) * data.fraction, data.label);
+      await new Promise((r) => setTimeout(r, 600));
+    }
+  } finally { clearInterval(ease); }
+}
+
+f.addEventListener("submit", (e) => {
+  e.preventDefault();
+  go.disabled = true; status.className = ""; status.textContent = ""; shown = 0;
+  box.hidden = false; setBar(0, "Uploading the files");
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/analyze");
+  xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) setBar(UPLOAD_SHARE * ev.loaded / ev.total, "Uploading the files"); };
+  xhr.onerror = () => fail("Could not reach the Maestro server.");
+  xhr.onload = () => {
+    let data = {};
+    try { data = JSON.parse(xhr.responseText); } catch (err) { /* handled below */ }
+    if (!data.job) return fail(data.error || "Analysis failed.");
+    setBar(UPLOAD_SHARE, "Starting the analysis");
+    follow(data.job);
+  };
+  xhr.send(new FormData(f));
 });
+
+// ---- AI provider connection ------------------------------------------------------------------------------------------
+const pullRow = document.getElementById("pull-row"), pullModel = document.getElementById("pull-model"), pullBar = document.getElementById("pull-bar");
+const list = document.getElementById("ai-list"), prov = document.getElementById("prov"), keyBox = document.getElementById("key"),
+      aiStatus = document.getElementById("ai-status");
+const post = async (url, body) => {
+  const res = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Request failed.");
+  return data;
+};
+const say = (text, error) => { aiStatus.className = error ? "error" : ""; aiStatus.textContent = text; };
+const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { say(e.message, true); } };
+
+function render(state, models = {}) {
+  list.textContent = "";
+  prov.textContent = "";
+  Object.entries(state.providers).forEach(([name, p]) => {
+    if (!p.needs_key) {                                  // the local model: only the download choices
+      if (!pullModel.options.length) p.suggested.forEach((m) => { const o = document.createElement("option"); o.value = m.id; o.textContent = m.label; o.selected = m.id === p.model; pullModel.appendChild(o); });
+      return;
+    }
+    const option = document.createElement("option"); option.value = name; option.textContent = p.label; prov.appendChild(option);
+    if (!p.connected) return;
+    const row = document.createElement("div"); row.className = "row";
+    const info = document.createElement("div");
+    const title = document.createElement("b"); title.textContent = p.label + (state.provider === name ? " (in use)" : "");
+    const small = document.createElement("small"); small.textContent = p.needs_key ? ` key ${p.key} (${p.source}) ` : " runs on this computer ";
+    const select = document.createElement("select");
+    (models[name] || [{id: p.model, label: p.model}]).forEach((m) => { const o = document.createElement("option"); o.value = m.id; o.textContent = m.label; o.selected = m.id === p.model; select.appendChild(o); });
+    select.onchange = guard(async () => { render((await post("/api/llm/select", {provider: name, model: select.value})).status, models); say("Model saved."); });
+    info.append(title, document.createElement("br"), small, select);
+    const buttons = document.createElement("div");
+    if (state.provider !== name) {
+      const use = document.createElement("button"); use.className = "small plain"; use.textContent = "Use this one";
+      use.onclick = guard(async () => { render((await post("/api/llm/select", {provider: name, model: select.value})).status, models); });
+      buttons.appendChild(use);
+    }
+    const off = document.createElement("button"); off.className = "small plain"; off.textContent = "Disconnect";
+    off.onclick = guard(async () => { render((await post("/api/llm/disconnect", {provider: name})).status, models); say("Disconnected."); });
+    buttons.appendChild(off);
+    row.append(info, buttons);
+    list.appendChild(row);
+    if (!models[name]) post("/api/llm/models", {provider: name}).then((d) => { models[name] = d.models; render(state, models); }).catch(() => {});
+  });
+}
+// Only the services that need a key show the key box; the local model needs none.
+document.getElementById("connect").onclick = guard(async () => {
+  say("Checking the key...");
+  const data = await post("/api/llm/connect", {provider: prov.value, api_key: keyBox.value});
+  keyBox.value = "";
+  render(data.status, {[prov.value]: data.models});
+  say("Connected. Reports will now write feedback automatically.");
+});
+document.getElementById("pull").onclick = guard(async () => {      // download a model, showing the real progress
+  pullBar.hidden = false; pullBar.value = 0;
+  const {job} = await post("/api/llm/pull", {model: pullModel.value});
+  for (;;) {
+    const d = await (await fetch(`/api/job/${job}`)).json();
+    pullBar.value = Math.round(1000 * (d.fraction || 0)); say(d.label || "");
+    if (d.state === "error") { pullBar.hidden = true; throw new Error(d.error); }
+    if (d.state === "done") break;
+    await new Promise((r) => setTimeout(r, 700));
+  }
+  pullBar.hidden = true;
+  render(await (await fetch("/api/llm")).json());
+  say("The local model is ready: reports will now use it.");
+});
+fetch("/api/llm").then((r) => r.json()).then((s) => { render(s); }).catch(() => {});
+const returned = new URLSearchParams(location.search);          // back from "Sign in with OpenRouter"
+if (returned.get("ai") === "connected") say("Signed in to OpenRouter. Reports will now write feedback automatically.");
+if (returned.get("ai_error")) say(returned.get("ai_error"), true);
+if (returned.has("ai") || returned.has("ai_error")) history.replaceState(null, "", location.pathname + "#ai");
 </script>

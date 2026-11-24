@@ -50,6 +50,23 @@ class ParseMusicXML(unittest.TestCase):
         self.assertEqual(Score.from_json(s.to_json()), s)
 
 
+class Dynamics(unittest.TestCase):
+    def test_marks_and_hairpins_follow_the_notes(self):
+        step = lambda s: f"<note><pitch><step>{s}</step><octave>4</octave></pitch><duration>1</duration></note>"
+        xml = ('<score-partwise><part-list><score-part id="P1"/></part-list><part id="P1"><measure number="1">'
+               "<attributes><divisions>1</divisions></attributes>"
+               "<direction><direction-type><dynamics><p/></dynamics></direction-type></direction>" + step("C") +
+               '<direction><direction-type><wedge type="crescendo"/></direction-type></direction>' + step("D") +
+               '<direction><direction-type><wedge type="stop"/></direction-type></direction>'
+               "<direction><direction-type><dynamics><f/></dynamics></direction-type></direction>" + step("E") +
+               "</measure></part></score-partwise>")
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "a.musicxml"
+            path.write_text(xml)
+            notes = parse_musicxml(path).notes
+        self.assertEqual([(n.dynamic, n.hairpin) for n in notes], [("p", None), ("p", "crescendo"), ("f", None)])
+
+
 class RepeatsAndEdgeCases(unittest.TestCase):
     """One note per measure with a unique pitch: the pitch sequence is the played measure order."""
     A, B, C, D, E = 60, 62, 64, 65, 67   # measures 1..5

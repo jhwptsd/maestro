@@ -1,2 +1,16 @@
+# Everything `pip install -e ".[crepe,dev]"` installs (what setup.ps1 / setup.sh install by default), for tools that
+# want a plain requirements file. pyproject.toml is the source of truth; its extras are:
+#   crepe (default pitch backend; with onnx + onnxruntime), directml (Windows GPU runtime, replaces onnxruntime), pyin, basic-pitch, audio (all pitch backends), neural (CLAP tone/expression judgement: + transformers), dev (pytest)
+# System programs (not pip packages): ffmpeg (required), git (VioPose), Audiveris (PDF / image scores, optional).
+# VioPose itself is not installed from here: it needs its own Python 3.9 environment, which src/scripts/setup_viopose.py makes.
 numpy
+scipy
+torch>=2.0
+torchcrepe>=0.0.23
+librosa>=0.10.2
+onnx
+onnxruntime            # Windows with an AMD/Intel/NVIDIA GPU: use onnxruntime-directml instead (never both)
 pytest
+
+# Optional neural tone/expression judgement:
+# transformers>=4.40

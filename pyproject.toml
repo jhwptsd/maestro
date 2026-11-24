@@ -7,13 +7,19 @@ name = "maestro"
 version = "0.1.0"
 description = "Personalized violin feedback from a video and a score"
 requires-python = ">=3.10"
-dependencies = ["numpy"]   # ffmpeg (system binary) is also required; Audiveris is optional (OMR)
+dependencies = ["numpy", "scipy"]   # ffmpeg (system binary) is also required; Audiveris (OMR) and git (VioPose) are optional
 
 [project.scripts]
 maestro-gui = "maestro.gui.server:main"
 
 [project.optional-dependencies]
 dev = ["pytest"]
+crepe = ["torch>=2.0", "torchcrepe>=0.0.23", "librosa>=0.10.2", "onnx", "onnxruntime"]   # the default pitch backend (ONNX Runtime runs its network ~2x faster than PyTorch on the CPU)
+directml = ["onnxruntime-directml"]           # Windows: runs the CREPE network on any DirectX 12 GPU (AMD, Intel, NVIDIA); REPLACES onnxruntime (pip uninstall onnxruntime first; setup.ps1 does)
+pyin = ["librosa>=0.10.2"]
+basic-pitch = ["basic-pitch>=0.3.0"]
+neural = ["torch>=2.0", "transformers>=4.40"]   # the optional CLAP tone/expression judgement (analyze(neural="clap"))
+audio = ["torch>=2.0", "torchcrepe>=0.0.23", "librosa>=0.10.2", "basic-pitch>=0.3.0"]   # all four pitch backends
 
 [tool.setuptools.packages.find]
 where = ["src"]
