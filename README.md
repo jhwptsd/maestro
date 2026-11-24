@@ -179,11 +179,13 @@ YouTube link) in the start page ("Optional: compare with a professional recordin
    (tempo, rubato, dynamics, articulation, vibrato, bowing, tone colour). The soloist's visible decisions are listed in `choices` with their numbers
    (`tempo_choice`, `local_tempo_shift`, `dynamic_shaping`, `vibrato_use`, `played_short`, `bowing_choice`, `expressive_intonation` for a note more than
    12 cents from equal temperament).
-7. **The comparison is events, like everything else** (`assessment/reference.py`): each difference from the soloist's interpretation is an event of the module
-   `reference` in the common format (`tempo_vs_reference`, `dynamics_vs_reference`, ... with bar, beat, your value, the soloist's value and unit). Its
-   cause is always `soloist_interpretive_choice` (evidence: both values and, when it applies, the soloist's own `soloist_choice`), its severity is
-   capped at 0.3 so it never outranks a real problem, and the module has no score and is left out of the problem bars and leading causes. Accuracy
-   (pitch, attack) is judged by the intonation and tone modules and appears only in the report card's table. The events go through the synthesis into
+7. **The comparison is differentials, as events, like everything else** (`assessment/reference.py`): the professional is the baseline, and each way your take
+   differs from it is an event of the module `reference` in the common format (`tempo_vs_reference`, `dynamics_vs_reference`, ... with bar, beat, unit and, as
+   its `value`, the differential: you minus the soloist; `expected` is 0). No averages or tallies are reported. Its cause is always
+   `soloist_interpretive_choice` (evidence: the differential, its relative size, both values and, when it applies, the soloist's own `soloist_choice`).
+   The differences are emphasised (severity 0.25 to 0.55, their own slots in the digest, the card at the top of the report) but stay below a clear note
+   error, the feedback model is told to name them yet put wrong notes, intonation, rhythm and tone first, and the module has no score and is left out of
+   the problem bars and leading causes. Accuracy (pitch, attack) is judged by the intonation and tone modules. The events go through the synthesis into
    the player's event list and into the digest that the feedback model reads, exactly like the other modules' (it gets its own slots among the events,
    plus the soloist's choices and the gaps), and it is told never to call such a difference a mistake. `reference.json` (command line) has the baseline.
 

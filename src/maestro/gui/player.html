@@ -144,24 +144,27 @@ const fmtNum = (v) => v === null || v === undefined ? "" : Math.abs(v) >= 100 ? 
   box.append(card);
   card.append(el("h2", "Compared with a professional"));
   if (!R.available) { card.append(el("div", "The reference could not be used: " + R.reason, "note")); return; }
-  const LABEL = {pitch: "pitch (cents)", attack: "attack (s)", tempo: "tempo (x the marking)", dynamics: "dynamic shape (dB)", articulation: "note length (share of gap)",
-                 vibrato: "vibrato width (cents)", bowing: "bow changes per bar"};
+  const LABEL = {tempo: "tempo", dynamics: "dynamic shape", articulation: "note length", vibrato: "vibrato width", bowing: "bow changes",
+                 expressive_intonation: "pitch where the soloist chose expressive intonation"};
+  const UNIT = {x_marked_tempo: "x the marked tempo", x_usual_tempo: "x its usual tempo", db: "dB", share_of_gap_filled: "of the gap", cents_extent: "cents",
+                bow_changes: "bow changes", cents: "cents"};
   const CHOICE = {tempo_choice: "plays at {v} x the marked tempo", local_tempo_shift: "changes the tempo ({v} x its usual)", dynamic_shaping: "shapes the dynamics ({v} dB from the median)",
                   vibrato_use: "uses vibrato on {v} of the long notes", played_short: "plays the note short ({v} of the gap)", bowing_choice: "bows with {v} changes per bar",
                   expressive_intonation: "plays the note {v} cents from equal temperament"};
   const c = R.clip;
   card.append(el("div", `${R.source.title} (${R.source.origin === "youtube" ? "YouTube" : "file"}), bars ${c.first_measure} to ${c.last_measure}, the part you played. `
-    + "A professional is not an answer key: rows marked interpretive are the soloist's own musical choices, so a difference there is a different reading, not a mistake.", "note"));
-  const table = el("table"), head = el("tr");
-  ["what", "kind", "notes or bars compared", "you minus the soloist (median)"].forEach((t) => head.append(el("th", t)));
-  table.append(head);
-  Object.entries(R.summary).forEach(([cat, s]) => {
-    const row = el("tr"), kind = el("td");
-    kind.append(el("span", s.nature, "tag " + s.nature));
-    row.append(el("td", LABEL[cat] || cat), kind, el("td", String(s.compared)), el("td", fmtNum(s.median_delta)));
-    table.append(row);
+    + "Each line is how your playing differs from the professional's (you minus them). They are the soloist's own musical choices, so a difference is another reading, not a mistake: "
+    + "wrong notes and the other problems below come first.", "note"));
+  const diffs = D.events.filter((e) => e.module === "reference").sort((a, b) => b.severity - a.severity);
+  const list = el("ul");
+  diffs.slice(0, 10).forEach((e) => {
+    const name = e.category.replace("_vs_reference", ""), sign = e.value > 0 ? "+" : "";
+    const li = el("li"); li.append(el("b", `bar ${e.measure ?? "?"}: ${LABEL[name] || name} ${sign}${fmtNum(e.value)} ${UNIT[e.unit] || e.unit}`), el("span", " interpretive", "tag interpretive"));
+    list.append(li);
   });
-  card.append(table);
+  card.append(list);
+  if (diffs.length > 10) card.append(el("div", `and ${diffs.length - 10} smaller differences (all are in the events list below).`, "note"));
+  if (!diffs.length) card.append(el("div", "No difference from the professional's reading stands out.", "note"));
   const fmt = (c) => (CHOICE[c.slug] || c.slug).replace("{v}", fmtNum(c.value)) + (c.measure ? ` (bar ${c.measure})` : "");
   const shown = R.choices.filter((c) => !["expressive_intonation", "played_short"].includes(c.slug));
   const more = R.choices.length - shown.length;

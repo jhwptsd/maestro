@@ -9,7 +9,7 @@
 #           notes [{start, end, measure, beat, cents, ms, wrong}]   (one per matched note: pitch and timing error)
 #           bow {t, pos, speed, strokes}, posture {t, tilt, left, right}, hand {t, semitones}   (only with a pose)
 #   pose {fps, joints, edges, xyz (cm, [frame][joint] = [x, y, z] or null)}  drawn as a skeleton next to the video
-#   reference: the professional comparison (assessment/reference: available, reason | source, clip, summary, gaps, reference_choices) or null
+#   reference: what the professional comparison covers (assessment/reference summary: available, reason | source, clip, gaps, choices) or null; its events are in `events`
 #   run (server id or null), digest (what feedback would send to a model), feedback (written feedback or null): the feedback card
 # Values are rounded so the page stays small (a 3-minute recording is a few MB).
 import numpy as np
@@ -103,7 +103,7 @@ def _pose(perf):
 
 
 def _reference(perf):
-    """The reference comparison for the page's card (the events themselves are in the events list like every other module's), or None when
+    """The reference comparison for the page's card (the differences themselves are in the events list like every other module's), or None when
     no reference was asked for."""
     ref = (perf.assessment or {}).get("reference")
     if not ref:
@@ -111,7 +111,7 @@ def _reference(perf):
     if not ref.get("available"):
         return {"available": False, "reason": (ref.get("summary") or {}).get("reason", "")}
     s = ref["summary"]
-    return {"available": True, "source": s["source"], "clip": s["clip"], "summary": s["by_category"], "gaps": s["gaps"], "choices": s["choices"]}
+    return {"available": True, "source": s["source"], "clip": s["clip"], "gaps": s["gaps"], "choices": s["choices"]}
 
 
 def player_data(perf, media_url, media_kind, run=None, digest=None):

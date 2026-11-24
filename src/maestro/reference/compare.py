@@ -10,11 +10,9 @@
 #                 cited as "the soloist chose X; you chose Y", never as errors.
 # Gaps stay gaps: a note or bar the reference soloist could not be heard in, or a bar without usable video, is counted under "gaps" and not
 # compared. Result (assessment/reference.py turns it into events in the common event format, stored in perf.assessment["reference"]):
-#   {"available": True, "source", "clip", "differences": [{"category", "nature", "measure", "score_idx", "student", "reference", "delta", "unit",
-#     "start", "end" (the student's note or bar), "reference_choice": bool}], "summary": {category: {"nature", "compared", "median_delta", "unit"}}, "gaps": {"notes", "bars_without_video",
+#   {"available": True, "source", "clip", "differences": [{"category", "nature", "measure", "score_idx", "student", "reference", "delta" (student minus soloist), "unit",
+#     "start", "end" (the student's note or bar), "reference_choice": bool}], "gaps": {"notes", "bars_without_video",
 #     "audio", "video"}, "reference_choices": [...]}, or {"available": False, "reason"}.
-import numpy as np
-
 from maestro.assessment.events import Context, jsonable
 from maestro.reference import baseline
 from maestro.reference.baseline import NATURE
@@ -81,9 +79,5 @@ def compare_to_reference(perf):
     if ref is None:
         return {"available": False, "reason": "no reference was given"}
     rows, skipped, no_video = compare_profiles(student_profile(perf), ref["profile"], ref["choices"])
-    summary = {}
-    for category in sorted({r["category"] for r in rows}):
-        deltas = [r["delta"] for r in rows if r["category"] == category]
-        summary[category] = {"nature": NATURE[category], "compared": len(deltas), "median_delta": float(np.median(deltas)), "unit": UNITS[category]}
-    return jsonable({"available": True, "source": ref["source"], "clip": ref["clip"], "differences": rows, "summary": summary,
+    return jsonable({"available": True, "source": ref["source"], "clip": ref["clip"], "differences": rows,
                      "gaps": {"notes": skipped, "bars_without_video": no_video, **ref["gaps"]}, "reference_choices": ref["choices"]})

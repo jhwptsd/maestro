@@ -5,18 +5,20 @@
 # way they take everything else: what (category, the student's value against the soloist's), when (start/end, bar, beat) and why (cause slugs
 # with the measurements they rest on).
 #
-# What a professional does is not an answer key, so these events are informational, never faults:
+# The comparison is recorded as differentials from the student's own take (the baseline is the professional): each event's value is the
+# difference (student minus soloist, in the unit given) and its expected value 0, so a difference is what stands out; no averages or tallies
+# are reported. What a professional does is not an answer key, so these events are emphasised but never faults:
 #   - only interpretive categories become events (tempo, dynamics, articulation, vibrato, bowing, and a pitch where the soloist chose expressive
-#     intonation). Accuracy (pitch, attack) is already judged against absolute targets by the intonation and tone modules, and the comparison
-#     table keeps the accuracy figures.
+#     intonation). Accuracy (pitch, attack) is already judged against absolute targets by the intonation and tone modules.
 #   - the leading cause of every event is "soloist_interpretive_choice" (confidence 1: it is a fact that this is the soloist's decision, not a
 #     guess), its evidence the two values and, when the soloist's own choice list names it (reference/baseline.reference_choices), that slug.
-#   - the severity is the size of the difference scaled to at most MAX_SEVERITY, so these never outrank real problems; the module has no score
-#     (synthesize.UNSCORED) and its events are not counted among the problem bars or the leading causes.
+#   - the severity is the size of the difference scaled to between MIN_SEVERITY and MAX_SEVERITY: clearly noticeable (they get their own slots in
+#     the digest and are asked to be addressed), yet below a clear note error, which is judged by the other modules and must come first; the module
+#     has no score (synthesize.UNSCORED) and its events are not counted among the problem bars or the leading causes.
 # Differences smaller than MIN_DIFFERENCE are not events. Gaps stay gaps: nothing is compared where the soloist could not be measured.
 from maestro.assessment.events import cause, make_event, module_result, ramp, unavailable
 
-MAX_SEVERITY = 0.3
+MIN_SEVERITY, MAX_SEVERITY = 0.25, 0.55
 MIN_DIFFERENCE = {"tempo": 0.08, "dynamics": 3.0, "articulation": 0.25, "vibrato": 8.0, "bowing": 1.0, "pitch": 10.0}   # in each row's unit; tempo relative
 SCALE = 4.0                      # a difference this many times the minimum has the full severity
 
@@ -45,14 +47,16 @@ def assess_reference(comparison, ctx):
         if size < 1.0:
             continue
         slug = named.get((category, row.get("measure"), row.get("score_idx"))) or (named.get((category, None, None)) if category != "pitch" else None)
-        evidence = {"student": row["student"], "soloist": row["reference"], "difference": row["delta"]}
+        evidence = {"differential": row["delta"], "student": row["student"], "soloist": row["reference"]}
+        if row["reference"]:
+            evidence["relative_differential"] = row["delta"] / abs(row["reference"])
         if slug:
             evidence["soloist_choice"] = slug
         name = "expressive_intonation" if category == "pitch" else category
-        events.append(make_event("reference", f"{name}_vs_reference", row["start"], row["end"], MAX_SEVERITY * ramp(size, 1.0, SCALE),
+        events.append(make_event("reference", f"{name}_vs_reference", row["start"], row["end"], MIN_SEVERITY + (MAX_SEVERITY - MIN_SEVERITY) * ramp(size, 1.0, SCALE),
                                  [cause("soloist_interpretive_choice", 1.0, **evidence)], ctx, score_idx=row.get("score_idx"),
-                                 value=row["student"], expected=row["reference"], unit=row["unit"]))
-    summary = {"source": {k: comparison["source"][k] for k in ("origin", "title")}, "clip": comparison["clip"], "by_category": comparison["summary"],
+                                 value=row["delta"], expected=0.0, unit=row["unit"]))
+    summary = {"source": {k: comparison["source"][k] for k in ("origin", "title")}, "clip": comparison["clip"],
                "gaps": comparison["gaps"], "choices": comparison["reference_choices"]}
     result = module_result("reference", events, len(comparison["differences"]), summary)
     result["score"] = None                                       # a professional's reading is not a standard to be scored against
