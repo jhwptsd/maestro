@@ -65,7 +65,7 @@ skill, a timeline of problem areas, one button per bar coloured by its worst pro
 row to jump there; clicking the timeline seeks). The score viewer (written vs played notation) is folded away at the bottom.
 
 **Command line**: `python src/scripts/analyze.py performance.mp4 score.musicxml out/ [--pitch-backend crepe|yin|pyin|basic_pitch]
-[--neural clap] [--feedback NAME] [--no-feedback] [--model NAME]` writes `out/report.html` (open it next to the media it saved there), `out/assessment.json` (all events) and the
+[--neural clap] [--no-feedback] [--model NAME]` writes `out/report.html` (open it next to the media it saved there), `out/assessment.json` (all events) and the
 intermediate files (`pose.json`, converted video, ...).
 
 **Python**:
@@ -129,53 +129,33 @@ override it, `VIOPOSE_AUDIO=0` runs VioPose without the recording's audio (by de
 the video-only weights). Without VioPose the audio analysis works as before and the report omits the movement parts. Details
 and the visual pitch method are in `src/docs/README.md`.
 
-### Written feedback and chat (local model by default)
+### Written feedback and chat (a small local model)
 
-The analysis gives numbers; an AI model turns them into feedback a student can use: a short summary, up to three priorities (the bars
-involved, what is probably going wrong, one concrete practice suggestion each) and what is going well, and then answers follow-up
-questions in a chat (`maestro/feedback/`). **By default a small model runs on your own computer through Ollama: nothing to connect.** Install
-[Ollama](https://ollama.com/download), start it and download a model once (a button on the start page, or `ollama pull llama3.2:3b`); a model you already
-have (e.g. `qwen3.5:4b`) is used as it is. "Thinking" models are run with thinking off so they answer directly. Online services are an optional extra:
+The analysis gives numbers; a small language model running **on your own computer** turns them into feedback a student can use: a short
+summary, priorities (the bars involved, what is probably going wrong, a concrete practice suggestion each) and what is going well, and then
+answers follow-up questions in a chat (`maestro/feedback/`). There is no account, key or internet use: it runs through
+[Ollama](https://ollama.com/download) (free; or `setup.ps1 -LocalModel` / `./setup.sh --local-model`). Start Ollama and download a model once
+(a button on the start page with a progress bar, or `ollama pull llama3.2:3b`); a model you already have (e.g. `qwen3.5:4b`) is used as it is.
 
-| way to connect | service | cost |
-|---|---|---|
-| **Sign in with OpenRouter** (OAuth, no key to copy) | OpenRouter: you log in there and Maestro receives an API key for your own account (`feedback/oauth.py`) | free models (`:free`) |
-| **Local model** (Ollama) | a small model on your own computer: no account, no key, works offline, nothing is sent anywhere | free |
-| paste an **API key** | [OpenRouter](https://openrouter.ai/keys) or [Groq](https://console.groq.com/keys) | both have free tiers with rate limits |
+- **Models**: the ones offered are small 4-bit models of 1 to 4 billion parameters (Llama 3.2 1B/3B, Qwen 3.5 4B, Qwen 2.5 1.5B, Gemma 2 2B,
+  Phi 3.5 mini), light enough for a laptop and for a recent phone. For them Maestro sends a compact summary (the 10 worst events, 5 worst bars),
+  asks for JSON, switches "thinking" off (thinking models would otherwise return nothing) and sets an 8192-token context (Ollama's default
+  would silently cut the prompt). Expect plainer feedback than from a large hosted model. `OLLAMA_HOST` points Maestro at an Ollama on another
+  machine. Maestro itself is a computer app; it does not run on an iPhone.
+- **Feedback is written automatically** when a report is opened (one call per analysis; the answer is kept, and a failure shows a readable
+  message with a retry button). **Chat**: below the feedback, ask anything about your playing ("why is my intonation sharp in bar 12?"); the
+  model sees the same digest and the feedback, plus the conversation (up to 20 questions per analysis; "New conversation" clears it). From the
+  command line `analyze.py` also writes `feedback.json` when Ollama is running (`--model M` picks a model, `--no-feedback` skips it).
+- **What the model sees**: a digest of numbers and what you type in the chat, never the recording, the video, the score or file names; the
+  report page shows the digest ("What is sent to the model"). It is told to use only those measurements, and every bar it cites in the
+  feedback is checked against the bars the analysis flagged: an invented bar is removed and a warning shown. Its text is displayed as
+  plain text only.
+- The server only accepts these requests from its own page (Host and Origin are checked and bodies must be JSON), so another website
+  cannot drive them.
 
-(Claude, ChatGPT and Gemini were tried and dropped: their app subscriptions cannot be linked to other apps, their APIs are billed by use, and a free Gemini key
-was often "overloaded".) Free models are shared and sometimes busy or rate limited, so a busy model is
-retried once and then replaced by up to two other models (a free model only ever by another free one, so a fallback never spends money);
-the model that worked is remembered and the feedback notes the swap.
-
-- **Local model.** Install [Ollama](https://ollama.com/download) (or `setup.ps1 -LocalModel` / `./setup.sh --local-model`), start it, choose
-  "Local model" on the start page, press **Connect to Ollama**, then pick a model and **Download and use** (real progress bar). The models
-  offered are small, 4-bit models of 1 to 4 billion parameters (Llama 3.2 1B/3B, Qwen 2.5 1.5B, Gemma 2 2B, Phi 3.5 mini): the same ones run
-  on a recent phone. To suit them Maestro sends a compact summary (the 10 worst events, 5 worst bars), asks for JSON mode and sets an 8192-token
-  context (Ollama's default would silently cut the prompt). Expect plainer feedback than from the big hosted models; the bar numbers are still
-  checked against the analysis. Note that Maestro itself is a computer app: it does not run on an iPhone (that would need it packaged as a
-  separate app); `OLLAMA_HOST` points it at an Ollama on another machine.
-- **Connect** on the start page of the GUI ("Written feedback from an AI"): sign in or paste the key (it is checked by listing the models it
-  can use, and only then saved), pick a model, connect both if you like and choose which one to use. Keys are kept in your user config
-  folder (`%APPDATA%\maestro\llm.json`, `~/.config/maestro/llm.json`; readable by you only, `MAESTRO_CONFIG` moves it) and are only ever
-  shown masked. `OPENROUTER_API_KEY` and `GROQ_API_KEY` work too. The default model is chosen from what your key can actually use.
-- **Feedback is written automatically** when a report is opened and a provider is connected (one call per analysis; the answer is kept,
-  and a failure shows the provider's message with a retry button). **Chat**: below the feedback, ask anything about your playing ("why is
-  my intonation sharp in bar 12?"); the model sees the same digest and the feedback, plus the conversation (up to 20 questions per
-  analysis; "New conversation" clears it). From the command line `analyze.py` also writes `feedback.json` when a provider is connected
-  (`--feedback NAME [--model M]` picks one, `--no-feedback` skips it).
-- **What is sent**: a digest of numbers (scores, the 30 most severe problems with bar, time, size and likely causes, the bars with most
-  problems) and what you type in the chat, never the recording, the video, the score or file names; the report page shows the digest
-  ("What is sent to the AI provider"). The model is told to use only those measurements, and every bar it cites in the feedback is checked
-  against the bars the analysis flagged: an invented bar is removed and a warning shown. Its text is displayed as plain text only. Free
-  tiers may use prompts to improve the provider's products; the digest is only numbers.
-- The server only accepts these requests from its own page (Host and Origin are checked and bodies must be JSON), so another
-  website cannot spend your quota or read or change your keys.
-
-The services are called over plain HTTPS with the OpenAI chat-completions format (`feedback/providers.py`, no vendor SDK);
-`feedback/prompts.py` holds the system prompt and the digest, `feedback/generator.py` the call, parsing and bar check,
-`feedback/chat.py` the conversation. Offline evaluation against teachers' comments (`feedback/evidence.py`, `feedback/validate.py`) is
-still an outline.
+`feedback/ollama.py` is the client, `feedback/prompts.py` holds the system prompt and the digest, `feedback/generator.py` the call, parsing
+and bar check, `feedback/chat.py` the conversation, `feedback/settings.py` the saved model choice (`llm.json` in the user config folder;
+`MAESTRO_CONFIG` moves it). Offline evaluation against teachers' comments (`feedback/evidence.py`, `feedback/validate.py`) is still an outline.
 
 ### Assessment events and root causes
 
@@ -224,6 +204,6 @@ causes come from the measured features inside each window. It is zero-shot and c
 
 Implemented: audio extraction, selectable pitch/transcription backends, score conversion, score-audio alignment, assessment of
 pitch, timing, expression, tone, bowing and posture as quantitative events with causes, denoising, the player GUI, VioPose
-movement analysis, GPU-aware pitch estimation and written feedback and chat from OpenRouter or Groq (free tiers). The `fusion/` folder (learned
+movement analysis, GPU-aware pitch estimation and written feedback and chat from a local model. The `fusion/` folder (learned
 encoders, multimodal fusion, prediction heads), the professional reference (`reference/`) and the offline evaluation of the feedback
 against teachers' comments are outlined but not implemented yet.

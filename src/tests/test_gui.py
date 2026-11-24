@@ -198,9 +198,9 @@ class ProgressBarInBrowser(unittest.TestCase):
                   "await p.setInputFiles('input[name=video]',process.argv[2]);await p.setInputFiles('input[name=score]',process.argv[3]);"
                   "await p.click('#go');const samples=[];const start=Date.now();"
                   "while(Date.now()-start<120000&&!p.url().includes('/run/')){"
-                  "samples.push(await p.evaluate(()=>({value:document.getElementById('bar').value,label:document.getElementById('progress-label').textContent,"
+                  "try{samples.push(await p.evaluate(()=>({value:document.getElementById('bar').value,label:document.getElementById('progress-label').textContent,"
                   "shown:!document.getElementById('progress').hidden,error:document.getElementById('status').textContent,"
-                  "enabled:!document.getElementById('go').disabled})));"
+                  "enabled:!document.getElementById('go').disabled})));}catch(e){break;}"      # (the page may navigate to the report mid-sample)
                   "if(samples[samples.length-1].error)break;await p.waitForTimeout(150);}"
                   "console.log(JSON.stringify({samples,url:p.url(),errors}));await b.close();})()")
             out = subprocess.run(["node", "-e", js, self.url, str(d / "take.wav"), str(d / "piece.musicxml")], capture_output=True, text=True,

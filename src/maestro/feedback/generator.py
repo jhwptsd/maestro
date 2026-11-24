@@ -1,18 +1,17 @@
 # Generates written feedback from an LLM (rewritten from the outline).
 #
 # `generate_feedback(perf)` builds the digest of the analysis (prompts.build_digest), sends it with the system prompt to the
-# provider the user connected (providers.py, settings.py: OpenRouter or Groq, through the user's own key or sign-in) and stores the
-# result in Performance.feedback:
-#   {"provider", "model", "summary", "priorities": [{"title", "bars", "why", "practice"}], "strengths": [...],
+# local model (ollama.py, settings.py) and stores the result in Performance.feedback:
+#   {"model", "summary", "priorities": [{"title", "bars", "why", "practice"}], "strengths": [...],
 #    "warnings": [...], "usage": {"input", "output"}}
-# Only the digest leaves the machine (numbers, bar numbers, short labels). The model's JSON is parsed leniently, and every bar it
+# Only the digest goes to the model (numbers, bar numbers, short labels), and the model runs on this computer. The model's JSON is parsed leniently, and every bar it
 # cites is checked against the bars that actually have problems in the digest: an invented bar is dropped from the list and noted in
 # "warnings", so the feedback cannot point the student at a place the analysis never flagged. gui/server.py calls this on request
-# (the analysis itself never contacts a provider), as does `analyze.py --feedback`.
+# (the analysis itself never calls the model), as does `analyze.py --feedback`.
 import json
 import re
 
-from maestro.feedback import prompts, providers, settings
+from maestro.feedback import ollama, prompts, settings
 
 MAX_TOKENS = 1500
 
@@ -55,45 +54,22 @@ def shape(answer, digest):
     return {"summary": str(answer.get("summary", "")).strip(), "priorities": priorities, "strengths": strengths, "warnings": warnings}
 
 
-def resolve(provider=None, model=None, key=None, base_url=None):
-    """The provider to call -> (Provider, key, model, name). Anything not given comes from the saved settings; LLMError (readable)
-    if nothing is connected or the model is unknown."""
-    chosen = provider or settings.status()["provider"]
-    p = providers.get(chosen, base_url)
-    key = key or settings.get_key(chosen)
-    if not key:
-        raise providers.LLMError(f"{p.label} is not connected: add its API key first.")
-    model = model or settings.load()["models"].get(chosen)
-    if not model and not p.needs_key:                           # local: use what is installed (the default if it is), else say what to do
-        installed = p.list_models()
-        model = p.pick_model(installed)
-        if not model:
-            raise providers.LLMError("No local model is downloaded yet: open the start page, \"Written feedback\", and press Download and use "
-                                     f"(or run: ollama pull {p.default_model}).")
-    model = model or p.default_model
+def resolve(model=None):
+    """The model to use: the one given, else the saved one, else the best installed. LLMError (readable) if Ollama is not running or
+    nothing is downloaded yet."""
+    model = model or settings.get_model() or ollama.pick_model(ollama.list_models())
     if not model:
-        raise providers.LLMError(f"Choose a model for {p.label} first.")
-    return p, key, model, chosen
+        raise ollama.LLMError("No local model is downloaded yet: open the start page, \"Written feedback\", and press Download and use "
+                              f"(or run: ollama pull {ollama.DEFAULT_MODEL}).")
+    return model
 
 
-def remember_model(chosen, model):
-    """Save `model` as the one to use for `chosen` after a fallback (silently nothing if that provider is not saved)."""
-    try:
-        settings.choose(chosen, model)
-    except providers.LLMError:
-        pass
-
-
-def feedback_from_digest(digest, provider=None, model=None, key=None, base_url=None):
-    """Ask the provider for feedback on a digest -> the feedback dict. provider/model/key default to the saved settings.
-    If the model is busy or not available to the key another one is tried and remembered (noted in "warnings").
-    Raises providers.LLMError (readable message) if no provider is connected or the call fails."""
-    p, key, model, chosen = resolve(provider, model, key, base_url)
-    reply, used, note = providers.complete_with_fallback(p, key, model, prompts.SYSTEM,
-                                                         [{"role": "user", "content": prompts.user_message(prompts.compact(digest) if p.small_context else digest)}],
-                                                         MAX_TOKENS, json_mode=True)
-    if note:
-        remember_model(chosen, used)
+def feedback_from_digest(digest, model=None):
+    """Ask the local model for feedback on a digest -> the feedback dict. If the model is not installed another one is used (noted in
+    "warnings"). Raises ollama.LLMError (readable message) if Ollama is not running or the call fails."""
+    reply, used, note = ollama.complete_with_fallback(resolve(model), prompts.SYSTEM,
+                                                      [{"role": "user", "content": prompts.user_message(prompts.compact(digest))}],
+                                                      MAX_TOKENS, json_mode=True)
     answer = _parse(reply["text"])
     if answer is None:                                           # not JSON: show the text as it is rather than nothing
         result = {"summary": reply["text"].strip(), "priorities": [], "strengths": [],
@@ -102,7 +78,7 @@ def feedback_from_digest(digest, provider=None, model=None, key=None, base_url=N
         result = shape(answer, digest)
     if note:
         result["warnings"].append(note)
-    return {"provider": chosen, "model": used, **result, "usage": reply["usage"]}
+    return {"model": used, **result, "usage": reply["usage"]}
 
 
 def generate_feedback(perf, **options):

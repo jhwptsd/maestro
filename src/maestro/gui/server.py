@@ -9,15 +9,13 @@
 # The page plays the recording, which is served from /run/<id>/media with HTTP range support (browsers need it to seek). Runs live in a temporary folder that is removed when the server exits. Binds to localhost only: it is meant
 # for personal use.
 #
-# AI feedback (feedback/): GET /api/llm and POST /api/llm/{connect,models,select,disconnect} manage which provider (a small local model
-# through Ollama, OpenRouter or Groq) the user connected, with an API key for the last two; POST /api/llm/pull {model} downloads a local
-# model in the background (polled at /api/job/<id>) (feedback/settings.py: stored per user, only ever shown masked), and
-# POST /api/feedback {"run": id} writes feedback for an analysis with the chosen model (feedback/generator.py), sending only the
-# digest of numbers; POST /api/chat {"run": id, "message": text} continues a conversation with the model about it (feedback/chat.py);
-# GET /auth/openrouter/start and /auth/openrouter/callback/<state> are the "Sign in with OpenRouter" flow (feedback/oauth.py). These endpoints spend the user's money and handle their keys, so a web page on another site must not be able to
-# call them: every request must name this server in its Host header (against DNS rebinding), a request with an Origin must come
-# from this server, and POST bodies must be application/json (which a cross-site page cannot send without a preflight, which
-# this server never answers).
+# Written feedback (feedback/): GET /api/llm reports the local model (Ollama) state {running, model, installed, suggested}; POST /api/llm/select
+# {model} chooses an installed model and POST /api/llm/pull {model} downloads one in the background (polled at /api/job/<id>);
+# POST /api/feedback {"run": id} writes feedback for an analysis (feedback/generator.py), sending only the digest of numbers to the
+# model on this computer; POST /api/chat {"run": id, "message": text} continues a conversation about it (feedback/chat.py). A web page on
+# another site must not be able to drive these endpoints (they use the user's CPU and settings): every request must name this server in its
+# Host header (against DNS rebinding), a request with an Origin must come from this server, and POST bodies must be application/json
+# (which a cross-site page cannot send without a preflight, which this server never answers).
 import atexit
 import json
 import mimetypes
@@ -36,7 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from maestro import analyze
-from maestro.feedback import chat, generator, oauth, prompts, providers, settings
+from maestro.feedback import chat, generator, ollama, prompts, settings
 from maestro.gui.report import build_page, media_source
 from maestro.utils.progress import Tracker
 from maestro.utils.errors import InputError, ToolMissingError
@@ -145,45 +143,36 @@ class Handler(BaseHTTPRequestHandler):
         return body
 
     def _llm_api(self, body):
-        """POST /api/llm/* and /api/feedback -> (status, object); providers.LLMError is the caller's to report."""
+        """POST /api/llm/* and /api/feedback -> (status, object); ollama.LLMError is the caller's to report."""
         route = self.path
         if route == "/api/feedback":
             run = RUNS.get(str(body.get("run", "")))
             if run is None:
                 return 404, {"error": "Unknown analysis: open the report again."}
-            if "feedback" not in run:                                  # one paid call per analysis, then the saved answer
+            if "feedback" not in run:                                  # one call per analysis, then the saved answer
                 run["feedback"] = generator.feedback_from_digest(run["digest"])
             return 200, run["feedback"]
         if route == "/api/chat":
             return self._chat(body)
         if route == "/api/llm/pull":
             return self._pull(str(body.get("model", "")).strip())
-        provider = str(body.get("provider", ""))
-        settings._known(provider)                                      # unknown name -> LLMError
-        if route == "/api/llm/connect":
-            if not providers.PROVIDERS[provider].needs_key:            # the local model: just check Ollama answers
-                models = providers.get(provider).list_models()
-                settings.connect_local(providers.get(provider).pick_model(models) if models else None)
-                return 200, {"status": settings.status(), "models": models}
-            key = str(body.get("api_key", "")).strip()
-            if not key:
-                return 400, {"error": "Paste the API key first."}
-            p = providers.get(provider)
-            models = p.list_models(key)                                # a bad key fails here, before anything is saved
-            settings.set_key(provider, key, p.pick_model(models))
-            return 200, {"status": settings.status(), "models": models}
-        if route == "/api/llm/models":
-            key = settings.get_key(provider)
-            if not key:
-                return 400, {"error": f"{providers.PROVIDERS[provider].label} is not connected."}
-            return 200, {"models": providers.get(provider).list_models(key)}
         if route == "/api/llm/select":
-            settings.choose(provider, str(body.get("model", "")) or None)
-            return 200, {"status": settings.status()}
-        if route == "/api/llm/disconnect":
-            settings.remove_key(provider)
-            return 200, {"status": settings.status()}
+            model = str(body.get("model", "")).strip()
+            if model not in [m["id"] for m in ollama.list_models()]:
+                return 400, {"error": "That model is not downloaded yet."}
+            settings.set_model(model)
+            return 200, self._llm_state()
         return 404, {"error": "Not found"}
+
+    @staticmethod
+    def _llm_state():
+        """The local model's state for the start page: {running, model, installed, suggested}."""
+        try:
+            installed, running = ollama.list_models(), True
+        except ollama.LLMError:
+            installed, running = [], False
+        return {"running": running, "model": settings.get_model() or ollama.pick_model(installed), "installed": installed,
+                "suggested": list(ollama.SUGGESTED)}
 
     def _pull(self, model):
         """POST /api/llm/pull {model} -> 202 {"job": id}: download a model into Ollama in the background and, when done, use it. The job
@@ -198,10 +187,10 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 def progress(fraction, label):
                     job.update(fraction=fraction, ceiling=fraction, label=label)
-                providers.get("local").pull(model, progress)
-                settings.connect_local(model)
+                ollama.pull(model, progress)
+                settings.set_model(model)
                 job.update(state="done", fraction=1.0, ceiling=1.0, label="Ready")
-            except providers.LLMError as e:
+            except ollama.LLMError as e:
                 job.update(state="error", error=str(e))
             except Exception as e:
                 traceback.print_exc()
@@ -227,30 +216,6 @@ class Handler(BaseHTTPRequestHandler):
         history += [{"role": "user", "content": str(body["message"]).strip()}, {"role": "assistant", "content": answer["reply"]}]
         return 200, {**answer, "turns": len(history) // 2}
 
-    def _redirect(self, location):
-        self.send_response(302)
-        self.send_header("Location", location)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-
-    def _openrouter_sign_in(self):
-        """GET /auth/openrouter/start and /auth/openrouter/callback/<state>?code=... (see feedback/oauth.py)."""
-        url = urllib.parse.urlsplit(self.path)
-        port = self.server.server_address[1]
-        if url.path == "/auth/openrouter/start":
-            if self._local_request():
-                self._redirect(oauth.authorization_url(f"http://localhost:{port}/auth/openrouter/callback"))
-            return
-        state = url.path.rsplit("/", 1)[-1]
-        code = urllib.parse.parse_qs(url.query).get("code", [""])[0]
-        try:
-            key = oauth.exchange(state, code)
-            p = providers.PROVIDERS["openrouter"]
-            settings.set_key("openrouter", key, p.pick_model(p.list_models(key)))
-            self._redirect("/?ai=connected#ai")
-        except providers.LLMError as e:
-            self._redirect("/?ai_error=" + urllib.parse.quote(str(e)) + "#ai")
-
     def _job_status(self, job_id):
         """GET /api/job/<id> -> the state of an analysis: {state, stage, label, fraction, ceiling, seconds, seconds_in_stage, url | error}."""
         if not self._local_request():
@@ -268,11 +233,9 @@ class Handler(BaseHTTPRequestHandler):
         job = re.fullmatch(r"/api/job/([0-9a-f]{32})", self.path)
         if job:
             return self._job_status(job[1])
-        if self.path.startswith("/auth/openrouter/"):
-            return self._openrouter_sign_in()
         if self.path == "/api/llm":
             if self._local_request():
-                self._json(200, settings.status())
+                self._json(200, self._llm_state())
             return
         run = re.fullmatch(r"/run/([0-9a-f]{32})/(media)?", self.path)
         if self.path in ("/", "/index.html"):
@@ -297,7 +260,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 self._json(*self._llm_api(body))
-            except providers.LLMError as e:
+            except ollama.LLMError as e:
                 self._json(400, {"error": str(e)})
             except Exception as e:                                     # a bug, not the user's problem: log it, answer briefly
                 traceback.print_exc()

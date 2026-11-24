@@ -12,7 +12,7 @@ pose model.
 |---|---|
 | `test_audio.py`, `test_crepe_backend.py`, `test_pitch_speed.py` | pitch backends, transcription, onsets |
 | `test_device.py` | device choice (any GPU, else CPU), CREPE through ONNX Runtime (matches PyTorch, falls back cleanly) |
-| `test_feedback.py` | the LLM layer: the local Ollama model, OpenRouter and Groq (against local fakes), retries and model fallback, OpenRouter sign-in, saved settings, the digest, the generator and its bar check, the chat, the server endpoints and their cross-site protection, the feedback card and chat in Chromium |
+| `test_feedback.py` | the written feedback: the local Ollama client (against a local fake), model fallback, the saved model choice, the digest, the generator and its bar check, the chat, the server endpoints and their cross-site protection, the feedback card and chat in Chromium |
 | `test_ffmpeg.py` | finding ffmpeg/ffprobe and the readable error when they are missing |
 | `test_score.py`, `test_preprocessing.py`, `test_denoise.py` | score parsing (repeats, dynamics), file conversion, denoising |
 | `test_alignment_assessment.py`, `test_assessment_events.py` | alignment, the assessment modules and their events, causes and synthesis |

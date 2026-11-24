@@ -6,7 +6,7 @@
 # kept by gui/server.py per analysis. The model's answers are plain text (shown as text only by the page).
 import json
 
-from maestro.feedback import generator, prompts, providers
+from maestro.feedback import generator, ollama, prompts
 
 MAX_QUESTION = 1000                # characters of one question
 MAX_TURNS = 40                     # messages kept in a conversation (20 questions and answers); older ones are dropped from what is sent
@@ -34,21 +34,18 @@ def system_prompt(digest, feedback=None):
     return text
 
 
-def reply(digest, feedback, history, question, provider=None, model=None, key=None, base_url=None):
+def reply(digest, feedback, history, question, model=None):
     """The model's answer to `question` -> {"reply", "model", "warnings", "usage"}. `history`: earlier turns as
     [{"role": "user" | "assistant", "content": text}, ...] (alternating, starting with the user). LLMError if the question is empty or too
-    long, nothing is connected, or the call fails."""
+    long, or the call fails."""
     question = (question or "").strip()
     if not question:
-        raise providers.LLMError("Type a question first.")
+        raise ollama.LLMError("Type a question first.")
     if len(question) > MAX_QUESTION:
-        raise providers.LLMError(f"Please keep the question under {MAX_QUESTION} characters.")
-    p, key, model, chosen = generator.resolve(provider, model, key, base_url)
+        raise ollama.LLMError(f"Please keep the question under {MAX_QUESTION} characters.")
     recent = history[-MAX_TURNS:]
     while recent and recent[0]["role"] != "user":               # a window must start with the student
         recent = recent[1:]
-    answer, used, note = providers.complete_with_fallback(p, key, model, system_prompt(prompts.compact(digest) if p.small_context else digest, feedback),
-                                                          [*recent, {"role": "user", "content": question}], MAX_TOKENS)
-    if note:
-        generator.remember_model(chosen, used)
+    answer, used, note = ollama.complete_with_fallback(generator.resolve(model), system_prompt(prompts.compact(digest), feedback),
+                                                       [*recent, {"role": "user", "content": question}], MAX_TOKENS)
     return {"reply": answer["text"].strip(), "model": used, "warnings": [note] if note else [], "usage": answer["usage"]}
