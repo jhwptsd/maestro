@@ -38,10 +38,10 @@ def known_bars(digest):
 
 
 def shape(answer, digest):
-    """The model's parsed answer -> the feedback dict (strings trimmed, at most 3 priorities, unknown bars removed + warned)."""
+    """The model's parsed answer -> the feedback dict (strings trimmed, at most 3 priorities, 4 with a professional comparison, unknown bars removed + warned)."""
     allowed, warnings = known_bars(digest), []
     priorities = []
-    for p in (answer.get("priorities") or [])[:3]:
+    for p in (answer.get("priorities") or [])[:4 if "reference" in digest else 3]:      # (a fourth place for the comparison with the professional)
         if not isinstance(p, dict):
             continue
         bars = [b for b in (p.get("bars") or []) if isinstance(b, int) and not isinstance(b, bool)]

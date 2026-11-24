@@ -160,8 +160,7 @@ and bar check, `feedback/chat.py` the conversation, `feedback/settings.py` the s
 ### Professional reference (`maestro/reference/`)
 
 Compare your playing with a professional's, without treating the professional as an answer key. Give a recording (an audio or video file, or a
-YouTube link) in the start page ("Optional: compare with a professional recording": a link or a file; the progress bar then has an extra step, and the report gets a
-"Compared with a professional" card with the kinds, the soloist's choices and what was left out), with `analyze.py ... --reference FILE_OR_URL`, or `analyze(..., reference=...)`:
+YouTube link) in the start page ("Optional: compare with a professional recording": a link or a file; the progress bar then has an extra step, and the differences appear among the report's events and in the written feedback), with `analyze.py ... --reference FILE_OR_URL`, or `analyze(..., reference=...)`:
 
 1. **Load** (`load_video.py`): any file ffmpeg reads, or a YouTube video (needs `pip install yt-dlp`; at most 720 p, one video, no playlists;
    recordings over an hour are refused). Respect the copyright and terms of the source: the download stays in the analysis folder.
@@ -183,10 +182,10 @@ YouTube link) in the start page ("Optional: compare with a professional recordin
    differs from it is an event of the module `reference` in the common format (`tempo_vs_reference`, `dynamics_vs_reference`, ... with bar, beat, unit and, as
    its `value`, the differential: you minus the soloist; `expected` is 0). No averages or tallies are reported. Its cause is always
    `soloist_interpretive_choice` (evidence: the differential, its relative size, both values and, when it applies, the soloist's own `soloist_choice`).
-   The differences are emphasised (severity 0.25 to 0.55, their own slots in the digest, the card at the top of the report) but stay below a clear note
-   error, the feedback model is told to name them yet put wrong notes, intonation, rhythm and tone first, and the module has no score and is left out of
+   The differences are emphasised (severity 0.25 to 0.55, their own slots in the digest) but stay below a clear note
+   error, the feedback model is required to compare you with the professional recording (in the summary and in one priority, said again in the turn it answers) yet put wrong notes, intonation, rhythm and tone first, and the module has no score and is left out of
    the problem bars and leading causes. Accuracy (pitch, attack) is judged by the intonation and tone modules. The events go through the synthesis into
-   the player's event list and into the digest that the feedback model reads, exactly like the other modules' (it gets its own slots among the events,
+   the player's event list (there is no separate comparison section) and into the digest that the feedback model reads, exactly like the other modules' (it gets its own slots among the events,
    plus the soloist's choices and the gaps), and it is told never to call such a difference a mistake. `reference.json` (command line) has the baseline.
 
 Not yet: playing the reference alongside the student in the player, portamento and fingering/bowing-direction detection.

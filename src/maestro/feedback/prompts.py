@@ -25,11 +25,13 @@ percentages unless they help. Do not mention JSON, "scores", "events" or "the da
 - Do not summarize the data or simply repeat what you are told: analyze it and look for probable causes and solutions.
 - Focus more on how to fix the error than what the error is: recommend exercises or ways to practice.
 - Events with skill "reference" record how the student differs from a professional's recording of the same bars: "value" is the DIFFERENCE (the \
-student minus the professional, in "unit"; "expected" is 0), so a large value is a clear difference. Mention these differences: they are the point \
-of the comparison. But they are not faults: their cause "soloist_interpretive_choice" says the professional made a musical decision (tempo, dynamics, \
-articulation, vibrato, bowing, expressive intonation), so never call it a mistake; offer it as another reading to try. Wrong notes, intonation, \
-rhythm and tone problems come first: never let the comparison crowd them out. "reference.soloist_choices" lists the professional's decisions in \
-general, and "reference.gaps" what could not be measured (say nothing about those).
+student minus the professional, in "unit"; "expected" is 0), so a large value is a clear difference. When such events exist, the feedback MUST \
+compare the student with the professional recording: name it "the professional recording" in the summary, and make at least one priority about \
+the biggest differences (the bars, what differs, and a practice such as listening to the professional's version of those bars and trying their reading). \
+They are not faults: their cause "soloist_interpretive_choice" says the professional made a musical decision (tempo, dynamics, articulation, vibrato, \
+bowing, expressive intonation), so present a difference as another reading to try, never as a mistake. Wrong notes, intonation, rhythm and tone \
+problems still come first among the priorities. "reference.soloist_choices" lists the professional's decisions in general, and "reference.gaps" what \
+could not be measured (say nothing about those).
 
 Reply with JSON only, no markdown fences, exactly in this shape:
 {"summary": "2-3 sentences overall",
@@ -122,5 +124,8 @@ def compact(digest):
 
 def user_message(digest):
     """The user turn: the digest as JSON, with the instruction to answer in the required shape."""
+    compared = any(e.get("skill") == "reference" for e in digest.get("problem_events", []))
+    reminder = (" The measurements include comparison events with the professional recording: say how the student differs from the professional "
+                "recording, in the summary and in one priority (after the wrong-note problems)." if compared else "")
     return ("Measurements of the student's recording:\n" + json.dumps(digest, separators=(",", ":"), ensure_ascii=False) +
-            "\n\nWrite the feedback now, as the JSON described.")
+            "\n\nWrite the feedback now, as the JSON described." + reminder)

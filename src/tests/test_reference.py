@@ -328,6 +328,20 @@ class EndToEnd(unittest.TestCase):
         self.assertNotIn("samples", summary)
         json.dumps(summary)
 
+    def test_the_feedback_must_compare_with_the_professional_when_there_are_reference_events(self):
+        from maestro.feedback import generator, prompts
+        digest = prompts.build_digest(self.perf)
+        message = prompts.user_message(digest)
+        self.assertIn("professional recording", message.split("Write the feedback now")[1])               # said in the turn the model answers
+        self.assertIn("MUST", prompts.SYSTEM)
+        plain = {k: v for k, v in digest.items() if k != "reference"}
+        plain["problem_events"] = [e for e in digest["problem_events"] if e["skill"] != "reference"]
+        self.assertNotIn("professional", prompts.user_message(plain).split("Write the feedback now")[1])
+        bar = digest["problem_events"][0]["bar"]
+        answer = {"summary": "s", "strengths": [], "priorities": [{"title": str(i), "bars": [bar], "why": "", "practice": ""} for i in range(5)]}
+        self.assertEqual(len(generator.shape(answer, digest)["priorities"]), 4)                          # room for the comparison
+        self.assertEqual(len(generator.shape(answer, plain)["priorities"]), 3)
+
     def test_the_synthesis_lists_the_events_but_gives_no_score_and_no_problem_bars_or_causes_for_them(self):
         synthesis = self.perf.assessment["synthesis"]
         reference_ids = {e["id"] for e in synthesis["events"] if e["module"] == "reference"}
@@ -352,8 +366,8 @@ class EndToEnd(unittest.TestCase):
         self.assertTrue([e for e in small["problem_events"] if e["skill"] == "reference"])
         self.assertEqual(small["reference"], digest["reference"])
         self.assertNotIn("pro.wav", json.dumps(digest))                                                   # no file names
-        self.assertIn("crowd them out", prompts.SYSTEM)                                                  # real note errors come first
-        self.assertIn("never call it a mistake", prompts.SYSTEM)
+        self.assertIn("still come first", prompts.SYSTEM)                                                # real note errors come first
+        self.assertIn("never as a mistake", prompts.SYSTEM)
 
     def test_a_reference_of_another_piece_is_reported_not_raised(self):
         other = [60 + (i * 5) % 17 for i in range(len(MIDIS))]                   # a different tune
@@ -453,10 +467,8 @@ class InTheGui(unittest.TestCase):
         self.assertEqual(final["state"], "done", final)
         with urllib.request.urlopen(self.url + final["url"]) as r:
             page = r.read().decode()
-        card = page_data(page)["reference"]
-        self.assertTrue(card["available"])
-        self.assertEqual((card["clip"]["first_measure"], card["clip"]["last_measure"]), (3, 5))
-        self.assertNotIn("summary", card)                                                    # no statistics table
+        self.assertNotIn("reference", page_data(page))                                       # no separate section: the differences are events
+        self.assertNotIn("Compared with a professional", page)
         self.assertTrue(any(e["module"] == "reference" for e in page_data(page)["events"]))                # the events are in the list like every other module's
 
     def test_the_bar_includes_the_reference_stage_only_when_a_reference_is_given(self):
@@ -473,41 +485,13 @@ class InTheGui(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("YouTube", data["error"])
 
-    @unittest.skipUnless(HAS_BROWSER, "needs node + playwright")
-    def test_the_card_shows_choices_and_gaps_as_text_and_reports_an_unusable_reference(self):
-        import subprocess
-        evil = "<img src=x onerror=window.pwned=1>"
-        card = {"module": "reference", "available": True, "score": None, "events": [], "summary": {
-                "source": {"origin": "youtube", "title": evil}, "clip": {"first_measure": 3, "last_measure": 5},
-                "gaps": {"notes": 2, "bars_without_video": [4], "audio": [{"start": 1, "end": 2.5, "reason": "x"}], "video": [{"start": 3, "end": 4, "reason": "y"}]},
-                "choices": [{"slug": "tempo_choice", "value": 0.8, "measure": None}, {"slug": "local_tempo_shift", "value": 1.2, "measure": 4},
-                            {"slug": "expressive_intonation", "value": 20, "measure": None}]}}
-        results = []
+    def test_there_is_no_professional_comparison_section_in_the_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             perf = performance(Path(tmp))
-            perf.assessment["synthesis"]["events"] += [
-                {"id": "r1", "module": "reference", "category": "tempo_vs_reference", "start": 3.0, "end": 5.0, "measure": 4, "beat": 1, "score_idx": None,
-                 "perf_idx": None, "severity": 0.4, "value": 0.2, "expected": 0.0, "unit": "x_marked_tempo", "causes": []},
-                {"id": "r2", "module": "reference", "category": "dynamics_vs_reference", "start": 6.0, "end": 8.0, "measure": 5, "beat": 1, "score_idx": None,
-                 "perf_idx": None, "severity": 0.3, "value": -4.5, "expected": 0.0, "unit": "db", "causes": []}]
-            for reference in (card, {"module": "reference", "available": False, "summary": {"reason": "The reference does not match the score."}, "events": []}, None):
-                perf.assessment["reference"] = reference
-                page = Path(tmp) / "r.html"
-                page.write_text(build_page(perf, "media.mp4"), encoding="utf-8")
-                js = ("const {chromium}=require('playwright');(async()=>{const b=await chromium.launch();const p=await b.newPage();"
-                      "const errors=[];p.on('pageerror',e=>errors.push(String(e)));await p.goto('file://'+process.argv[1]);await p.waitForTimeout(300);"
-                      "console.log(JSON.stringify({errors,pwned:await p.evaluate(()=>window.pwned===1),imgs:await p.evaluate(()=>document.querySelectorAll('#reference img').length),"
-                      "text:await p.evaluate(()=>document.querySelector('#reference').textContent),tags:await p.evaluate(()=>[...document.querySelectorAll('#reference .tag')].map(t=>t.className))}));await b.close();})()")
-                results.append(json.loads(subprocess.run(["node", "-e", js, str(page)], capture_output=True, text=True, check=True).stdout))
-        shown, unusable, absent = results
-        self.assertEqual((shown["errors"], shown["pwned"], shown["imgs"]), ([], False, 0))
-        self.assertIn(evil, shown["text"])                                                       # visible as text
-        self.assertEqual(shown["tags"], ["tag interpretive", "tag interpretive"])
-        for expected in ("bar 4: tempo +0.20 x the marked tempo", "bar 5: dynamic shape -4.50 dB", "plays at 0.80 x the marked tempo", "(bar 4)", "1 note-level choices", "2 notes where the soloist could not be heard",
-                         "1.5 s where the orchestra covers", "1.0 s of video without the soloist", "bars 4"):
-            self.assertIn(expected, shown["text"])
-        self.assertIn("could not be used: The reference does not match the score.", unusable["text"])
-        self.assertEqual(absent["text"], "")
+            page = build_page(perf, "media.mp4")
+        self.assertNotIn('id="reference"', page)
+        self.assertNotIn("Compared with a professional", page)
+        self.assertNotIn("reference", page_data(page))
 
 
 def write_bytes(y):
