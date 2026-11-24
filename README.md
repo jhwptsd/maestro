@@ -157,6 +157,33 @@ answers follow-up questions in a chat (`maestro/feedback/`). There is no account
 and bar check, `feedback/chat.py` the conversation, `feedback/settings.py` the saved model choice (`llm.json` in the user config folder;
 `MAESTRO_CONFIG` moves it). Offline evaluation against teachers' comments (`feedback/evidence.py`, `feedback/validate.py`) is still an outline.
 
+### Professional reference (`maestro/reference/`)
+
+Compare your playing with a professional's, without treating the professional as an answer key. Give a recording (an audio or video file, or a
+YouTube link) with `analyze.py ... --reference FILE_OR_URL` (or `analyze(..., reference=...)`; the start page does not take one yet):
+
+1. **Load** (`load_video.py`): any file ffmpeg reads, or a YouTube video (needs `pip install yt-dlp`; at most 720 p, one video, no playlists;
+   recordings over an hour are refused). Respect the copyright and terms of the source: the download stays in the analysis folder.
+2. **Clip** (`process.py`): the recording is aligned with the score and cut, audio and video, to **the bars you played** (plus a short lead-in and tail),
+   so only that part is processed. A recording that does not contain those bars is refused with a message (the rest of your analysis is unaffected).
+3. **Isolate** (`isolate.py`): score-informed harmonic masking keeps the soloist's pitch and its partials (the score and the alignment say what the
+   soloist plays when) and drops accompaniment and noise; `--separate` runs [Demucs](https://github.com/facebookresearch/demucs) first (`pip install demucs`)
+   to remove drums, bass and vocals. Where the soloist cannot be heard although the score says they play, the stretch is a **gap**, not a measurement.
+   Limit: an orchestra note on the soloist's own partials cannot be separated, and the first pass assumes the soloist is the loudest voice.
+4. **Video gaps** (`gaps.py`): the pose of the clip comes from VioPose as for you (or `--reference-pose pose.json`). Camera cuts (ffmpeg's scene detector),
+   lost pose and a clearly different framing (a close-up) become gaps; movement is measured only between them and never interpolated across one.
+5. **Baseline** (`baseline.py`): the soloist is measured exactly as you are (per note: cents from equal temperament, duration, articulation, loudness,
+   attack, vibrato; per bar: tempo against the marking, loudness, bow changes and speed). Notes and bars inside a gap carry no numbers.
+6. **Subjective choices are marked.** Every category has a *nature*: `objective` (pitch, attack: the target is the same for everyone) or `interpretive`
+   (tempo, rubato, dynamics, articulation, vibrato, bowing, tone colour). The soloist's visible decisions are listed in `choices` with their numbers
+   (`tempo_choice`, `local_tempo_shift`, `dynamic_shaping`, `vibrato_use`, `played_short`, `bowing_choice`, `expressive_intonation` for a note more than
+   12 cents from equal temperament). `compare.py` sets your numbers beside theirs (`assessment["reference"]`: `differences` with `nature`, `summary` per
+   category, `gaps`, `reference_choices`; also `reference.json` from the command line); a difference in an interpretive category is "a different reading",
+   and a note where the soloist chose expressive intonation is compared as interpretive, not as the target. The feedback model sees a short version
+   and is told never to call a difference from a choice a mistake.
+
+Not yet: a reference field on the start page, showing the reference in the player, portamento and fingering/bowing-direction detection.
+
 ### Assessment events and root causes
 
 `maestro/assessment/` turns the aligned audio, video and score into **events**: one JSON object per problem, in a single
@@ -186,7 +213,7 @@ causes come from the measured features inside each window. It is zero-shot and c
 
 | folder | contents |
 |---|---|
-| `src/maestro/` | the package: `preprocessing`, `audio`, `score`, `alignment`, `vision`, `assessment`, `feedback`, `fusion` (outlined, not implemented yet), `gui`, `utils` (see the header comment of each file) |
+| `src/maestro/` | the package: `preprocessing`, `audio`, `score`, `alignment`, `vision`, `assessment`, `reference`, `feedback`, `fusion` (outlined, not implemented yet), `gui`, `utils` (see the header comment of each file) |
 | `src/scripts/` | command-line tools: `analyze.py`, `serve.py`, `setup_viopose.py`, `convert_viopose.py`, `bench_pitch.py`, `tune_denoise.py` |
 | `src/training/` | (reserved for training scripts) |
 | `src/tests/` | the tests (`pytest`) |
@@ -204,6 +231,6 @@ causes come from the measured features inside each window. It is zero-shot and c
 
 Implemented: audio extraction, selectable pitch/transcription backends, score conversion, score-audio alignment, assessment of
 pitch, timing, expression, tone, bowing and posture as quantitative events with causes, denoising, the player GUI, VioPose
-movement analysis, GPU-aware pitch estimation and written feedback and chat from a local model. The `fusion/` folder (learned
-encoders, multimodal fusion, prediction heads), the professional reference (`reference/`) and the offline evaluation of the feedback
-against teachers' comments are outlined but not implemented yet.
+movement analysis, GPU-aware pitch estimation, written feedback and chat from a local model, and the professional reference comparison. The `fusion/` folder (learned
+encoders, multimodal fusion, prediction heads) and the offline evaluation of the feedback against teachers' comments are outlined but not
+implemented yet. The professional reference (`reference/`) works from the command line and `analyze()`; its GUI is still to do.

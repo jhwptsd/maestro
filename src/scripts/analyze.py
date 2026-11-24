@@ -8,6 +8,7 @@ from maestro import analyze
 from maestro.audio.pitch import DEFAULT_PITCH_BACKEND, list_pitch_backends
 from maestro.gui.report import build_page, copy_media
 from maestro.feedback.generator import generate_feedback
+from maestro.reference.process import reference_summary
 from maestro.utils.progress import Tracker
 from maestro.feedback.ollama import LLMError
 from maestro.utils.errors import InputError, ToolMissingError
@@ -27,6 +28,11 @@ def main():
     parser.add_argument("--crepe-model", choices=("tiny", "full"), default="full")
     parser.add_argument("--neural", choices=("clap",), default=None,
                         help="add the pretrained CLAP tone/expression judgement (needs transformers + torch)")
+    parser.add_argument("--reference", default=None, metavar="FILE_OR_YOUTUBE_URL",
+                        help="a professional recording to compare with (clipped to the bars you played, soloist isolated; see the README)")
+    parser.add_argument("--reference-pose", default=None, metavar="POSE_JSON",
+                        help="a saved pose.json of the clipped reference video, instead of running VioPose on it")
+    parser.add_argument("--separate", action="store_true", help="with --reference: remove drums, bass and vocals first with Demucs (pip install demucs)")
     parser.add_argument("--no-feedback", action="store_true",
                         help="do not write feedback (by default a small local model through Ollama writes it, if Ollama is running)")
     parser.add_argument("--model", default=None, help="local model for the feedback (default: the saved choice or the best installed)")
@@ -48,7 +54,9 @@ def main():
             pitch_options=pitch_options,
             neural=args.neural,
             progress=Tracker(lambda info: print(f"[{info['fraction']:4.0%}] {info['label']}", file=sys.stderr, flush=True),
-                             skip=() if args.neural else ("neural",)),
+                             skip=tuple(n for n, wanted in (("neural", args.neural), ("reference", args.reference)) if not wanted)),
+            reference=args.reference,
+            reference_options={"pose_file": args.reference_pose, "separate": args.separate},
         )
     except (InputError, ToolMissingError, ImportError, ValueError) as exc:
         parser.exit(2, f"error: {exc}\n")
@@ -59,6 +67,10 @@ def main():
             (out / "feedback.json").write_text(json.dumps(perf.feedback, indent=1), encoding="utf-8")
         except LLMError as exc:
             print(f"feedback: {exc}")
+    if perf.reference:
+        (out / "reference.json").write_text(json.dumps(reference_summary(perf.reference), indent=1), encoding="utf-8")
+    elif args.reference:
+        print(f"reference: {perf.assessment['reference']['reason']}")
     (out / "report.html").write_text(build_page(perf, copy_media(perf, out)), encoding="utf-8")
     (out / "assessment.json").write_text(json.dumps(perf.assessment["synthesis"], indent=1), encoding="utf-8")
     print(f"report: {out / 'report.html'}\nassessment events (JSON): {out / 'assessment.json'}")

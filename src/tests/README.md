@@ -12,6 +12,7 @@ pose model.
 |---|---|
 | `test_audio.py`, `test_crepe_backend.py`, `test_pitch_speed.py` | pitch backends, transcription, onsets |
 | `test_device.py` | device choice (any GPU, else CPU), CREPE through ONNX Runtime (matches PyTorch, falls back cleanly) |
+| `test_reference.py` | the professional reference: YouTube/file loading, clipping to the student's bars, isolating the soloist from an "orchestra", camera gaps, the baseline with its interpretive choices, the comparison and its place in the digest |
 | `test_feedback.py` | the written feedback: the local Ollama client (against a local fake), model fallback, the saved model choice, the digest, the generator and its bar check, the chat, the server endpoints and their cross-site protection, the feedback card and chat in Chromium |
 | `test_ffmpeg.py` | finding ffmpeg/ffprobe and the readable error when they are missing |
 | `test_score.py`, `test_preprocessing.py`, `test_denoise.py` | score parsing (repeats, dynamics), file conversion, denoising |

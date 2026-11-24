@@ -44,12 +44,13 @@ def _video_encoder():
     return "libx264" if " libx264 " in out else "mpeg4"
 
 
-def to_common_video(path, out_dir=None, fps=30, max_height=720, filters=()):
+def to_common_video(path, out_dir=None, fps=30, max_height=720, filters=(), start=None, end=None):
     """Re-encode any video ffmpeg can read to the common format -> path of the new .mp4.
 
     The output is `<stem>_common.mp4` in `out_dir` (default: next to the input). `filters` are extra
     ffmpeg video filters applied after scaling (e.g. preprocessing/denoise.video_filters()), so
-    conversion and denoising share one encode.
+    conversion and denoising share one encode. `start` / `end` (seconds) keep only that part of the file, cut in the same encode
+    (the output then starts at 0: its times are the original's minus `start`).
     """
     path = Path(path)
     out_dir = Path(out_dir) if out_dir else path.parent
@@ -57,7 +58,8 @@ def to_common_video(path, out_dir=None, fps=30, max_height=720, filters=()):
     out = out_dir / f"{path.stem}_common.mp4"
     # -2 keeps the aspect ratio with an even width; min() never upscales small videos
     vf = ",".join([f"fps={fps}", f"scale=-2:'min({max_height},ih)'", *filters, "format=yuv420p"])
-    cmd = [tool("ffmpeg"), "-y", "-loglevel", "error", "-i", str(path), "-vf", vf,
+    cut = (["-ss", f"{start:.3f}"] if start else []) + (["-to", f"{end:.3f}"] if end else [])     # before -i: fast, and exact when re-encoding
+    cmd = [tool("ffmpeg"), "-y", "-loglevel", "error", *cut, "-i", str(path), "-vf", vf,
            "-c:v", _video_encoder(), "-c:a", "aac", "-movflags", "+faststart", str(out)]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:

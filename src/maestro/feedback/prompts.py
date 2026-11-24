@@ -24,6 +24,10 @@ percentages unless they help. Do not mention JSON, "scores", "events" or "the da
 - Keep the whole answer short: a student should read it in about a minute.
 - Do not summarize the data or simply repeat what you are told: analyze it and look for probable causes and solutions.
 - Focus more on how to fix the error than what the error is: recommend exercises or ways to practice.
+- If "reference" is present, the recording was also compared with a professional's. Categories marked "objective" (pitch, attack) are \
+accuracy targets everyone shares. Categories marked "interpretive" (tempo, dynamics, vibrato, articulation, bowing) and anything in \
+"soloist_choices" are the professional's own musical decisions: never call a difference from them a mistake; offer them as another reading \
+the student could try. Where "reference.gaps" says the professional could not be measured, say nothing about that part.
 
 Reply with JSON only, no markdown fences, exactly in this shape:
 {"summary": "2-3 sentences overall",
@@ -32,7 +36,7 @@ Reply with JSON only, no markdown fences, exactly in this shape:
  "strengths": ["short sentence", ...]}"""
 
 MAX_EVENTS = 30                    # events listed in the digest (the most severe); the rest are only counted
-MAX_BARS, MAX_CAUSES, MAX_LINKS = 10, 6, 5
+MAX_BARS, MAX_CAUSES, MAX_LINKS, MAX_CHOICES = 10, 6, 5, 8
 
 
 def _round(x, digits=2):
@@ -81,6 +85,13 @@ def build_digest(perf):
         "unavailable": synthesis["unavailable"],
         "limits": [],
     }
+    ref = a.get("reference") or {}
+    if ref.get("available"):
+        digest["reference"] = {"bars": [ref["clip"]["first_measure"], ref["clip"]["last_measure"]],
+                               "compared": {c: {k: _round(v) for k, v in s.items() if k != "unit"} | {"unit": s["unit"]} for c, s in ref["summary"].items()},
+                               "soloist_choices": [_clean({k: c.get(k) for k in ("slug", "measure", "value", "unit")}) for c in ref["reference_choices"][:MAX_CHOICES]],
+                               "gaps": {"notes_not_audible": ref["gaps"]["notes"], "bars_without_video": ref["gaps"]["bars_without_video"],
+                                        "video_seconds_lost": _round(sum(g["end"] - g["start"] for g in ref["gaps"]["video"]), 1)}}
     status = a.get("visual_status") or {}
     if not status.get("available", False):
         digest["limits"].append("no video analysis (bowing, posture, left hand): " + str(status.get("reason", "not available")))
@@ -100,7 +111,8 @@ def compact(digest):
             "problem_events": [{**e, "causes": e["causes"][:1]} for e in digest["problem_events"][:COMPACT_EVENTS]],
             "event_counts": {m: sum(c.values()) for m, c in digest["event_counts"].items()},
             "bars_with_most_problems": digest["bars_with_most_problems"][:COMPACT_BARS],
-            "top_causes": digest["top_causes"][:COMPACT_CAUSES], "unavailable": digest["unavailable"], "limits": digest["limits"]}
+            "top_causes": digest["top_causes"][:COMPACT_CAUSES], "unavailable": digest["unavailable"], "limits": digest["limits"],
+            **({"reference": digest["reference"]} if "reference" in digest else {})}
 
 
 def user_message(digest):

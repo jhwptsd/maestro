@@ -19,6 +19,7 @@ STAGES = (                       # (name, weight, label)
     ("visual", 0.05, "Measuring bowing and posture"),
     ("neural", 0.03, "Asking the CLAP model about tone and expression"),
     ("assess", 0.06, "Judging intonation, rhythm, tone and expression"),
+    ("reference", 0.15, "Analysing the professional recording to compare"),
     ("report", 0.07, "Building the report"),
 )
 
@@ -26,9 +27,9 @@ STAGES = (                       # (name, weight, label)
 class Tracker:
     """Callable for analyze(progress=...): `tracker(stage)` records the stage and calls `callback(info)` with
     {"stage", "label", "fraction" (where it starts, 0-1), "ceiling" (where it ends), "started" (time.monotonic())}.
-    Stages in `skip` (default: "neural", which only runs on request) are left out of the weights; unknown names are ignored."""
+    Stages in `skip` (default: "neural" and "reference", which only run on request) are left out of the weights; unknown names are ignored."""
 
-    def __init__(self, callback, skip=("neural",)):
+    def __init__(self, callback, skip=("neural", "reference")):
         self.callback = callback
         stages = [s for s in STAGES if s[0] not in skip]
         total = sum(w for _, w, _ in stages)

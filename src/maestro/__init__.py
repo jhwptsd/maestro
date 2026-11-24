@@ -21,10 +21,12 @@ from maestro.audio.transcription import transcribe
 from maestro.preprocessing.audio import preprocess_audio
 from maestro.preprocessing.score import preprocess_score
 from maestro.preprocessing.video import preprocess_video
+from maestro.reference.compare import compare_to_reference
+from maestro.reference.process import process_reference
 from maestro.score.symbolic_features import extract_symbolic_features
 from maestro.score.visualize import score_to_svg
 from maestro.utils.Performance import Performance
-from maestro.utils.errors import PoseUnavailableError
+from maestro.utils.errors import InputError, PoseUnavailableError, ToolMissingError
 from maestro.assessment.bowing import assess_bowing
 from maestro.assessment.posture import assess_posture
 from maestro.vision.motion_features import extract_motion
@@ -99,7 +101,8 @@ def _write_audio(perf, directory):
 
 
 def analyze(video_path, score_path, out_dir=None, denoise=True,
-            pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None, pose_file=None, neural=None, visual_audio=True, progress=None):
+            pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None, pose_file=None, neural=None, visual_audio=True, progress=None,
+            reference=None, reference_options=None):
     """Analyze a performance against a score and return the filled Performance.
 
     video_path: any video or audio file ffmpeg reads; score_path: MusicXML, .mxl, MIDI, PDF or image.
@@ -120,6 +123,11 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     "pose", "visual", "neural", "assess") and with "done" at the end (utils/progress.Tracker turns these into a progress bar).
     neural: None (default) or "clap" to add the pretrained CLAP tone/expression judgement (assessment/neural.py; needs
     transformers + torch and downloads ~600 MB once; if it cannot load, the analysis continues without it).
+    reference: a professional recording (file path or YouTube link) to compare with. It is processed after the student's analysis (reference/):
+    clipped to the bars the student played, the soloist isolated, gaps kept where the camera or the sound is lost, and its measurements
+    become a baseline with the soloist's interpretive choices marked; the result is assessment["reference"] and perf.reference. A reference
+    that cannot be used does not fail the analysis: assessment["reference"] then says why. reference_options: keyword arguments of
+    reference.process.process_reference (measures, separate, pose_file).
     assessment["synthesis"] is the single JSON report built from every module (assessment/synthesize.py).
 
     Raises utils.errors.InputError for unusable files, and its subclass MismatchError if the recording
@@ -149,10 +157,22 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
         raise
     finally:
         pool.shutdown(wait=False)
+    if reference:
+        _compare_with_reference(perf, reference, work, pitch_backend, pitch_options, step, reference_options or {})
     if out_dir:
         score_to_svg(perf.score, perf.assessment["intonation"], work / "score.svg")
     step("done")
     return perf
+
+
+def _compare_with_reference(perf, reference, work, pitch_backend, pitch_options, step, options):
+    """The reference stage of analyze(): process the professional recording and compare; an unusable reference is reported, not raised."""
+    try:
+        with _timed(perf, "reference"):
+            process_reference(perf, reference, work, pitch_backend=pitch_backend, pitch_options=pitch_options, progress=step, **options)
+            compare_to_reference(perf)
+    except (InputError, ToolMissingError) as e:                 # (MismatchError is an InputError)
+        perf.assessment["reference"] = {"available": False, "reason": str(e)}
 
 
 def _analyze_audio_and_assess(perf, work, pose_file, visual_audio, pitch_backend, pitch_options, neural, pose_job, step):

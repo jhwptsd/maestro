@@ -1,7 +1,7 @@
 # Implement dynamic time warping algorithm to align two sequences of features
 #
 # Generic DTW helper (no domain knowledge). Used by align_audio_score.py,
-# align_video_score.py, and reference_alignment.py.
+# align_video_score.py (the reference recording is aligned the same way, in reference/process.py).
 # Open-begin/open-end ("subsequence") mode lets the second sequence match any stretch of the first,
 # which is how a student who starts halfway down the page is aligned (see align_audio_score.py).
 # Use Accurate Audio-to-Score Alignment for Expressive Violin Recordings (Syue et al., ISMIR 2017)
