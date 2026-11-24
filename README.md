@@ -160,7 +160,8 @@ and bar check, `feedback/chat.py` the conversation, `feedback/settings.py` the s
 ### Professional reference (`maestro/reference/`)
 
 Compare your playing with a professional's, without treating the professional as an answer key. Give a recording (an audio or video file, or a
-YouTube link) with `analyze.py ... --reference FILE_OR_URL` (or `analyze(..., reference=...)`; the start page does not take one yet):
+YouTube link) in the start page ("Optional: compare with a professional recording": a link or a file; the progress bar then has an extra step, and the report gets a
+"Compared with a professional" card with the kinds, the soloist's choices and what was left out), with `analyze.py ... --reference FILE_OR_URL`, or `analyze(..., reference=...)`:
 
 1. **Load** (`load_video.py`): any file ffmpeg reads, or a YouTube video (needs `pip install yt-dlp`; at most 720 p, one video, no playlists;
    recordings over an hour are refused). Respect the copyright and terms of the source: the download stays in the analysis folder.
@@ -182,7 +183,7 @@ YouTube link) with `analyze.py ... --reference FILE_OR_URL` (or `analyze(..., re
    and a note where the soloist chose expressive intonation is compared as interpretive, not as the target. The feedback model sees a short version
    and is told never to call a difference from a choice a mistake.
 
-Not yet: a reference field on the start page, showing the reference in the player, portamento and fingering/bowing-direction detection.
+Not yet: playing the reference alongside the student in the player, portamento and fingering/bowing-direction detection.
 
 ### Assessment events and root causes
 
@@ -233,4 +234,4 @@ Implemented: audio extraction, selectable pitch/transcription backends, score co
 pitch, timing, expression, tone, bowing and posture as quantitative events with causes, denoising, the player GUI, VioPose
 movement analysis, GPU-aware pitch estimation, written feedback and chat from a local model, and the professional reference comparison. The `fusion/` folder (learned
 encoders, multimodal fusion, prediction heads) and the offline evaluation of the feedback against teachers' comments are outlined but not
-implemented yet. The professional reference (`reference/`) works from the command line and `analyze()`; its GUI is still to do.
+implemented yet. The professional reference (`reference/`) works from the GUI, the command line and `analyze()`.

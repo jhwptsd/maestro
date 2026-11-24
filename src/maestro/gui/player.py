@@ -9,6 +9,7 @@
 #           notes [{start, end, measure, beat, cents, ms, wrong}]   (one per matched note: pitch and timing error)
 #           bow {t, pos, speed, strokes}, posture {t, tilt, left, right}, hand {t, semitones}   (only with a pose)
 #   pose {fps, joints, edges, xyz (cm, [frame][joint] = [x, y, z] or null)}  drawn as a skeleton next to the video
+#   reference: the professional comparison (assessment/reference: available, reason | source, clip, summary, gaps, reference_choices) or null
 #   run (server id or null), digest (what feedback would send to a model), feedback (written feedback or null): the feedback card
 # Values are rounded so the page stays small (a 3-minute recording is a few MB).
 import numpy as np
@@ -101,6 +102,17 @@ def _pose(perf):
             "xyz": [[None if np.isnan(j).any() else [round(float(c), 1) for c in j] for j in frame] for frame in xyz]}
 
 
+def _reference(perf):
+    """The reference comparison for the page's card (without the long per-note list), or None when no reference was asked for."""
+    ref = (perf.assessment or {}).get("reference")
+    if not ref:
+        return None
+    if not ref.get("available"):
+        return {"available": False, "reason": ref.get("reason", "")}
+    return {"available": True, "source": {"origin": ref["source"]["origin"], "title": ref["source"]["title"]}, "clip": ref["clip"],
+            "summary": ref["summary"], "gaps": ref["gaps"], "choices": ref["reference_choices"]}
+
+
 def player_data(perf, media_url, media_kind, run=None, digest=None):
     """The page's data (see the module comment). media_kind: "video" or "audio". `run` is the server's id of this analysis (the
     page then offers to write feedback through /api/feedback), `digest` what would be sent to the model, perf.feedback the written
@@ -115,4 +127,4 @@ def player_data(perf, media_url, media_kind, run=None, digest=None):
                      "scores": synthesis["scores"], "unavailable": synthesis["unavailable"],
                      "events": events, "links": synthesis["links"], "causes": synthesis["causes"][:6],
                      "traces": {"pitch": pitch, "loudness": loudness, "notes": _notes(perf), **_movement(perf)},
-                     "pose": _pose(perf), "run": run, "digest": digest, "feedback": perf.feedback})
+                     "pose": _pose(perf), "reference": _reference(perf), "run": run, "digest": digest, "feedback": perf.feedback})

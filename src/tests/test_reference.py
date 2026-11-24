@@ -2,7 +2,11 @@
 choices, and the comparison (synthetic recordings: the Minuet with an 'orchestra' under it)."""
 import json
 import tempfile
+import threading
+import time
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -11,7 +15,10 @@ import numpy as np
 from helpers import SR, make_video, synth, write_wav
 from minuet import BARS, MIDIS, minuet_musicxml, play_minuet
 from pose_fixture import minuet_notes, synth_pose
+from test_gui import HAS_BROWSER, multipart, page_data, performance
 from maestro import analyze
+from maestro.gui import server as gui_server
+from maestro.gui.report import build_page
 from maestro.reference import baseline, gaps, isolate, load_video
 from maestro.reference.compare import compare_to_reference
 from maestro.reference.process import clip_range, reference_summary
@@ -324,6 +331,117 @@ class WithVideo(unittest.TestCase):
             self.assertEqual(sorted(result["gaps"]["bars_without_video"]), sorted(blind))
             self.assertEqual(blind, [5])
             self.assertFalse([r for r in result["differences"] if r["category"] == "bowing" and r["measure"] in blind])
+
+
+class InTheGui(unittest.TestCase):
+    """The start page's reference inputs, the server's handling of them and the report's reference card."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = gui_server.make_server(port=0)
+        cls.url = f"http://127.0.0.1:{cls.srv.server_port}"
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.srv.server_close()
+
+    def start(self, files):
+        ctype, body = multipart(files)
+        request = urllib.request.Request(self.url + "/api/analyze", body, {"Content-Type": ctype})
+        try:
+            with urllib.request.urlopen(request) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def finish(self, job):
+        for _ in range(3000):
+            with urllib.request.urlopen(f"{self.url}/api/job/{job}") as r:
+                status = json.loads(r.read())
+            if status["state"] != "running":
+                return status
+            time.sleep(0.1)
+
+    def uploads(self):
+        return {"video": ("take.wav", write_bytes(play_minuet(bars=slice(2, 5), jitter=0.01))),
+                "score": ("piece.musicxml", minuet_musicxml(100).encode())}
+
+    def test_the_start_page_offers_a_youtube_link_and_a_file(self):
+        with urllib.request.urlopen(self.url + "/") as r:
+            page = r.read().decode()
+        self.assertIn('name="reference_url"', page)
+        self.assertIn('name="reference"', page)
+
+    def test_a_reference_file_is_analysed_and_shown_in_the_report(self):
+        status, data = self.start({**self.uploads(), "reference": ("pro.wav", write_bytes(with_orchestra(play_minuet(bpm=80, jitter=0.01, seed=3))))})
+        self.assertEqual(status, 202)
+        final = self.finish(data["job"])
+        self.assertEqual(final["state"], "done", final)
+        with urllib.request.urlopen(self.url + final["url"]) as r:
+            page = r.read().decode()
+        card = page_data(page)["reference"]
+        self.assertTrue(card["available"])
+        self.assertEqual((card["clip"]["first_measure"], card["clip"]["last_measure"]), (3, 5))
+        self.assertEqual(card["summary"]["pitch"]["nature"], "objective")
+        self.assertNotIn("differences", card)                                                # the long per-note list stays out of the page
+
+    def test_the_bar_includes_the_reference_stage_only_when_a_reference_is_given(self):
+        with mock.patch.object(gui_server, "analyze", side_effect=InputError("stop")) as fake:
+            status, data = self.start({**self.uploads(), "reference_url": ("", b"https://youtu.be/abc123")})
+            self.assertEqual(self.finish(data["job"])["state"], "error")
+            self.assertEqual(fake.call_args.kwargs["reference"], "https://youtu.be/abc123")
+            status, data = self.start(self.uploads())
+            self.finish(data["job"])
+            self.assertIsNone(fake.call_args.kwargs["reference"])
+
+    def test_only_youtube_links_are_accepted(self):
+        status, data = self.start({**self.uploads(), "reference_url": ("", b"https://example.com/a.mp4")})
+        self.assertEqual(status, 400)
+        self.assertIn("YouTube", data["error"])
+
+    @unittest.skipUnless(HAS_BROWSER, "needs node + playwright")
+    def test_the_card_shows_choices_and_gaps_as_text_and_reports_an_unusable_reference(self):
+        import subprocess
+        evil = "<img src=x onerror=window.pwned=1>"
+        card = {"available": True, "source": {"origin": "youtube", "title": evil}, "clip": {"first_measure": 3, "last_measure": 5},
+                "summary": {"pitch": {"nature": "objective", "compared": 12, "median_delta": 3.0, "unit": "cents"},
+                            "tempo": {"nature": "interpretive", "compared": 3, "median_delta": 0.2, "unit": "x_marked_tempo"}},
+                "gaps": {"notes": 2, "bars_without_video": [4], "audio": [{"start": 1, "end": 2.5, "reason": "x"}], "video": [{"start": 3, "end": 4, "reason": "y"}]},
+                "differences": [], "reference_choices": [{"slug": "tempo_choice", "value": 0.8, "measure": None}, {"slug": "local_tempo_shift", "value": 1.2, "measure": 4},
+                            {"slug": "expressive_intonation", "value": 20, "measure": None}]}
+        results = []
+        with tempfile.TemporaryDirectory() as tmp:
+            perf = performance(Path(tmp))
+            for reference in (card, {"available": False, "reason": "The reference does not match the score."}, None):
+                perf.assessment["reference"] = reference
+                page = Path(tmp) / "r.html"
+                page.write_text(build_page(perf, "media.mp4"), encoding="utf-8")
+                js = ("const {chromium}=require('playwright');(async()=>{const b=await chromium.launch();const p=await b.newPage();"
+                      "const errors=[];p.on('pageerror',e=>errors.push(String(e)));await p.goto('file://'+process.argv[1]);await p.waitForTimeout(300);"
+                      "console.log(JSON.stringify({errors,pwned:await p.evaluate(()=>window.pwned===1),imgs:await p.evaluate(()=>document.querySelectorAll('#reference img').length),"
+                      "text:await p.evaluate(()=>document.querySelector('#reference').textContent),tags:await p.evaluate(()=>[...document.querySelectorAll('#reference .tag')].map(t=>t.className))}));await b.close();})()")
+                results.append(json.loads(subprocess.run(["node", "-e", js, str(page)], capture_output=True, text=True, check=True).stdout))
+        shown, unusable, absent = results
+        self.assertEqual((shown["errors"], shown["pwned"], shown["imgs"]), ([], False, 0))
+        self.assertIn(evil, shown["text"])                                                       # visible as text
+        self.assertEqual(shown["tags"], ["tag objective", "tag interpretive"])
+        for expected in ("plays at 0.80 x the marked tempo", "(bar 4)", "1 note-level choices", "2 notes where the soloist could not be heard",
+                         "1.5 s where the orchestra covers", "1.0 s of video without the soloist", "bars 4"):
+            self.assertIn(expected, shown["text"])
+        self.assertIn("could not be used: The reference does not match the score.", unusable["text"])
+        self.assertEqual(absent["text"], "")
+
+
+def write_bytes(y):
+    import io
+    import wave
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as w:
+        w.setnchannels(1), w.setsampwidth(2), w.setframerate(SR)
+        w.writeframes((np.clip(y, -1, 1) * 32767).astype("<i2").tobytes())
+    return buffer.getvalue()
 
 
 def probe_duration(path):

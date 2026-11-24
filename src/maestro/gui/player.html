@@ -31,6 +31,8 @@ th,td{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left;font-v
 th{font-size:12px;color:var(--mute);cursor:pointer}tr.row{cursor:pointer}tr.row:hover,tr.active{background:#eef3fb}
 .sev{display:inline-block;width:10px;height:10px;border-radius:50%}
 #feedback .fb{background:white;border:1px solid var(--line);border-left:5px solid var(--blue);border-radius:6px;padding:10px 14px;margin-bottom:12px}
+#reference{margin:10px 0}#reference h2{margin:0 0 6px}#reference table{border-collapse:collapse;font-size:13px;margin:6px 0}#reference td,#reference th{padding:3px 10px;text-align:left;border-bottom:1px solid var(--line,#ddd)}
+#reference .tag{border-radius:9px;padding:1px 8px;font-size:11px;color:#fff}#reference .objective{background:#4a6fa5}#reference .interpretive{background:#8a5fb5}#reference .note{color:var(--mute);font-size:12px}
 #feedback h2{margin:0 0 6px}#feedback ol{padding-left:20px;margin:6px 0}#feedback li{margin-bottom:8px}
 #feedback .bars{display:inline-block;background:#eef3fb;border-radius:10px;padding:0 8px;font-size:12px;margin-left:6px}
 #feedback .note{color:var(--mute);font-size:12px}#feedback .log{max-height:320px;overflow:auto;margin-bottom:8px}#feedback .bubble{padding:6px 10px;border-radius:10px;margin:4px 0;white-space:pre-wrap}
@@ -43,6 +45,7 @@ details{margin-top:20px}summary{cursor:pointer;font-weight:600}
 <main>
 <div class="scores" id="scores"></div>
 <div id="feedback"></div>
+<div id="reference"></div>
 <div class="stage" id="stage"><div id="mediaBox"></div><div><canvas id="skel" width="640" height="480"></canvas></div></div>
 <div id="hud"></div>
 <h2>Live traces</h2>
@@ -130,6 +133,50 @@ const fmtNum = (v) => v === null || v === undefined ? "" : Math.abs(v) >= 100 ? 
   retry.onclick = ask;
   chatPanel();
   ask();
+})();
+
+// ---- professional reference: what the soloist did, with the soloist's own choices marked (all text inserted as text) -------------
+(function referenceCard() {
+  const box = $("#reference"), R = D.reference;
+  if (!R) return;
+  const el = (tag, text, cls) => { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; };
+  const card = el("div", undefined, "card");
+  box.append(card);
+  card.append(el("h2", "Compared with a professional"));
+  if (!R.available) { card.append(el("div", "The reference could not be used: " + R.reason, "note")); return; }
+  const LABEL = {pitch: "pitch (cents)", attack: "attack (s)", tempo: "tempo (x the marking)", dynamics: "dynamic shape (dB)", articulation: "note length (share of gap)",
+                 vibrato: "vibrato width (cents)", bowing: "bow changes per bar"};
+  const CHOICE = {tempo_choice: "plays at {v} x the marked tempo", local_tempo_shift: "changes the tempo ({v} x its usual)", dynamic_shaping: "shapes the dynamics ({v} dB from the median)",
+                  vibrato_use: "uses vibrato on {v} of the long notes", played_short: "plays the note short ({v} of the gap)", bowing_choice: "bows with {v} changes per bar",
+                  expressive_intonation: "plays the note {v} cents from equal temperament"};
+  const c = R.clip;
+  card.append(el("div", `${R.source.title} (${R.source.origin === "youtube" ? "YouTube" : "file"}), bars ${c.first_measure} to ${c.last_measure}, the part you played. `
+    + "A professional is not an answer key: rows marked interpretive are the soloist's own musical choices, so a difference there is a different reading, not a mistake.", "note"));
+  const table = el("table"), head = el("tr");
+  ["what", "kind", "notes or bars compared", "you minus the soloist (median)"].forEach((t) => head.append(el("th", t)));
+  table.append(head);
+  Object.entries(R.summary).forEach(([cat, s]) => {
+    const row = el("tr"), kind = el("td");
+    kind.append(el("span", s.nature, "tag " + s.nature));
+    row.append(el("td", LABEL[cat] || cat), kind, el("td", String(s.compared)), el("td", fmtNum(s.median_delta)));
+    table.append(row);
+  });
+  card.append(table);
+  const fmt = (c) => (CHOICE[c.slug] || c.slug).replace("{v}", fmtNum(c.value)) + (c.measure ? ` (bar ${c.measure})` : "");
+  const shown = R.choices.filter((c) => !["expressive_intonation", "played_short"].includes(c.slug));
+  const more = R.choices.length - shown.length;
+  if (shown.length) {
+    card.append(el("div", "The soloist's choices", "note"));
+    const ul = el("ul"); shown.forEach((ch) => ul.append(el("li", "The soloist " + fmt(ch)))); card.append(ul);
+  }
+  if (more) card.append(el("div", `and ${more} note-level choices (expressive intonation, short notes) that are compared as interpretive, not as targets.`, "note"));
+  const g = R.gaps, lost = (g.video || []).reduce((a, x) => a + x.end - x.start, 0), miss = (g.audio || []).reduce((a, x) => a + x.end - x.start, 0);
+  const parts = [];
+  if (g.notes) parts.push(`${g.notes} notes where the soloist could not be heard clearly`);
+  if (miss) parts.push(`${miss.toFixed(1)} s where the orchestra covers the soloist`);
+  if (lost) parts.push(`${lost.toFixed(1)} s of video without the soloist (camera cuts or out of frame)`);
+  if (g.bars_without_video && g.bars_without_video.length) parts.push("no bowing numbers for bars " + g.bars_without_video.join(", "));
+  if (parts.length) card.append(el("div", "Left out, not guessed: " + parts.join("; ") + ".", "note"));
 })();
 
 // ---- media ---------------------------------------------------------------------------------------------------------

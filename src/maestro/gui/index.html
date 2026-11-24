@@ -24,6 +24,13 @@ h2{margin-top:2em;font-size:1.1em}
     <input type="file" name="video" accept="video/*,audio/*" required></label></div>
   <div><label>Score <span class="hint">(MusicXML, .mxl, MIDI, or PDF/image if Audiveris is installed)</span>
     <input type="file" name="score" accept=".musicxml,.xml,.mxl,.mid,.midi,.pdf,.png,.jpg,.jpeg,.tif,.tiff" required></label></div>
+  <details><summary class="hint">Optional: compare with a professional recording</summary>
+    <div style="display:grid;gap:10px;margin-top:8px">
+      <div class="hint">Maestro cuts it to the bars you played, keeps the soloist, and shows what the professional did, marking their own musical choices as choices.
+      Give a YouTube link <i>or</i> a file (respect its copyright; it stays on this computer).</div>
+      <div><label>YouTube link <input type="url" name="reference_url" placeholder="https://www.youtube.com/watch?v=..." style="display:block;margin-top:6px;width:100%;padding:7px;box-sizing:border-box"></label></div>
+      <div><label>or a recording file <input type="file" name="reference" accept="video/*,audio/*"></label></div>
+    </div></details>
   <div><button id="go">Analyze</button></div>
   <div id="progress" hidden><progress id="bar" max="1000" value="0"></progress><div id="progress-label" role="status"></div></div>
   <div id="status" role="status"></div>

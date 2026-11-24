@@ -2,7 +2,7 @@
 #
 # Run `python src/scripts/serve.py` (or `maestro-gui` after `pip install -e .`) and open
 # http://127.0.0.1:8000. GET / serves index.html (upload form); POST /api/analyze receives the
-# recording + score as multipart form data, checks it, starts maestro.analyze() in a background thread and answers {"job": id} at
+# recording + score (and optionally a professional reference: the file `reference` or the text field `reference_url`, a YouTube link) as multipart form data, checks it, starts maestro.analyze() in a background thread and answers {"job": id} at
 # once (HTTP 202; {"error": message} with 400 for a missing file); GET /api/job/<id> then reports {state: running | done | error,
 # label, fraction, ceiling, ...} for the progress bar of the start page (utils/progress.py), and when it is done {url: "/run/<id>/"}, the
 # report page built by gui/report.py, or {error: message} for unusable input (InputError, MismatchError, missing ffmpeg or Audiveris).
@@ -36,11 +36,12 @@ from pathlib import Path
 from maestro import analyze
 from maestro.feedback import chat, generator, ollama, prompts, settings
 from maestro.gui.report import build_page, media_source
+from maestro.reference.load_video import is_youtube
 from maestro.utils.progress import Tracker
 from maestro.utils.errors import InputError, ToolMissingError
 
 MAX_UPLOAD = 1 << 30  # 1 GiB
-FIELDS = ("video", "score")                   # the upload form's file inputs; anything else a client sends is ignored
+FIELDS = ("video", "score", "reference")      # the upload form's file inputs (the reference is optional); anything else a client sends is ignored
 INDEX = (Path(__file__).parent / "index.html").read_text(encoding="utf-8")
 RUNS_DIR = Path(tempfile.mkdtemp(prefix="maestro_runs_"))     # one folder per analysis, deleted when the server exits
 atexit.register(shutil.rmtree, RUNS_DIR, ignore_errors=True)
@@ -58,18 +59,19 @@ def parse_multipart(content_type, body):
             for part in msg.iter_parts()}
 
 
-def run_analysis(job_id, paths, folder):
+def run_analysis(job_id, paths, folder, reference=None):
     """Analyse the upload in a background thread, keeping JOBS[job_id] up to date for the progress bar of the start page, and, when
-    it succeeds, register the report in RUNS (the same id is the report's address)."""
+    it succeeds, register the report in RUNS (the same id is the report's address). `reference`: a professional recording to compare with
+    (a file path or a YouTube link), or None."""
     job = JOBS[job_id]
 
     def update(info):
         if info["stage"] != "done":                  # (analyze's own "done"; the report still has to be built)
             job.update(stage=info["stage"], label=info["label"], fraction=info["fraction"], ceiling=info["ceiling"], stage_started=time.monotonic())
 
-    tracker = Tracker(update)
+    tracker = Tracker(update, skip=("neural",) if reference else ("neural", "reference"))
     try:
-        perf = analyze(paths["video"], paths["score"], folder / "work", progress=tracker)
+        perf = analyze(paths["video"], paths["score"], folder / "work", progress=tracker, reference=reference)
         tracker("report")
         RUNS[job_id] = {"page": build_page(perf, "media", job_id), "media": media_source(perf)[0], "digest": prompts.build_digest(perf)}
         print(f"analysis {job_id[:8]}: " + ", ".join(f"{k} {v:.1f}s" for k, v in perf.timings.items()) +
@@ -277,6 +279,9 @@ class Handler(BaseHTTPRequestHandler):
             files = parse_multipart(self.headers.get("Content-Type", ""), self.rfile.read(length))
             if not files.get("video", ("", b""))[1] or not files.get("score", ("", b""))[1]:
                 raise InputError("Please choose both a recording and a score.")
+            link = files.get("reference_url", ("", b""))[1].decode("utf-8", "replace").strip()
+            if link and not is_youtube(link):
+                raise InputError("The reference link must be a YouTube link; or choose a recording file instead.")
             run_id = uuid.uuid4().hex
             folder = RUNS_DIR / run_id
             folder.mkdir()
@@ -296,7 +301,8 @@ class Handler(BaseHTTPRequestHandler):
                         "stage_started": time.monotonic()}
         for old in [j for j, v in JOBS.items() if v["state"] != "running"][:-MAX_JOBS_KEPT]:       # keep the list short
             del JOBS[old]
-        threading.Thread(target=run_analysis, args=(run_id, paths, folder), daemon=True).start()
+        reference = paths.get("reference") or link or None          # a file wins over a link
+        threading.Thread(target=run_analysis, args=(run_id, paths, folder, reference), daemon=True).start()
         self._json(202, {"job": run_id})
 
     def log_message(self, fmt, *args):
