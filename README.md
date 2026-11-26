@@ -131,15 +131,15 @@ and the visual pitch method are in `src/docs/README.md`.
 
 ### Written feedback and chat (a small local model)
 
-The analysis gives numbers; a small language model running **on your own computer** turns them into feedback a student can use: a short
-summary, priorities (the bars involved, what is probably going wrong, a concrete practice suggestion each) and what is going well, and then
-answers follow-up questions in a chat (`maestro/feedback/`). There is no account, key or internet use: it runs through
+The analysis gives numbers; a small language model running **on your own computer** turns them into what a teacher would say after hearing you:
+a few natural paragraphs (what is going well, what will help most and where, why it probably happens, what to practise), not a list of points, and
+then answers follow-up questions in a chat (`maestro/feedback/`). There is no account, key or internet use: it runs through
 [Ollama](https://ollama.com/download) (free; or `setup.ps1 -LocalModel` / `./setup.sh --local-model`). Start Ollama and download a model once
 (a button on the start page with a progress bar, or `ollama pull llama3.2:3b`); a model you already have (e.g. `qwen3.5:4b`) is used as it is.
 
 - **Models**: the ones offered are small 4-bit models of 1 to 4 billion parameters (Llama 3.2 1B/3B, Qwen 3.5 4B, Qwen 2.5 1.5B, Gemma 2 2B,
   Phi 3.5 mini), light enough for a laptop and for a recent phone. For them Maestro sends a compact summary (the 10 worst events, 5 worst bars),
-  asks for JSON, switches "thinking" off (thinking models would otherwise return nothing) and sets an 8192-token context (Ollama's default
+  switches "thinking" off (thinking models would otherwise return nothing) and sets an 8192-token context (Ollama's default
   would silently cut the prompt). Expect plainer feedback than from a large hosted model. `OLLAMA_HOST` points Maestro at an Ollama on another
   machine. Maestro itself is a computer app; it does not run on an iPhone.
 - **Feedback is written automatically** when a report is opened (one call per analysis; the answer is kept, and a failure shows a readable
@@ -147,8 +147,8 @@ answers follow-up questions in a chat (`maestro/feedback/`). There is no account
   model sees the same digest and the feedback, plus the conversation (up to 20 questions per analysis; "New conversation" clears it). From the
   command line `analyze.py` also writes `feedback.json` when Ollama is running (`--model M` picks a model, `--no-feedback` skips it).
 - **What the model sees**: a digest of numbers and what you type in the chat, never the recording, the video, the score or file names; the
-  report page shows the digest ("What is sent to the model"). It is told to use only those measurements, and every bar it cites in the
-  feedback is checked against the bars the analysis flagged: an invented bar is removed and a warning shown. Its text is displayed as
+  report page shows the digest ("What is sent to the model"). It is told to use only those measurements, and every bar the text names is
+  checked against the bars the analysis flagged (and the stretch you played): a bar it should not know gets a warning under the text. Its text is displayed as
   plain text only.
 - The server only accepts these requests from its own page (Host and Origin are checked and bodies must be JSON), so another website
   cannot drive them.
@@ -183,7 +183,7 @@ YouTube link) in the start page ("Optional: compare with a professional recordin
    its `value`, the differential: you minus the soloist; `expected` is 0). No averages or tallies are reported. Its cause is always
    `soloist_interpretive_choice` (evidence: the differential, its relative size, both values and, when it applies, the soloist's own `soloist_choice`).
    The differences are emphasised (severity 0.25 to 0.55, their own slots in the digest) but stay below a clear note
-   error, the feedback model is required to compare you with the professional recording (in the summary and in one priority, said again in the turn it answers) yet put wrong notes, intonation, rhythm and tone first, and the module has no score and is left out of
+   error, the feedback model is told to bring the comparison into what it says as a teacher would ("listening to the professional recording of those bars...", said again in the turn it answers) yet put wrong notes, intonation, rhythm and tone first, and the module has no score and is left out of
    the problem bars and leading causes. Accuracy (pitch, attack) is judged by the intonation and tone modules. The events go through the synthesis into
    the player's event list (there is no separate comparison section) and into the digest that the feedback model reads, exactly like the other modules' (it gets its own slots among the events,
    plus the soloist's choices and the gaps), and it is told never to call such a difference a mistake. `reference.json` (command line) has the baseline.

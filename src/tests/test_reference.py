@@ -328,19 +328,16 @@ class EndToEnd(unittest.TestCase):
         self.assertNotIn("samples", summary)
         json.dumps(summary)
 
-    def test_the_feedback_must_compare_with_the_professional_when_there_are_reference_events(self):
+    def test_the_teacher_is_told_to_bring_in_the_professional_recording_when_there_are_reference_events(self):
         from maestro.feedback import generator, prompts
         digest = prompts.build_digest(self.perf)
         message = prompts.user_message(digest)
-        self.assertIn("professional recording", message.split("Write the feedback now")[1])               # said in the turn the model answers
-        self.assertIn("MUST", prompts.SYSTEM)
+        self.assertIn("professional recording", message.split("Now talk to the student")[1])               # said in the turn the model answers
         plain = {k: v for k, v in digest.items() if k != "reference"}
         plain["problem_events"] = [e for e in digest["problem_events"] if e["skill"] != "reference"]
-        self.assertNotIn("professional", prompts.user_message(plain).split("Write the feedback now")[1])
-        bar = digest["problem_events"][0]["bar"]
-        answer = {"summary": "s", "strengths": [], "priorities": [{"title": str(i), "bars": [bar], "why": "", "practice": ""} for i in range(5)]}
-        self.assertEqual(len(generator.shape(answer, digest)["priorities"]), 4)                          # room for the comparison
-        self.assertEqual(len(generator.shape(answer, plain)["priorities"]), 3)
+        self.assertNotIn("professional", prompts.user_message(plain).split("Now talk to the student")[1])
+        self.assertIn("professional recording", prompts.SYSTEM)                                           # the system prompt says to talk about it
+        self.assertTrue({3, 5} <= generator.known_bars(digest))
 
     def test_the_synthesis_lists_the_events_but_gives_no_score_and_no_problem_bars_or_causes_for_them(self):
         synthesis = self.perf.assessment["synthesis"]

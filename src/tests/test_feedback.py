@@ -20,9 +20,8 @@ from maestro.feedback import chat, generator, ollama, prompts, settings
 from maestro.gui.report import build_page
 from maestro.gui import server as gui_server
 
-GOOD_ANSWER = {"summary": "A steady performance with some sharp notes.",
-               "priorities": [{"title": "Intonation after leaps", "bars": [2], "why": "Probably overshooting the shift.", "practice": "Slow shifts."}],
-               "strengths": ["Steady tempo"]}
+GOOD_ANSWER = ("Your tempo is lovely and steady, which is a real strength.\n\nThe thing to work on is the shift in the second bar: you are probably "
+               "overshooting it, so practise it slowly with the metronome.")
 
 
 class FakeOllama:
@@ -31,7 +30,7 @@ class FakeOllama:
     def __init__(self, models=("llama3.2:3b", "nomic-embed-text"), answer=None):
         outer = self
         self.requests, self.models = [], list(models)
-        self.answer = answer if answer is not None else GOOD_ANSWER       # a dict (sent as JSON text) or a string
+        self.answer = answer if answer is not None else GOOD_ANSWER       # a dict (sent as JSON text) or a string (the teacher's words)
         self.missing = set()                                              # model names that answer 404, like one that is not downloaded
 
         class Handler(BaseHTTPRequestHandler):
@@ -184,9 +183,11 @@ class Digest(unittest.TestCase):
         self.assertTrue(all(set(e) >= {"skill", "kind", "bar", "severity", "causes"} for e in digest["problem_events"]))
         self.assertIn("seconds", digest["piece"])
 
-    def test_the_prompt_forbids_inventing_and_asks_for_json(self):
+    def test_the_prompt_forbids_inventing_and_asks_for_a_teacher_speaking_not_a_list(self):
         self.assertIn("ONLY the measurements", prompts.SYSTEM)
-        self.assertIn("JSON only", prompts.SYSTEM)
+        self.assertIn("flowing paragraphs", prompts.SYSTEM)
+        self.assertIn("Never use lists", prompts.SYSTEM)
+        self.assertNotIn("priorities", prompts.SYSTEM)                                            # no fixed number of points, no JSON shape
         message = prompts.user_message({"scores_0_to_100": {"intonation": 80}})
         self.assertIn('"intonation":80', message)
 
@@ -201,13 +202,15 @@ class Generator(WithOllama):
         self.fake.answer = answer
         return generator.feedback_from_digest(self.digest, **kw)
 
-    def test_good_answer_is_shaped_and_only_the_compact_digest_is_sent(self):
-        result = self.ask({**GOOD_ANSWER, "priorities": [{**GOOD_ANSWER["priorities"][0], "bars": [self.bar]}]})
-        self.assertEqual(result["model"], "llama3.2:3b")                                          # the best installed, with nothing set up
-        self.assertEqual(result["priorities"][0]["bars"], [self.bar])
+    def test_the_teachers_words_are_kept_as_written_and_only_the_compact_digest_is_sent(self):
+        result = self.ask(GOOD_ANSWER)
+        self.assertEqual((result["model"], result["text"]), ("llama3.2:3b", GOOD_ANSWER))             # the best installed, with nothing set up
+        self.assertEqual(set(result), {"model", "text", "warnings", "usage"})                        # prose: no summary / priorities / strengths
         self.assertEqual(result["warnings"], [])
         self.assertEqual(result["usage"], {"input": 5, "output": 7})
-        sent = self.fake.chats()[-1]["body"]["messages"][-1]["content"]
+        body = self.fake.chats()[-1]["body"]
+        self.assertNotIn("format", body)                                                          # free text, not JSON mode
+        sent = body["messages"][-1]["content"]
         self.assertIn(json.dumps(self.digest["scores_0_to_100"], separators=(",", ":")), sent)
         self.assertNotIn("summaries", sent)                                                       # compact: no per-skill summaries
         self.assertLess(len(json.dumps(prompts.compact(self.digest))), len(json.dumps(self.digest)))
@@ -217,18 +220,15 @@ class Generator(WithOllama):
         self.assertLessEqual(len(small["problem_events"]), prompts.COMPACT_EVENTS)
         self.assertEqual(small["problem_events"], [{**e, "causes": e["causes"][:1]} for e in self.digest["problem_events"][:prompts.COMPACT_EVENTS]])
 
-    def test_invented_bars_are_removed_and_reported(self):
-        result = self.ask({**GOOD_ANSWER, "priorities": [{**GOOD_ANSWER["priorities"][0], "bars": [self.bar, 999]}] * 5})
-        self.assertEqual(len(result["priorities"]), 3)                                           # at most three
-        self.assertEqual(result["priorities"][0]["bars"], [self.bar])
-        self.assertTrue(any("999" in w for w in result["warnings"]))
-
-    def test_fenced_or_chatty_json_is_still_read_and_plain_text_is_kept(self):
-        fenced = "Here you go:\n```json\n" + json.dumps(GOOD_ANSWER) + "\n```"
-        self.assertEqual(self.ask(fenced)["summary"], GOOD_ANSWER["summary"])
-        result = self.ask("Just practise more slowly.")
-        self.assertEqual((result["summary"], result["priorities"]), ("Just practise more slowly.", []))
-        self.assertTrue(result["warnings"])
+    def test_bars_the_analysis_never_flagged_are_warned_about(self):
+        known = self.ask(f"Listen again to bar {self.bar} and then to bars {self.bar} and {self.bar}.")
+        self.assertEqual(known["warnings"], [])
+        invented = self.ask(f"Look at bar {self.bar}, and also at bars 998 to 999.")
+        self.assertEqual(len(invented["warnings"]), 1)
+        self.assertIn("998", invented["warnings"][0])
+        self.assertIn("999", invented["warnings"][0])
+        self.assertNotIn(str(self.bar), invented["warnings"][0].split("check")[0].replace("bar(s) [", ""))   # the known bar is not reproached
+        self.assertEqual(self.ask("Nothing about any bar here.")["warnings"], [])
 
     def test_the_saved_model_is_used_and_the_result_stored_on_the_performance(self):
         self.fake.models = ["llama3.2:3b", "qwen3.5:4b"]
@@ -262,7 +262,7 @@ class Conversation(WithOllama):
         return chat.reply(self.digest, feedback, history, question)
 
     def test_the_model_gets_the_measurements_the_feedback_and_the_earlier_turns(self):
-        feedback = {"summary": "SUMMARY-GIVEN", "priorities": [], "strengths": ["STRENGTH-GIVEN"]}
+        feedback = {"text": "SUMMARY-GIVEN and more"}
         history = [*user("first question"), {"role": "assistant", "content": "first answer"}]
         answer = self.ask(history, "  second question  ", feedback)
         self.assertEqual(answer["reply"], "Probably the shift overshoots.")
@@ -345,12 +345,12 @@ class Endpoints(WithOllama):
     def test_feedback_is_written_once_per_analysis(self):
         digest = prompts.build_digest(sample_perf())
         bar = next(e["bar"] for e in digest["problem_events"] if e["bar"] is not None)
-        self.fake.answer = {**GOOD_ANSWER, "priorities": [{**GOOD_ANSWER["priorities"][0], "bars": [bar]}]}
+        self.fake.answer = f"Practise bar {bar} slowly."
         gui_server.RUNS["a" * 32] = {"digest": digest}
         self.addCleanup(gui_server.RUNS.pop, "a" * 32, None)
         status, data = self.call("/api/feedback", {"run": "a" * 32})
         self.assertEqual(status, 200)
-        self.assertEqual(data["priorities"][0]["bars"], [bar])
+        self.assertEqual(data["text"], f"Practise bar {bar} slowly.")
         calls = len(self.fake.chats())
         self.assertEqual(self.call("/api/feedback", {"run": "a" * 32})[1], data)                  # the saved answer: no second call
         self.assertEqual(len(self.fake.chats()), calls)
@@ -359,7 +359,7 @@ class Endpoints(WithOllama):
     def test_chat_keeps_the_conversation_per_analysis_and_can_restart_it(self):
         self.fake.answer = "Work on the shift in bar 2."
         digest = prompts.build_digest(sample_perf())
-        gui_server.RUNS["c" * 32] = {"digest": digest, "feedback": {"summary": "S", "priorities": [], "strengths": []}}
+        gui_server.RUNS["c" * 32] = {"digest": digest, "feedback": {"text": "S"}}
         self.addCleanup(gui_server.RUNS.pop, "c" * 32, None)
         status, data = self.call("/api/chat", {"run": "c" * 32, "message": "What first?"})
         self.assertEqual((status, data["reply"], data["turns"]), (200, "Work on the shift in bar 2.", 1))
@@ -439,21 +439,21 @@ class Page(unittest.TestCase):
 
     @unittest.skipUnless(HAS_BROWSER, "needs node + playwright")
     def test_feedback_is_written_automatically_and_the_chat_works_as_text(self):
-        feedback = {"model": "m", "summary": "Auto summary.", "warnings": [],
-                    "priorities": [{"title": "Shifts", "bars": [2], "why": "why text", "practice": "practice text"}], "strengths": ["Steady"]}
+        feedback = {"model": "m", "text": "Auto summary.\n\nSecond paragraph about the shifts.", "warnings": []}
         out = self.run_page({"/api/feedback": (200, feedback),
                              "/api/chat#history": (200, {"messages": [{"role": "user", "content": "earlier question"},
                                                                         {"role": "assistant", "content": "earlier <b>answer</b>"}]}),
                              "/api/chat": (200, {"reply": "Reply <img src=x onerror=window.pwned=1>", "turns": 2})},
                             "const text = () => document.querySelector('#feedback').textContent;"
-                            "const before = text();"
+                            "const before = text(); const paragraphs = document.querySelectorAll('#feedback .fb p').length;"
                             "const input = document.querySelector('#feedback .chat input'); input.value = 'my question';"
                             "document.querySelector('#feedback .chat form').requestSubmit();"
                             "await new Promise(r => setTimeout(r, 500));"
-                            "return {before, bubbles: [...document.querySelectorAll('#feedback .bubble')].map(b => b.className + '|' + b.textContent),"
+                            "return {before, paragraphs, bubbles: [...document.querySelectorAll('#feedback .bubble')].map(b => b.className + '|' + b.textContent),"
                             "imgs: document.querySelectorAll('#feedback img').length, bold: document.querySelectorAll('#feedback .bubble b').length, pwned: window.pwned === 1};")
         self.assertIn("Auto summary.", out["before"])                                              # no click was needed
-        self.assertIn("Shifts", out["before"])
+        self.assertIn("Second paragraph about the shifts.", out["before"])
+        self.assertEqual(out["paragraphs"], 2)                                                     # paragraphs, no list
         self.assertEqual(out["bubbles"], ["bubble me|earlier question", "bubble ai|earlier <b>answer</b>", "bubble me|my question",
                                           "bubble ai|Reply <img src=x onerror=window.pwned=1>"])
         self.assertEqual((out["imgs"], out["bold"], out["pwned"]), (0, 0, False))                    # model text is never parsed as HTML
@@ -461,8 +461,7 @@ class Page(unittest.TestCase):
     @unittest.skipUnless(HAS_BROWSER, "needs node + playwright")
     def test_model_text_is_shown_as_text_never_as_html(self):
         evil = "<img src=x onerror=\"window.pwned=1\"><b>bold</b>"
-        self.perf.feedback = {"model": "m", "summary": evil, "warnings": ["</script>"],
-                              "priorities": [{"title": evil, "bars": [1], "why": evil, "practice": evil}], "strengths": [evil]}
+        self.perf.feedback = {"model": "m", "text": evil + "\n\n" + evil, "warnings": ["</script>"]}
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 page = Path(tmp) / "r.html"
@@ -478,7 +477,7 @@ class Page(unittest.TestCase):
             self.perf.feedback = None
         self.assertEqual((out["pwned"], out["imgs"], out["errors"]), (False, 0, []))
         self.assertIn("<img src=x", out["text"])                                                  # visible as text
-        self.assertEqual(out["bolds"], 2)                                                         # only our own <b> (title, "Going well")
+        self.assertEqual(out["bolds"], 0)                                                         # none: the page makes no markup of its own here
 
 
 if __name__ == "__main__":

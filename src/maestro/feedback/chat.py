@@ -28,11 +28,10 @@ professional recording from them, as another reading to try, never as a mistake.
 
 
 def system_prompt(digest, feedback=None):
-    """CHAT_SYSTEM + the measurements + the feedback already given (summary and priorities)."""
+    """CHAT_SYSTEM + the measurements + the feedback already given."""
     text = CHAT_SYSTEM + "\n\nMeasurements:\n" + json.dumps(digest, separators=(",", ":"), ensure_ascii=False)
     if feedback:
-        given = {k: feedback.get(k) for k in ("summary", "priorities", "strengths")}
-        text += "\n\nFeedback already given to the student:\n" + json.dumps(given, separators=(",", ":"), ensure_ascii=False)
+        text += "\n\nFeedback already given to the student:\n" + feedback.get("text", "")
     return text
 
 

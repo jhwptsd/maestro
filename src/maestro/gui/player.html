@@ -80,15 +80,8 @@ const fmtNum = (v) => v === null || v === undefined ? "" : Math.abs(v) >= 100 ? 
   if (sent) { sent.append(el("summary", "What is sent to the model (numbers only)"), el("pre", JSON.stringify(D.digest, null, 1))); }
   function show(fb) {
     card.textContent = "";
-    card.append(el("h2", "Feedback"), el("p", fb.summary));
-    if (fb.priorities.length) {
-      const list = el("ol");
-      fb.priorities.forEach((p) => { const li = el("li"); li.append(el("b", p.title));
-        if (p.bars.length) li.append(el("span", (p.bars.length > 1 ? "bars " : "bar ") + p.bars.join(", "), "bars"));
-        li.append(el("div", p.why), el("div", "Practice: " + p.practice)); list.appendChild(li); });
-      card.appendChild(list);
-    }
-    if (fb.strengths.length) { card.appendChild(el("b", "Going well")); const ul = el("ul"); fb.strengths.forEach((t) => ul.appendChild(el("li", t))); card.appendChild(ul); }
+    card.append(el("h2", "Feedback"));
+    fb.text.split(/\n\s*\n/).filter((t) => t.trim()).forEach((t) => card.append(el("p", t.trim())));       // paragraphs, inserted as text
     card.appendChild(el("div", `Written by ${fb.model} (on this computer) from the measurements below the video; like any AI text it can be wrong. ` + fb.warnings.join(" "), "note"));
     if (sent) card.appendChild(sent);
   }
