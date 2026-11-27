@@ -16,7 +16,7 @@ from maestro.app.controller import Controller
 from maestro.app.views import analyzing, home, settings
 from maestro.app.views.capture import RecordSheet, ScanSheet
 from maestro.app.views.report import Report
-from maestro.utils import capabilities
+from maestro.utils import capabilities, selftest
 from maestro.utils.errors import InputError, ToolMissingError
 
 
@@ -49,8 +49,12 @@ class App:
     def home(self):
         self.show(home.build(self))
 
-    async def settings_screen(self):
-        self.show(settings.build(self, await asyncio.to_thread(self.controller.model_state)))
+    async def settings_screen(self, results=None):
+        self.show(settings.build(self, await asyncio.to_thread(self.controller.model_state), results))
+
+    async def device_check(self):
+        """Settings > Check this device: try each part for real (off the interface thread) and show what happened."""
+        await self.settings_screen(await asyncio.to_thread(selftest.run))
 
     def settings(self):
         self.run(self.settings_screen)

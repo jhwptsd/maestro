@@ -12,6 +12,7 @@ pose model.
 |---|---|
 | `test_audio.py`, `test_crepe_backend.py`, `test_pitch_speed.py` | pitch backends, transcription, onsets |
 | `test_device.py` | device choice (any GPU, else CPU), CREPE through ONNX Runtime (matches PyTorch, falls back cleanly) |
+| `test_phone.py` | Maestro under iPhone restrictions (no PyTorch/ONNX/librosa, no way to start a program): the whole analysis and the app run, everything else says so in words; the iOS audit script; the on-device self-test; the on-device writing model seam |
 | `test_app.py` | the Flet app without a screen: the controller (analysis, feedback, chat), every screen as a control tree, and the app's actions against a stand-in page, camera, microphone and file picker |
 | `test_ondevice.py` | what works on a phone: WAV without ffmpeg, the YIN tracker, the page-scan cleaner, the capability check |
 | `test_capture.py` | recording a take and scanning the score from the start page, in headless Chromium with a fake camera and microphone: the recorded file is accepted by the analysis, one scanned page is a clean JPEG and several a valid PDF, uneven light is removed, and the phone-camera fallback |

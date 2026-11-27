@@ -12,6 +12,8 @@ import os
 import urllib.error
 import urllib.request
 
+from maestro.feedback import ondevice
+
 DEFAULT_MODEL = "llama3.2:3b"
 PREFER = ("llama3.2", "qwen", "gemma", "phi3", "llama3", "mistral")    # substrings of installed model names, best first, when choosing one
 SUGGESTED = (                                                          # offered for download; all small enough for phones as well
@@ -66,16 +68,35 @@ def _call(path, body=None, timeout=TIMEOUT):
 
 
 def list_models():
-    """The models already downloaded to Ollama (embedding models left out): [{"id", "label"}]."""
-    data = _call("/api/tags", timeout=30)
-    return [{"id": m["name"], "label": f"{m['name']} ({m.get('size', 0) / 1e9:.1f} GB)"} for m in data.get("models", [])
-            if "embed" not in m["name"].lower()]
+    """The models available: the on-device engine's first (feedback/ondevice.py), then those already downloaded to Ollama (embedding models left out):
+    [{"id", "label"}]. Ollama not running is an error only when there is no on-device model either."""
+    device = ondevice.list_models()
+    try:
+        data = _call("/api/tags", timeout=30)
+    except LLMError:
+        if device:
+            return device
+        raise
+    return device + [{"id": m["name"], "label": f"{m['name']} ({m.get('size', 0) / 1e9:.1f} GB)"} for m in data.get("models", [])
+                     if "embed" not in m["name"].lower()]
+
+
+def reachable():
+    """True when Ollama answers (the on-device engine does not count)."""
+    try:
+        _call("/api/tags", timeout=5)
+        return True
+    except LLMError:
+        return False
 
 
 def pick_model(models, exclude=()):
     """The model to use among `models` ([{"id"}], minus `exclude`): the default if installed, else the first of the preferred kinds,
     else the first one; None if there is none."""
     ids = [m["id"] for m in models if m["id"] not in exclude]
+    on_device = [i for i in ids if i.startswith(ondevice.PREFIX)]
+    if on_device:                                              # no server and no download: the model on the device itself comes first
+        return on_device[0]
     if DEFAULT_MODEL in ids:
         return DEFAULT_MODEL
     for word in PREFER:
@@ -87,6 +108,8 @@ def pick_model(models, exclude=()):
 
 def complete(model, system, messages, max_tokens=2000, json_mode=False):
     """One answer from `model` -> {"text", "usage": {"input", "output"}}. `messages`: [{"role": "user" | "assistant", "content"}]."""
+    if model.startswith(ondevice.PREFIX):
+        return ondevice.complete(model, system, messages, max_tokens)
     body = {"model": model, "stream": False, "messages": [{"role": "system", "content": system}, *messages],
             "options": {"num_ctx": CONTEXT, "num_predict": max_tokens, "temperature": 0.4}}
     if json_mode:

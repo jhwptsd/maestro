@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 from maestro import analyze
-from maestro.feedback import chat, generator, ollama, prompts, settings
+from maestro.feedback import chat, generator, ollama, ondevice, prompts, settings
 from maestro.gui.player import player_data
 from maestro.gui.report import media_source
 from maestro.score.scan import pages_to_score_file
@@ -109,11 +109,12 @@ class Controller:
     @staticmethod
     def model_state():
         """{running, model, installed, suggested} for the settings screen (ollama.py): what the writing model is and what could be downloaded."""
+        device = ondevice.list_models()
         try:
-            installed, running = ollama.list_models(), True
+            installed, running = ollama.list_models(), ollama.reachable()
         except ollama.LLMError:
             installed, running = [], False
-        return {"running": running, "model": settings.get_model() or ollama.pick_model(installed), "installed": installed,
+        return {"running": running, "device": bool(device), "model": settings.get_model() or ollama.pick_model(installed), "installed": installed,
                 "suggested": list(ollama.SUGGESTED)}
 
     @staticmethod

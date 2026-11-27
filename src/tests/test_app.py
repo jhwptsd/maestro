@@ -203,6 +203,18 @@ class ViewTests(WithApp):
         stopped = w.texts(settings_view.build(self.app(), {"running": False, "model": None, "installed": [], "suggested": []}))
         self.assertIn("Ollama is not running", stopped)
 
+    def test_the_device_check_card_lists_what_worked_and_what_did_not(self):
+        from maestro.utils import selftest
+        results = [{"name": "Pitch tracker (YIN)", "ok": True, "core": True, "seconds": 0.1, "detail": "A4 found within 0.3 cents"},
+                   {"name": "Body movement (VioPose)", "ok": False, "core": False, "seconds": 0.0, "detail": "RuntimeError: VioPose is not installed"}]
+        text = w.texts(settings_view.build(self.app(), self.controller.model_state(), results))
+        for expected in ("Check this device", "Pitch tracker (YIN)", "A4 found within 0.3 cents", "RuntimeError: VioPose is not installed", "The core works here"):
+            self.assertIn(expected, text)
+        failing = results + [{"name": "Whole analysis of a piece", "ok": False, "core": True, "seconds": 1.0, "detail": "ImportError: scipy"}]
+        self.assertIn("Something the phone app needs does not work", w.texts(settings_view.build(self.app(), self.controller.model_state(), failing)))
+        self.assertNotIn("The core works here", w.texts(settings_view.build(self.app(), self.controller.model_state())))                # before it is run
+        self.assertTrue(selftest.core_ok(results) and not selftest.core_ok(failing))
+
     def test_report_screen_shows_scores_bars_events_and_a_chat(self):
         take, score = files(self.d)
         self.controller.set_video(take)
@@ -373,6 +385,13 @@ class AppActions(WithApp):
         self.assertEqual(Path(got[0]).suffix, ".pdf")
         self.assertEqual(self.controller.score, got[0])                                           # the controller made the file and chose it
         self.assertTrue(Path(got[0]).is_file())
+
+    def test_the_device_check_runs_the_real_checks_and_shows_them(self):
+        page, app = self.make()
+        asyncio.run(app.device_check())
+        text = w.texts(page.controls[-1])
+        self.assertIn("Whole analysis of a piece", text)
+        self.assertIn("The core works here", text)
 
     def test_clock(self):
         self.assertEqual((clock(5), clock(65), clock(600)), ("0:05", "1:05", "10:00"))

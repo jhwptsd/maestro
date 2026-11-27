@@ -251,7 +251,7 @@ and heavy libraries Maestro uses. `utils/capabilities.py` asks the device what i
 Scanning pages is built (photos are cleaned of shadow, several pages become one PDF) and works wherever Audiveris is installed; on a phone the button is greyed out with the
 reason. Making the phone version complete would need native pieces that Flet cannot call from Python today: a media decoder (for ffmpeg's job), a pose model
 (Apple Vision / ML Kit), a music reader and an on-device language model (llama.cpp or Core ML). Until then the phone app is the audio-only, MusicXML-score subset above, and a
-computer gives everything. Not yet checked: `flet build` for iOS or Android (no Flutter, Xcode or phone in the build environment), and whether a scipy wheel exists for iOS (the analysis
+computer gives everything. **Finding what blocks iOS, and the on-device model:** `src/docs/ios.md` lists six ways to find every feature that cannot run on iOS (a code audit, a package-index probe, a phone sandbox that runs the whole analysis with iOS's restrictions in the tests, the build itself, an on-device self-test under Settings, and the simulator), their results so far, and the plan for a writing model on the phone. Not yet checked: `flet build` for iOS or Android (no Flutter, Xcode or phone in the build environment), and whether a scipy wheel exists for iOS (the analysis
 needs scipy; if there is none, its few signal functions have to be replaced by numpy ones). The screens were checked by rendering the real Flet client in a headless browser.
 
 ## Folders
