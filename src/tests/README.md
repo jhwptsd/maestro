@@ -12,6 +12,8 @@ pose model.
 |---|---|
 | `test_audio.py`, `test_crepe_backend.py`, `test_pitch_speed.py` | pitch backends, transcription, onsets |
 | `test_device.py` | device choice (any GPU, else CPU), CREPE through ONNX Runtime (matches PyTorch, falls back cleanly) |
+| `test_app.py` | the Flet app without a screen: the controller (analysis, feedback, chat), every screen as a control tree, and the app's actions against a stand-in page, camera, microphone and file picker |
+| `test_ondevice.py` | what works on a phone: WAV without ffmpeg, the YIN tracker, the page-scan cleaner, the capability check |
 | `test_capture.py` | recording a take and scanning the score from the start page, in headless Chromium with a fake camera and microphone: the recorded file is accepted by the analysis, one scanned page is a clean JPEG and several a valid PDF, uneven light is removed, and the phone-camera fallback |
 | `test_reference.py` | the professional reference: file loading, clipping to the student's bars, isolating the soloist from an "orchestra", camera gaps, the baseline with its interpretive choices, the comparison as events in the synthesis and the digest, and that the GUI shows nothing of it |
 | `test_feedback.py` | the written feedback: the local Ollama client (against a local fake), model fallback, the saved model choice, the digest, the generator and its bar check, the chat, the server endpoints and their cross-site protection, the feedback card and chat in Chromium |

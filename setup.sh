@@ -13,7 +13,7 @@ cd "$(dirname "$0")"
 
 skip_viopose=0
 use_venv=1
-extras="crepe,dev"
+extras="crepe,app,dev"
 for arg in "$@"; do
     case "$arg" in
         --skip-viopose) skip_viopose=1 ;;

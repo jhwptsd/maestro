@@ -1,0 +1,13 @@
+# What `flet build` packs into the phone app (the app is src/main.py and the maestro package beside it). Only what runs on a phone:
+# numpy and scipy (the pure-Python analysis core: YIN pitch, alignment, assessment), Pillow (scan cleaning) and Flet with its camera, microphone,
+# video and chart extensions. Not here, because they have no phone build: torch/onnxruntime (CREPE), TensorFlow (VioPose), ffmpeg, Audiveris and Ollama.
+# (A scipy wheel for iOS is the thing to check first when the build runs: see the README.)
+numpy
+scipy
+Pillow
+flet>=1.1
+flet-video
+flet-audio-recorder
+flet-camera
+flet-charts
+flet-permission-handler

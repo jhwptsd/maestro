@@ -16,6 +16,7 @@ maestro-gui = "maestro.gui.server:main"
 dev = ["pytest"]
 crepe = ["torch>=2.0", "torchcrepe>=0.0.23", "librosa>=0.10.2", "onnx", "onnxruntime"]   # the default pitch backend (ONNX Runtime runs its network ~2x faster than PyTorch on the CPU)
 directml = ["onnxruntime-directml"]           # Windows: runs the CREPE network on any DirectX 12 GPU (AMD, Intel, NVIDIA); REPLACES onnxruntime (pip uninstall onnxruntime first; setup.ps1 does)
+app = ["flet>=1.1", "flet-video", "flet-audio-recorder", "flet-camera", "flet-charts", "flet-permission-handler", "Pillow"]   # the Flet app (src/main.py)
 pyin = ["librosa>=0.10.2"]
 basic-pitch = ["basic-pitch>=0.3.0"]
 separation = ["torch>=2.0", "torchaudio", "demucs"]   # optional Demucs stem separation of the reference (analyze --separate)
@@ -32,3 +33,21 @@ maestro = ["gui/*.html", "gui/*.js"]
 [tool.pytest.ini_options]
 testpaths = ["src/tests"]
 pythonpath = ["src", "src/tests"]
+
+# `flet build apk|ipa|windows|macos|linux` (see the README, "The app"): the app is src/main.py with the maestro package beside it.
+[tool.flet]
+product = "Maestro"
+org = "com.maestro"
+company = "Maestro"
+copyright = "Maestro"
+
+[tool.flet.app]
+path = "src"
+
+[tool.flet.ios.info]
+NSMicrophoneUsageDescription = "Maestro listens to your playing to give you feedback."
+NSCameraUsageDescription = "Maestro uses the camera to film your take and to scan your sheet music."
+
+[tool.flet.android.permission]
+"android.permission.RECORD_AUDIO" = true
+"android.permission.CAMERA" = true

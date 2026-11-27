@@ -11,6 +11,13 @@ librosa>=0.10.2
 onnx
 onnxruntime            # Windows with an AMD/Intel/NVIDIA GPU: use onnxruntime-directml instead (never both)
 pytest
+flet>=1.1         # the app (extra `app`)
+flet-video
+flet-audio-recorder
+flet-camera
+flet-charts
+flet-permission-handler
+Pillow
 
 # Optional neural tone/expression judgement:
 # transformers>=4.40

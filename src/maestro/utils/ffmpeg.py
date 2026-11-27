@@ -65,6 +65,11 @@ def _found(name, extra):
     return path
 
 
+def available(name):
+    """True if `name` ("ffmpeg" or "ffprobe") can be found (no exception): a phone has neither, and a WAV recording is still read without them."""
+    return _found(name, tuple(_extra_dirs())) is not None
+
+
 def tool(name):
     """Full path of `name` ("ffmpeg" or "ffprobe"); raises ToolMissingError (with the install command) if it is nowhere."""
     path = _found(name, tuple(_extra_dirs()))

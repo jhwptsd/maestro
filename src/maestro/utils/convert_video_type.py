@@ -9,11 +9,12 @@
 import json
 import re
 import subprocess
+import wave
 from functools import lru_cache
 from pathlib import Path
 
 from maestro.utils.errors import InputError
-from maestro.utils.ffmpeg import tool
+from maestro.utils.ffmpeg import available, tool
 
 
 def probe(path):
@@ -23,6 +24,8 @@ def probe(path):
     """
     if not Path(path).is_file():
         raise InputError(f"File not found: {path}")
+    if not available("ffprobe"):
+        return _probe_wav(path)
     r = subprocess.run([tool("ffprobe"), "-v", "error", "-print_format", "json", "-show_streams", "-show_format",
                         str(path)], capture_output=True, text=True)
     if r.returncode != 0:
@@ -38,6 +41,17 @@ def probe(path):
             "duration": duration if duration > 0 else _decoded_duration(path),
             "width": video.get("width") if video else None,
             "height": video.get("height") if video else None}
+
+
+def _probe_wav(path):
+    """probe() for a machine without ffprobe (a phone): only a WAV can be inspected, with the wave module; anything else needs ffprobe, so the usual
+    ToolMissingError (with the install command) is raised."""
+    try:
+        with wave.open(str(path), "rb") as w:
+            return {"has_video": False, "has_audio": True, "duration": w.getnframes() / w.getframerate(), "width": None, "height": None}
+    except (wave.Error, EOFError):
+        tool("ffprobe")                                         # raises ToolMissingError
+        raise InputError(f"Cannot read {Path(path).name} as audio or video.") from None
 
 
 def _decoded_duration(path):

@@ -218,10 +218,47 @@ descriptions such as "a warm, smooth violin tone" vs "a harsh, scratchy violin t
 causes come from the measured features inside each window. It is zero-shot and coarse: a second opinion. A backend that returns
 `p_first(windows, sr, prompts)` can be swapped in (`assessment/neural.py`).
 
+## The app (Flet)
+
+`src/main.py` is the app: one Python code base for Windows, macOS, Linux, Android and iOS, built with [Flet](https://flet.dev) (Flutter underneath). It does what
+the web page did, natively: choose or **record** your playing, choose or **scan** the score, a progress ring while it analyses, then a report with score rings,
+the recording beside the pose, the written feedback in a teacher's own words, a chat, live traces that follow the video, a bar-by-bar strip and the most
+important moments (tap one to hear it). The look follows the device's light or dark setting.
+
+```bash
+pip install -e ".[app]"                # (setup.sh / setup.ps1 install it)
+flet run src/main.py                   # a desktop window;  flet run --web src/main.py  for the browser
+flet build windows|macos|linux         # an installable desktop app
+flet build apk | ipa                   # a phone app: needs the Flutter SDK (and Xcode for iOS); settings are in pyproject.toml [tool.flet]
+```
+
+`app/controller.py` holds the logic without any screen code, `app/views/` the screens (home, progress, report, settings, camera and microphone sheets), `app/theme.py`
+and `app/widgets.py` the look. The old web GUI (`python src/scripts/serve.py`) still exists beside it.
+
+**What runs on a phone, honestly.** The analysis was written for a computer, and Flet gives a phone the Python language and pure-Python packages, not the programs
+and heavy libraries Maestro uses. `utils/capabilities.py` asks the device what it has, and the app offers what works and says what does not:
+
+| part | computer | phone (as built now) |
+|---|---|---|
+| recording | microphone, or camera with ffmpeg | microphone, saved as WAV (no ffmpeg is needed to read it) |
+| recording formats | anything ffmpeg reads | WAV only |
+| pitch | CREPE network (ONNX Runtime or PyTorch) | the YIN tracker (numpy only) |
+| score | MusicXML, MIDI, PDF or photo (Audiveris) | MusicXML or MIDI (reading a photo needs Audiveris, which is Java) |
+| bowing and posture | VioPose (TensorFlow) | not available |
+| written feedback and chat | a small model through Ollama | not available yet: no model runtime exists for it in this stack |
+| intonation, rhythm, expression, tone | yes | yes |
+
+Scanning pages is built (photos are cleaned of shadow, several pages become one PDF) and works wherever Audiveris is installed; on a phone the button is greyed out with the
+reason. Making the phone version complete would need native pieces that Flet cannot call from Python today: a media decoder (for ffmpeg's job), a pose model
+(Apple Vision / ML Kit), a music reader and an on-device language model (llama.cpp or Core ML). Until then the phone app is the audio-only, MusicXML-score subset above, and a
+computer gives everything. Not yet checked: `flet build` for iOS or Android (no Flutter, Xcode or phone in the build environment), and whether a scipy wheel exists for iOS (the analysis
+needs scipy; if there is none, its few signal functions have to be replaced by numpy ones). The screens were checked by rendering the real Flet client in a headless browser.
+
 ## Folders
 
 | folder | contents |
 |---|---|
+| `src/main.py` | the Flet app's entry point (`app/` in the package: screens, controller, theme) |
 | `src/maestro/` | the package: `preprocessing`, `audio`, `score`, `alignment`, `vision`, `assessment`, `reference`, `feedback`, `fusion` (outlined, not implemented yet), `gui`, `utils` (see the header comment of each file) |
 | `src/scripts/` | command-line tools: `analyze.py`, `serve.py`, `setup_viopose.py`, `convert_viopose.py`, `bench_pitch.py`, `tune_denoise.py` |
 | `src/training/` | (reserved for training scripts) |

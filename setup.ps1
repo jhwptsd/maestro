@@ -76,7 +76,7 @@ if (-not $NoVenv) {
     $activate = Join-Path $venv "Scripts\Activate.ps1"
 }
 
-$extras = "crepe,dev"
+$extras = "crepe,app,dev"
 if ($Neural) { $extras += ",neural" }
 & $python -m pip install -e ".[$extras]"
 if ($LASTEXITCODE -ne 0) {
