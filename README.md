@@ -55,7 +55,11 @@ pip install -e ".[audio,neural,dev]"          # everything except VioPose (which
 The rule-based analysis works as soon as the package is installed; the CLAP judgement is an optional extra on top.
 
 **Web GUI**: `python src/scripts/serve.py [PORT]` (or `maestro-gui`), open http://127.0.0.1:8000, upload a recording (video or
-audio) and the score. A progress bar follows the upload and then the analysis stage by stage (converting the video, finding the pitch,
+audio) and the score, **or record the take and scan the music right there**: "Record with the camera instead" films you with the
+microphone (the stop button puts the take into the form) and "Scan the sheet music with the camera instead" photographs the pages (one photo per page;
+each is cleaned of shadow and uneven light, several become one PDF; reading a scan needs Audiveris, and works best with the page flat and the camera square above it).
+This uses the browser's camera access, which it allows on `localhost` and over https and asks you to permit. Where a browser cannot stream the camera,
+the same buttons open the phone's own camera app instead (front camera for the take, back camera for the page). A progress bar follows the upload and then the analysis stage by stage (converting the video, finding the pitch,
 waiting for the body-movement analysis, which is the slowest step, ...; how far a stage has got is not known, so the bar eases
 towards the end of the current stage). The report is a player: the recording plays with a skeleton of the estimated pose beside it (front and
 side view; VioPose gives 3D joints without a camera calibration, so the pose cannot be drawn over the picture itself), and live
@@ -159,11 +163,10 @@ and bar check, `feedback/chat.py` the conversation, `feedback/settings.py` the s
 
 ### Professional reference (`maestro/reference/`)
 
-Compare your playing with a professional's, without treating the professional as an answer key. Give a recording (an audio or video file, or a
-YouTube link) in the start page ("Optional: compare with a professional recording": a link or a file; the progress bar then has an extra step, and the differences appear among the report's events and in the written feedback), with `analyze.py ... --reference FILE_OR_URL`, or `analyze(..., reference=...)`:
+Compare your playing with a professional's, without treating the professional as an answer key. Give a recording (an audio or video
+file) with `analyze.py ... --reference FILE` or `analyze(..., reference=...)`; the differences appear among the report's events and in the written feedback. (It is a command-line / library feature for now: the start page does not offer it, and links such as YouTube are not supported: download the recording and give its file.)
 
-1. **Load** (`load_video.py`): any file ffmpeg reads, or a YouTube video (needs `pip install yt-dlp`; at most 720 p, one video, no playlists;
-   recordings over an hour are refused). Respect the copyright and terms of the source: the download stays in the analysis folder.
+1. **Load** (`load_video.py`): any audio or video file ffmpeg reads (recordings over an hour are refused). Respect the copyright of the recording.
 2. **Clip** (`process.py`): the recording is aligned with the score and cut, audio and video, to **the bars you played** (plus a short lead-in and tail),
    so only that part is processed. A recording that does not contain those bars is refused with a message (the rest of your analysis is unaffected).
 3. **Isolate** (`isolate.py`): score-informed harmonic masking keeps the soloist's pitch and its partials (the score and the alignment say what the
@@ -188,7 +191,7 @@ YouTube link) in the start page ("Optional: compare with a professional recordin
    the player's event list (there is no separate comparison section) and into the digest that the feedback model reads, exactly like the other modules' (it gets its own slots among the events,
    plus the soloist's choices and the gaps), and it is told never to call such a difference a mistake. `reference.json` (command line) has the baseline.
 
-Not yet: playing the reference alongside the student in the player, portamento and fingering/bowing-direction detection.
+Not yet: a start-page option, playing the reference alongside the student in the player, portamento and fingering/bowing-direction detection.
 
 ### Assessment events and root causes
 

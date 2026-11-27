@@ -16,21 +16,36 @@ h2{margin-top:2em;font-size:1.1em}
 .row{display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center;padding:8px 0;border-top:1px solid #eee}
 .row:first-child{border-top:0}.row small{color:#666}.add{display:flex;gap:8px;flex-wrap:wrap}.add input,.add select{padding:7px;font-size:.95em}
 .add input{flex:1;min-width:200px}a.btn{display:inline-block;padding:7px 12px;border-radius:6px;background:#eee;color:#222;text-decoration:none;font-size:.9em}
+.capture{display:grid;gap:8px;margin-top:8px}.capture video{width:100%;max-height:50vh;background:#000;border-radius:6px}
+.capture .add{align-items:center}
 </style>
 <h1>Maestro: violin feedback</h1>
 <p>Upload a video (or audio) of yourself playing and the score you played from.</p>
 <form id="f">
   <div><label>Recording <span class="hint">(video or audio: mp4, mov, webm, wav, mp3, m4a ...)</span>
-    <input type="file" name="video" accept="video/*,audio/*" required></label></div>
+    <input type="file" name="video" accept="video/*,audio/*" required></label>
+    <div class="capture">
+      <div class="add"><button type="button" class="small plain" id="rec-open">Record with the camera instead</button><span class="hint" id="rec-info"></span></div>
+      <div id="rec-panel" class="capture" hidden>
+        <video id="rec-video" playsinline muted></video>
+        <div class="add"><button type="button" class="small" id="rec-go">Start recording</button>
+          <button type="button" class="small plain" id="rec-flip">Switch camera</button><button type="button" class="small plain" id="rec-cancel">Cancel</button></div>
+      </div>
+      <input type="file" id="rec-phone" accept="video/*" capture="user" hidden>
+    </div></div>
   <div><label>Score <span class="hint">(MusicXML, .mxl, MIDI, or PDF/image if Audiveris is installed)</span>
-    <input type="file" name="score" accept=".musicxml,.xml,.mxl,.mid,.midi,.pdf,.png,.jpg,.jpeg,.tif,.tiff" required></label></div>
-  <details><summary class="hint">Optional: compare with a professional recording</summary>
-    <div style="display:grid;gap:10px;margin-top:8px">
-      <div class="hint">Maestro cuts it to the bars you played, keeps the soloist, and shows what the professional did, marking their own musical choices as choices.
-      Give a YouTube link <i>or</i> a file (respect its copyright; it stays on this computer).</div>
-      <div><label>YouTube link <input type="url" name="reference_url" placeholder="https://www.youtube.com/watch?v=..." style="display:block;margin-top:6px;width:100%;padding:7px;box-sizing:border-box"></label></div>
-      <div><label>or a recording file <input type="file" name="reference" accept="video/*,audio/*"></label></div>
-    </div></details>
+    <input type="file" name="score" accept=".musicxml,.xml,.mxl,.mid,.midi,.pdf,.png,.jpg,.jpeg,.tif,.tiff" required></label>
+    <div class="capture">
+      <div class="add"><button type="button" class="small plain" id="scan-open">Scan the sheet music with the camera instead</button><span class="hint" id="scan-info"></span></div>
+      <div id="scan-panel" class="capture" hidden>
+        <video id="scan-video" playsinline muted></video>
+        <div class="hint">Lay the page flat in good light and hold the camera square above it, filling the view; take one photo per page.</div>
+        <div class="add"><button type="button" class="small" id="scan-shot">Take photo</button><button type="button" class="small" id="scan-done" disabled>Use this page</button>
+          <button type="button" class="small plain" id="scan-flip">Switch camera</button><button type="button" class="small plain" id="scan-cancel">Cancel</button></div>
+        <div class="add" id="scan-pages"></div>
+      </div>
+      <input type="file" id="scan-phone" accept="image/*" capture="environment" hidden>
+    </div></div>
   <div><button id="go">Analyze</button></div>
   <div id="progress" hidden><progress id="bar" max="1000" value="0"></progress><div id="progress-label" role="status"></div></div>
   <div id="status" role="status"></div>
@@ -52,6 +67,7 @@ h2{margin-top:2em;font-size:1.1em}
   <div id="ai-status" role="status"></div>
 </div>
 <script>
+/*CAPTURE_JS*/
 const f = document.getElementById("f"), status = document.getElementById("status"), go = document.getElementById("go"),
       box = document.getElementById("progress"), bar = document.getElementById("bar"), barLabel = document.getElementById("progress-label");
 

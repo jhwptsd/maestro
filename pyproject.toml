@@ -18,7 +18,6 @@ crepe = ["torch>=2.0", "torchcrepe>=0.0.23", "librosa>=0.10.2", "onnx", "onnxrun
 directml = ["onnxruntime-directml"]           # Windows: runs the CREPE network on any DirectX 12 GPU (AMD, Intel, NVIDIA); REPLACES onnxruntime (pip uninstall onnxruntime first; setup.ps1 does)
 pyin = ["librosa>=0.10.2"]
 basic-pitch = ["basic-pitch>=0.3.0"]
-reference = ["yt-dlp[default]"]                          # reading a YouTube link as the professional reference
 separation = ["torch>=2.0", "torchaudio", "demucs"]   # optional Demucs stem separation of the reference (analyze --separate)
 neural = ["torch>=2.0", "transformers>=4.40"]   # the optional CLAP tone/expression judgement (analyze(neural="clap"))
 audio = ["torch>=2.0", "torchcrepe>=0.0.23", "librosa>=0.10.2", "basic-pitch>=0.3.0"]   # all four pitch backends
@@ -28,7 +27,7 @@ where = ["src"]
 include = ["maestro*"]
 
 [tool.setuptools.package-data]
-maestro = ["gui/*.html"]
+maestro = ["gui/*.html", "gui/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["src/tests"]

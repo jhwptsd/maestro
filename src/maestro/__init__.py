@@ -124,7 +124,7 @@ def analyze(video_path, score_path, out_dir=None, denoise=True,
     "pose", "visual", "neural", "assess") and with "done" at the end (utils/progress.Tracker turns these into a progress bar).
     neural: None (default) or "clap" to add the pretrained CLAP tone/expression judgement (assessment/neural.py; needs
     transformers + torch and downloads ~600 MB once; if it cannot load, the analysis continues without it).
-    reference: a professional recording (file path or YouTube link) to compare with. It is processed after the student's analysis (reference/):
+    reference: a professional recording (a file path) to compare with (a command-line / library feature: the GUI does not offer it for now). It is processed after the student's analysis (reference/):
     clipped to the bars the student played, the soloist isolated, gaps kept where the camera or the sound is lost, and its measurements
     become a baseline with the soloist's interpretive choices marked; the differences are events of the module "reference" (assessment/reference.py,
     in the synthesis like the other modules, with interpretive choices as their cause) and the baseline is perf.reference. A reference

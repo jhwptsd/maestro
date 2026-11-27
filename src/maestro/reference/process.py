@@ -1,9 +1,9 @@
 # Process a professional reference recording into a baseline (rewritten from the outline).
 #
 # `process_reference(perf, source, out_dir)` takes the student's analysed Performance (its score and the stretch of it that was played) and a
-# professional recording (an audio or video file, or a YouTube link) and stores the result in `perf.reference` (a dict, see the end of this
+# professional recording (an audio or video file) and stores the result in `perf.reference` (a dict, see the end of this
 # comment). Steps, each reusing the pipeline that analyses the student:
-#   1. load_video.load_reference: the file, or the downloaded YouTube video.
+#   1. load_video.load_reference: the file.
 #   2. Pitch, notes and alignment with the score over the whole recording (preprocessing/audio.extract_audio, audio/, alignment/): this finds
 #      where each bar is played. A recording that does not contain the student's bars is refused (MismatchError). This first pass uses a
 #      single-voice pitch tracker, so it assumes the soloist is the loudest voice, as in a normal concerto recording.
@@ -14,7 +14,7 @@
 #   5. Video, if there is one: pose with VioPose (vision/pose_estimation.py, as for the student) and gaps.py: camera cuts, lost pose and a
 #      different framing become gaps, and bow strokes are measured only between them.
 #   6. baseline.py: the profile of the soloist (the same measurements as the student's, baseline.profile) and the choices the soloist visibly made.
-# perf.reference = {"source": {"origin", "title", "url"}, "clip": {"first_measure", "last_measure", "start", "end"}, "audio": {"samples", "sr"},
+# perf.reference = {"source": {"origin", "title"}, "clip": {"first_measure", "last_measure", "start", "end"}, "audio": {"samples", "sr"},
 #   "audio_features", "alignment", "pose" (or None), "visual_status", "gaps": {"audio": [...], "video": [...]} (seconds in the clip, each with a
 #   reason), "profile", "choices", "separation", "timings"}. Times in the clip start at 0 (the clip's start in the original recording is
 #   clip["start"]). reference/compare.py compares a student's profile against it.
@@ -64,11 +64,11 @@ def _analyze(y, sr, score, pitch_backend, pitch_options):
 
 def process_reference(perf, source, out_dir, measures=None, pitch_backend=DEFAULT_PITCH_BACKEND, pitch_options=None, separate=False,
                       pose_file=None, progress=None):
-    """Process the reference `source` (file or YouTube link) against `perf`'s score and fill perf.reference (see the module comment).
+    """Process the reference `source` (a file) against `perf`'s score and fill perf.reference (see the module comment).
     measures: (first, last) bars to clip to; default the bars the student played (perf.assessment["section"]), else the whole score.
     separate: run Demucs first (needs `pip install demucs`; skipped with a note in "separation" when missing).
     pose_file: a saved pose.json of the clipped reference, instead of running VioPose.
-    Raises InputError / MismatchError for unusable references, ToolMissingError for a missing yt-dlp or ffmpeg."""
+    Raises InputError / MismatchError for unusable references, ToolMissingError for a missing ffmpeg."""
     step = progress or (lambda stage: None)
     score = perf.score_features
     work = Path(out_dir) / "reference"
@@ -129,7 +129,7 @@ def process_reference(perf, source, out_dir, measures=None, pitch_backend=DEFAUL
     prof = baseline.profile(score, notes2, alignment2, isolated["samples"], sr, frames2, strokes,
                             lambda a, b: isolate.presence_in(isolated, a, b))
     perf.reference = {
-        "source": {k: loaded[k] for k in ("origin", "title", "url")},
+        "source": {k: loaded[k] for k in ("origin", "title")},
         "clip": {"first_measure": first, "last_measure": last, "start": t0, "end": t1},
         "audio": {"samples": isolated["samples"], "sr": sr},
         "audio_features": {"notes": notes2, "frames": frames2, "pitch_backend": track2.backend},

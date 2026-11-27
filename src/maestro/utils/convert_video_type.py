@@ -7,6 +7,7 @@
 # at most 720 px high, even dimensions. Requires the ffmpeg/ffprobe binaries on PATH; ffprobe also
 # identifies files by *content*, so a wrong extension on a user upload does not matter.
 import json
+import re
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -31,11 +32,20 @@ def probe(path):
     # cover art in audio files shows up as a "video" stream; ignore single-frame attached pictures
     video = next((s for s in streams if s.get("codec_type") == "video"
                   and not s.get("disposition", {}).get("attached_pic")), None)
+    duration = float(info.get("format", {}).get("duration") or 0.0)
     return {"has_video": video is not None,
             "has_audio": any(s.get("codec_type") == "audio" for s in streams),
-            "duration": float(info.get("format", {}).get("duration") or 0.0),
+            "duration": duration if duration > 0 else _decoded_duration(path),
             "width": video.get("width") if video else None,
             "height": video.get("height") if video else None}
+
+
+def _decoded_duration(path):
+    """Duration (s) found by decoding the file. A recording made in a browser (MediaRecorder: webm) has no duration in its header, so ffprobe
+    reports none; the last progress line of a decode to nowhere says how long it really is. 0.0 if that fails too."""
+    r = subprocess.run([tool("ffmpeg"), "-v", "error", "-stats", "-i", str(path), "-f", "null", "-"], capture_output=True, text=True)
+    times = re.findall(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)", r.stderr)
+    return float(int(times[-1][0]) * 3600 + int(times[-1][1]) * 60 + float(times[-1][2])) if times else 0.0
 
 
 @lru_cache(maxsize=1)

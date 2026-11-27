@@ -29,10 +29,10 @@ MIN_GAP_S = 0.3                   # shorter absences are not reported as gaps
 def preseparate(y, sr):
     """The 'other' stem of Demucs (no drums, bass or vocals) as mono at `sr`; None when demucs is not installed."""
     try:
+        from demucs.apply import apply_model              # (first: without demucs nothing heavy gets imported)
+        from demucs.pretrained import get_model
         import torch
         import torchaudio
-        from demucs.apply import apply_model
-        from demucs.pretrained import get_model
     except ImportError:
         return None
     model = get_model("htdemucs").eval()

@@ -2,11 +2,7 @@
 choices, and the comparison (synthetic recordings: the Minuet with an 'orchestra' under it)."""
 import json
 import tempfile
-import threading
-import time
 import unittest
-import urllib.error
-import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -15,14 +11,14 @@ import numpy as np
 from helpers import SR, make_video, synth, write_wav
 from minuet import BARS, MIDIS, minuet_musicxml, play_minuet
 from pose_fixture import minuet_notes, synth_pose
-from test_gui import HAS_BROWSER, multipart, page_data, performance
+from test_gui import page_data, performance
 from maestro import analyze
 from maestro.gui import server as gui_server
 from maestro.gui.report import build_page
 from maestro.reference import baseline, gaps, isolate, load_video
 from maestro.reference.compare import compare_to_reference
 from maestro.reference.process import clip_range, reference_summary
-from maestro.utils.errors import InputError, MismatchError, ToolMissingError
+from maestro.utils.errors import InputError
 from maestro.vision.pose_io import Pose, save_pose
 
 ORCHESTRA_HZ = (233.1, 311.1, 466.2)          # not partials of anything in the melody (G major), so they can be told apart
@@ -42,95 +38,16 @@ def band_energy(y, hz, width=6.0):
 
 
 class Loading(unittest.TestCase):
-    def test_a_file_is_probed_and_other_links_and_missing_files_are_refused(self):
+    def test_a_file_is_probed_and_links_and_missing_files_are_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             wav = Path(tmp) / "pro.wav"
             write_wav(wav, synth([(69, 0.2, 1.0)]))
             found = load_video.load_reference(wav, tmp)
-            self.assertEqual((found["origin"], found["title"], found["url"]), ("file", "pro", None))
-            with self.assertRaisesRegex(InputError, "Only YouTube"):
+            self.assertEqual((found["origin"], found["title"]), ("file", "pro"))
+            with self.assertRaisesRegex(InputError, "Links are not supported"):
                 load_video.load_reference("https://example.com/video.mp4", tmp)
             with self.assertRaises(InputError):
                 load_video.load_reference(Path(tmp) / "missing.mp4", tmp)
-
-    def test_youtube_links_are_recognised_and_need_yt_dlp(self):
-        self.assertTrue(all(load_video.is_youtube(u) for u in ("https://www.youtube.com/watch?v=abc", "https://youtu.be/abc", "http://m.youtube.com/watch?v=1")))
-        self.assertFalse(load_video.is_youtube("https://notyoutube.com/watch?v=abc"))
-        with mock.patch.dict("sys.modules", {"yt_dlp": None}), tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(ToolMissingError, "yt-dlp"):
-            load_video.load_reference("https://youtu.be/abc", tmp)
-
-    def fake_yt_dlp(self, behaviour):
-        """A stand-in for the yt_dlp module: YoutubeDL(options).extract_info(url, download=True) runs `behaviour(options)`."""
-        class YoutubeDLError(Exception):
-            pass
-
-        class FakeDL:
-            def __init__(self, options):
-                FakeDL.options = options
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def extract_info(self, url, download):
-                return behaviour(FakeDL.options)
-
-        return mock.MagicMock(YoutubeDL=FakeDL, utils=mock.MagicMock(YoutubeDLError=YoutubeDLError, match_filter_func=lambda expr: expr)), FakeDL
-
-    def test_a_youtube_video_is_downloaded_with_one_video_no_playlist_and_ffmpeg_found(self):
-        def download(options):
-            path = Path(options["outtmpl"].replace("%(ext)s", "wav"))
-            write_wav(path, synth([(69, 0.2, 1.0)]))
-            return {"title": "A Violin Concerto", "requested_downloads": [{"filepath": str(path)}]}
-
-        fake, dl = self.fake_yt_dlp(download)
-        with mock.patch.dict("sys.modules", {"yt_dlp": fake}), tempfile.TemporaryDirectory() as tmp:
-            found = load_video.load_reference("https://youtu.be/abc", tmp)
-        self.assertEqual((found["origin"], found["title"], found["url"]), ("youtube", "A Violin Concerto", "https://youtu.be/abc"))
-        self.assertTrue(dl.options["noplaylist"] and "height<=720" in dl.options["format"])
-        self.assertTrue(Path(dl.options["ffmpeg_location"]).is_dir())                    # merging needs ffmpeg, which is not always on PATH
-        self.assertIn(str(load_video.MAX_SECONDS), dl.options["match_filter"])            # the length limit is applied before downloading
-
-    def test_a_failed_merge_is_retried_with_one_ready_made_file(self):
-        calls = []
-
-        def behaviour(options):
-            calls.append(options)
-            if len(calls) == 1:
-                path = Path(options["outtmpl"].replace("%(ext)s", "f137.mp4"))
-                path.write_bytes(b"half")                                                               # what a failed merge leaves behind
-                raise fake.utils.YoutubeDLError("ERROR: Postprocessing: Stream #1:0 -> #0:1 (copy)\nConversion failed!")
-            path = Path(options["outtmpl"].replace("%(ext)s", "wav"))
-            write_wav(path, synth([(69, 0.2, 1.0)]))
-            return {"title": "T", "requested_downloads": [{"filepath": str(path)}]}
-
-        fake, _ = self.fake_yt_dlp(behaviour)
-        with mock.patch.dict("sys.modules", {"yt_dlp": fake}), tempfile.TemporaryDirectory() as tmp:
-            found = load_video.load_reference("https://youtu.be/abc", tmp)
-            self.assertFalse(list(Path(tmp).glob("reference.f137*")))                                   # the half-merged file was removed
-        self.assertEqual(found["title"], "T")
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0]["merge_output_format"], "mkv")                                        # merged into a container that takes any codecs
-        self.assertNotIn("merge_output_format", calls[1])                                               # then no merge at all
-
-    def test_a_video_skipped_by_the_length_filter_is_explained(self):
-        fake, _ = self.fake_yt_dlp(lambda options: {"title": "Very long"})
-        with mock.patch.dict("sys.modules", {"yt_dlp": fake}), tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(InputError, "longer than 60 minutes"):
-            load_video.load_reference("https://youtu.be/abc", tmp)
-
-    def test_download_failures_show_the_real_reason_and_what_to_try(self):
-        for message, expected in (("ERROR: [youtube] abc: Sign in to confirm you're not a bot", "sign-in"),
-                                  ("ERROR: [youtube] abc: Requested format is not available", "pip install -U yt-dlp"),
-                                  ("ERROR: [youtube] abc: n challenge solving failed: no JavaScript runtime", "Node.js")):
-            fake, _ = self.fake_yt_dlp(lambda options: (_ for _ in ()).throw(fake.utils.YoutubeDLError(message)))
-            with mock.patch.dict("sys.modules", {"yt_dlp": fake}), tempfile.TemporaryDirectory() as tmp, self.assertRaises(InputError) as caught:
-                load_video.load_reference("https://youtu.be/abc", tmp)
-            text = str(caught.exception)
-            self.assertIn(message.removeprefix("ERROR: ")[:40], text)                      # yt-dlp's own words are kept
-            self.assertIn(expected, text)
-            self.assertIn("pip install -U yt-dlp", text)
 
 
 class Isolation(unittest.TestCase):
@@ -416,89 +333,18 @@ class WithVideo(unittest.TestCase):
             self.assertFalse([e for e in result["events"] if e["category"] == "bowing_vs_reference" and e["measure"] in blind])
 
 
-class InTheGui(unittest.TestCase):
-    """The start page's reference inputs, the server's handling of them and the report's reference card."""
+class NotInTheGui(unittest.TestCase):
+    """The GUI offers no reference for now (it is a command-line / library feature): nothing on the start page, nothing in the report."""
 
-    @classmethod
-    def setUpClass(cls):
-        cls.srv = gui_server.make_server(port=0)
-        cls.url = f"http://127.0.0.1:{cls.srv.server_port}"
-        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.srv.shutdown()
-        cls.srv.server_close()
-
-    def start(self, files):
-        ctype, body = multipart(files)
-        request = urllib.request.Request(self.url + "/api/analyze", body, {"Content-Type": ctype})
-        try:
-            with urllib.request.urlopen(request) as r:
-                return r.status, json.loads(r.read())
-        except urllib.error.HTTPError as e:
-            return e.code, json.loads(e.read())
-
-    def finish(self, job):
-        for _ in range(3000):
-            with urllib.request.urlopen(f"{self.url}/api/job/{job}") as r:
-                status = json.loads(r.read())
-            if status["state"] != "running":
-                return status
-            time.sleep(0.1)
-
-    def uploads(self):
-        return {"video": ("take.wav", write_bytes(play_minuet(bars=slice(2, 5), jitter=0.01))),
-                "score": ("piece.musicxml", minuet_musicxml(100).encode())}
-
-    def test_the_start_page_offers_a_youtube_link_and_a_file(self):
-        with urllib.request.urlopen(self.url + "/") as r:
-            page = r.read().decode()
-        self.assertIn('name="reference_url"', page)
-        self.assertIn('name="reference"', page)
-
-    def test_a_reference_file_is_analysed_and_shown_in_the_report(self):
-        status, data = self.start({**self.uploads(), "reference": ("pro.wav", write_bytes(with_orchestra(play_minuet(bpm=80, jitter=0.01, seed=3))))})
-        self.assertEqual(status, 202)
-        final = self.finish(data["job"])
-        self.assertEqual(final["state"], "done", final)
-        with urllib.request.urlopen(self.url + final["url"]) as r:
-            page = r.read().decode()
-        self.assertNotIn("reference", page_data(page))                                       # no separate section: the differences are events
-        self.assertNotIn("Compared with a professional", page)
-        self.assertTrue(any(e["module"] == "reference" for e in page_data(page)["events"]))                # the events are in the list like every other module's
-
-    def test_the_bar_includes_the_reference_stage_only_when_a_reference_is_given(self):
-        with mock.patch.object(gui_server, "analyze", side_effect=InputError("stop")) as fake:
-            status, data = self.start({**self.uploads(), "reference_url": ("", b"https://youtu.be/abc123")})
-            self.assertEqual(self.finish(data["job"])["state"], "error")
-            self.assertEqual(fake.call_args.kwargs["reference"], "https://youtu.be/abc123")
-            status, data = self.start(self.uploads())
-            self.finish(data["job"])
-            self.assertIsNone(fake.call_args.kwargs["reference"])
-
-    def test_only_youtube_links_are_accepted(self):
-        status, data = self.start({**self.uploads(), "reference_url": ("", b"https://example.com/a.mp4")})
-        self.assertEqual(status, 400)
-        self.assertIn("YouTube", data["error"])
-
-    def test_there_is_no_professional_comparison_section_in_the_report(self):
+    def test_the_start_page_and_the_report_have_no_reference_section(self):
+        start = gui_server.INDEX
+        self.assertNotIn("reference", start.lower())
+        self.assertNotIn("youtube", start.lower())
         with tempfile.TemporaryDirectory() as tmp:
-            perf = performance(Path(tmp))
-            page = build_page(perf, "media.mp4")
+            page = build_page(performance(Path(tmp)), "media.mp4")
         self.assertNotIn('id="reference"', page)
         self.assertNotIn("Compared with a professional", page)
         self.assertNotIn("reference", page_data(page))
-
-
-def write_bytes(y):
-    import io
-    import wave
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as w:
-        w.setnchannels(1), w.setsampwidth(2), w.setframerate(SR)
-        w.writeframes((np.clip(y, -1, 1) * 32767).astype("<i2").tobytes())
-    return buffer.getvalue()
 
 
 def probe_duration(path):

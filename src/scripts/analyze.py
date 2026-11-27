@@ -28,7 +28,7 @@ def main():
     parser.add_argument("--crepe-model", choices=("tiny", "full"), default="full")
     parser.add_argument("--neural", choices=("clap",), default=None,
                         help="add the pretrained CLAP tone/expression judgement (needs transformers + torch)")
-    parser.add_argument("--reference", default=None, metavar="FILE_OR_YOUTUBE_URL",
+    parser.add_argument("--reference", default=None, metavar="FILE",
                         help="a professional recording to compare with (clipped to the bars you played, soloist isolated; see the README)")
     parser.add_argument("--reference-pose", default=None, metavar="POSE_JSON",
                         help="a saved pose.json of the clipped reference video, instead of running VioPose on it")
