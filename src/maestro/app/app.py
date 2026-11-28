@@ -146,8 +146,23 @@ class App:
         self.report()
 
 
+DESKTOP_SIZE, DESKTOP_MIN = (1000, 860), (400, 640)        # a comfortable window that can still shrink to a phone's shape (the screens are responsive)
+
+
+def is_desktop(page):
+    return page.platform in (ft.PagePlatform.WINDOWS, ft.PagePlatform.MACOS, ft.PagePlatform.LINUX)
+
+
+def desktop_window(page):
+    """The window of the installed desktop app: title, size and a minimum (no effect on a phone or in a browser)."""
+    if is_desktop(page):
+        page.window.width, page.window.height = DESKTOP_SIZE
+        page.window.min_width, page.window.min_height = DESKTOP_MIN
+
+
 def main(page):
     if os.environ.get("FLET_APP_STORAGE_DATA"):                  # on a phone the app keeps its settings in its own folder
         os.environ.setdefault("MAESTRO_CONFIG", os.environ["FLET_APP_STORAGE_DATA"])
     theme.apply(page)
+    desktop_window(page)
     App(page).home()

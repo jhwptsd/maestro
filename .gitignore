@@ -10,3 +10,4 @@ data/*
 models/onnx/
 .venv/
 venv/
+src/assets/models/*.onnx

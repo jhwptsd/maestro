@@ -235,6 +235,27 @@ flet build apk | ipa                   # a phone app: needs the Flutter SDK (and
 `app/controller.py` holds the logic without any screen code, `app/views/` the screens (home, progress, report, settings, camera and microphone sheets), `app/theme.py`
 and `app/widgets.py` the look. The old web GUI (`python src/scripts/serve.py`) still exists beside it.
 
+### The Windows, macOS and Linux app
+
+`flet build` makes an installable desktop app from the same code: a native window with its own Python inside, no terminal and no `pip`. Each system is built on itself
+(Flutter builds for the platform it runs on), and the GitHub workflow `.github/workflows/desktop.yml` does all three, running the tests first and keeping the results as downloads.
+
+```bash
+python src/scripts/build_desktop.py          # on Windows, macOS or Linux: exports the CREPE network, then `flet build` (needs the Flutter SDK)
+```
+
+- **Inside the app:** Python, numpy, scipy, Pillow, ONNX Runtime and **the CREPE network already exported** (`src/scripts/export_crepe_onnx.py` runs at build time into
+  `src/assets/models`). CREPE no longer needs PyTorch: framing, the Viterbi decoding and the network call are numpy and ONNX Runtime (`audio/backends/crepe_numpy.py`, checked
+  against torchcrepe to within 1.5 cents), so the installer is hundreds of megabytes smaller. Models and settings are kept in the app's own writable folder.
+- **Installed by the user, found by the app:** ffmpeg (any recording format and video; Settings shows the one-line install command for the system), Ollama (the writing model;
+  Settings downloads small models into it) and, optional, Audiveris (scanning a score).
+- **Not in the installer:** body movement (VioPose needs its own Python 3.9 environment, made by `setup_viopose.py` from a repository checkout; point the app at it with the
+  `VIOPOSE_DIR` and `VIOPOSE_PYTHON` environment variables). Without it the app does everything else and says so.
+- The window opens at 1000 x 860 and shrinks to a phone's shape; the macOS entitlements (microphone, camera, reaching Ollama) and usage texts are in `pyproject.toml`; the
+  icon is `src/assets/icon.png` (`src/scripts/make_icon.py` draws it).
+- **Not yet run:** a real build on each system (no Flutter in the environment this was written in), the workflow on GitHub, code signing and notarisation (macOS needs an Apple
+  developer account; Windows installers show a warning until signed), and an installer package (`flet build` gives the app folder or bundle).
+
 **What runs on a phone, honestly.** The analysis was written for a computer, and Flet gives a phone the Python language and pure-Python packages, not the programs
 and heavy libraries Maestro uses. `utils/capabilities.py` asks the device what it has, and the app offers what works and says what does not:
 
@@ -242,7 +263,7 @@ and heavy libraries Maestro uses. `utils/capabilities.py` asks the device what i
 |---|---|---|
 | recording | microphone, or camera with ffmpeg | microphone, saved as WAV (no ffmpeg is needed to read it) |
 | recording formats | anything ffmpeg reads | WAV only |
-| pitch | CREPE network (ONNX Runtime or PyTorch) | the YIN tracker (numpy only) |
+| pitch | CREPE network (ONNX Runtime, no PyTorch needed; or PyTorch) | the YIN tracker (numpy only) |
 | score | MusicXML, MIDI, PDF or photo (Audiveris) | MusicXML or MIDI (reading a photo needs Audiveris, which is Java) |
 | bowing and posture | VioPose (TensorFlow) | not available |
 | written feedback and chat | a small model through Ollama | not available yet: no model runtime exists for it in this stack |
@@ -260,7 +281,7 @@ needs scipy; if there is none, its few signal functions have to be replaced by n
 |---|---|
 | `src/main.py` | the Flet app's entry point (`app/` in the package: screens, controller, theme) |
 | `src/maestro/` | the package: `preprocessing`, `audio`, `score`, `alignment`, `vision`, `assessment`, `reference`, `feedback`, `fusion` (outlined, not implemented yet), `gui`, `utils` (see the header comment of each file) |
-| `src/scripts/` | command-line tools: `analyze.py`, `serve.py`, `setup_viopose.py`, `convert_viopose.py`, `bench_pitch.py`, `tune_denoise.py` |
+| `src/scripts/` | command-line tools: `analyze.py`, `serve.py`, `setup_viopose.py`, `convert_viopose.py`, `bench_pitch.py`, `tune_denoise.py`, `build_desktop.py`, `export_crepe_onnx.py`, `make_icon.py`, `ios_audit.py` |
 | `src/training/` | (reserved for training scripts) |
 | `src/tests/` | the tests (`pytest`) |
 | `src/docs/` | longer documentation (visual analysis, VioPose, visual pitch) |

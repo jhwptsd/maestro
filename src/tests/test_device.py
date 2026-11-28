@@ -108,7 +108,7 @@ class CrepeOnnx(unittest.TestCase):
     def test_an_unavailable_onnx_path_falls_back_to_pytorch_with_a_warning(self):
         from maestro.audio.backends import crepe
         y, sr = self.tone(seconds=1.0)
-        with mock.patch.object(self.crepe_onnx, "make_infer", side_effect=RuntimeError("no provider")):
+        with mock.patch.object(self.crepe_onnx, "make_run", side_effect=RuntimeError("no provider")):
             with self.assertWarnsRegex(UserWarning, "using PyTorch on the CPU"):
                 track = crepe.estimate(y, sr, model="tiny")
         self.assertEqual(track.runtime, "torch:cpu")
@@ -117,22 +117,21 @@ class CrepeOnnx(unittest.TestCase):
     def test_a_provider_that_fails_mid_run_is_redone_on_the_cpu(self):
         from maestro.audio.backends import crepe
 
-        def broken(frames, model="tiny", device="cpu", embed=False):
+        def broken(frames):
             raise RuntimeError("device lost")
 
         y, sr = self.tone(seconds=1.0)
-        with mock.patch.object(self.crepe_onnx, "make_infer", return_value=broken):
-            with self.assertWarnsRegex(UserWarning, "redoing it on the CPU"):
+        with mock.patch.object(self.crepe_onnx, "make_run", return_value=broken):
+            with self.assertWarnsRegex(UserWarning, "device lost"):
                 track = crepe.estimate(y, sr, model="tiny")
-        self.assertEqual(track.runtime, "torch:cpu")
-        self.assertIs(torchcrepe.core.infer.__name__, "infer")                                  # torchcrepe was left as it was
+        self.assertEqual(track.runtime, "torch:cpu")                                            # redone on PyTorch's CPU
 
     def test_a_gpu_provider_means_the_full_model_by_default(self):
         from maestro.audio.backends import crepe
         seen = []
         with mock.patch.object(crepe_choose := __import__("maestro.utils.device", fromlist=["x"]), "choose",
                                return_value=("onnx", "DmlExecutionProvider")), \
-                mock.patch.object(self.crepe_onnx, "make_infer", side_effect=lambda model, provider: seen.append((model, provider)) or (_ for _ in ()).throw(RuntimeError("stop"))):
+                mock.patch.object(self.crepe_onnx, "make_run", side_effect=lambda model, provider: seen.append((model, provider)) or (_ for _ in ()).throw(RuntimeError("stop"))):
             with self.assertWarns(UserWarning):
                 crepe.estimate(*self.tone(seconds=0.5))
         self.assertEqual(seen, [("full", "DmlExecutionProvider")])                              # full is cheap on a GPU

@@ -1,0 +1,39 @@
+# Builds the desktop apps (Windows, macOS, Linux) with `flet build` and keeps them as downloadable artifacts. Each runs on its own system: Flutter builds for the
+# platform it runs on. Written from Flet's documentation and not yet run on GitHub: the first run may need small changes (Flutter version, Linux packages,
+# macOS signing). The tests run first, so a build is only made from code that passes them.
+name: desktop
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-latest, target: windows}
+          - {os: macos-latest, target: macos}
+          - {os: ubuntu-latest, target: linux}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable}
+      - name: Linux packages for Flutter and the video player
+        if: matrix.target == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev ninja-build clang cmake pkg-config libmpv-dev mpv
+      - name: Install Maestro, the app, and what exports the CREPE network (a build machine only; the app itself has no PyTorch)
+        run: python -m pip install -e ".[app,dev]" torch torchcrepe onnx onnxruntime librosa
+      - name: Tests
+        run: python -m unittest discover -s src/tests
+        env: {PYTHONPATH: src}
+      - name: Build
+        run: python src/scripts/build_desktop.py ${{ matrix.target }}
+        env: {PYTHONPATH: src}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maestro-${{ matrix.target }}
+          path: build/${{ matrix.target }}

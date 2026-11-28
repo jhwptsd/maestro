@@ -9,6 +9,7 @@
 #   4. PyTorch on the CPU
 # `MAESTRO_DEVICE` (or a `device` argument) overrides: "auto", "cpu", a torch device ("cuda", "cuda:1", "mps", "xpu") or
 # "onnx" (ONNX Runtime's GPU provider). A GPU path that fails at run time falls back to the CPU, with a warning.
+import importlib.util
 import os
 
 ENV = "MAESTRO_DEVICE"
@@ -18,6 +19,8 @@ GPU_PROVIDERS = ("CUDAExecutionProvider", "ROCMExecutionProvider", "MIGraphXExec
 
 def torch_accelerator():
     """'cuda:0', 'xpu' or 'mps' if PyTorch can use that accelerator, else None."""
+    if importlib.util.find_spec("torch") is None:               # not installed (an installed desktop app does without it): nothing to import or try
+        return None
     try:
         import torch
     except ImportError:

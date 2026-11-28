@@ -48,6 +48,15 @@ path = "src"
 NSMicrophoneUsageDescription = "Maestro listens to your playing to give you feedback."
 NSCameraUsageDescription = "Maestro uses the camera to film your take and to scan your sheet music."
 
+[tool.flet.macos.entitlement]
+"com.apple.security.network.client" = true          # reaching Ollama on this computer
+"com.apple.security.device.audio-input" = true
+"com.apple.security.device.camera" = true
+
+[tool.flet.macos.info]
+NSMicrophoneUsageDescription = "Maestro listens to your playing to give you feedback."
+NSCameraUsageDescription = "Maestro uses the camera to film your take and to scan your sheet music."
+
 [tool.flet.android.permission]
 "android.permission.RECORD_AUDIO" = true
 "android.permission.CAMERA" = true

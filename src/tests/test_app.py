@@ -1,6 +1,7 @@
 """The Flet app without a screen: the controller (analysis, feedback, chat), the views as control trees, and the App's actions against a stand-in page and
 stand-in camera, recorder and file picker. (No Flutter client runs here, so what is checked is the logic and the content of every screen, not pixels.)"""
 import asyncio
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -433,13 +434,66 @@ class Packaging(unittest.TestCase):
         phone = (root / "src" / "requirements.txt").read_text()
         for needed in ("numpy", "scipy", "Pillow", "flet-camera", "flet-audio-recorder", "flet-video"):
             self.assertIn(needed, phone)
-        for impossible in ("torch", "onnxruntime", "tensorflow"):
-            self.assertNotIn(impossible, [line.split("#")[0].strip().split(">")[0] for line in phone.splitlines()])
+        names = [line.split("#")[0].strip() for line in phone.splitlines() if line.split("#")[0].strip()]
+        for impossible in ("torch", "tensorflow", "librosa"):
+            self.assertNotIn(impossible, [n.split(">")[0].split(";")[0].strip() for n in names])
+        runtime = next(n for n in names if n.startswith("onnxruntime"))                  # on a computer only: a phone has no wheel for it
+        self.assertIn("sys_platform", runtime)
+        self.assertNotIn("ios", runtime)
         import tomllib
         config = tomllib.loads((root / "pyproject.toml").read_text())
         self.assertEqual(config["tool"]["flet"]["app"]["path"], "src")
         self.assertIn("NSMicrophoneUsageDescription", config["tool"]["flet"]["ios"]["info"])
         self.assertIn("app", config["project"]["optional-dependencies"])
+
+
+class DesktopShell(unittest.TestCase):
+    """The pieces of the Windows / macOS / Linux app that can be checked without building it (a build needs Flutter on each system)."""
+    root = Path(__file__).resolve().parents[2]
+
+    def test_the_window_is_sized_on_a_computer_and_left_alone_elsewhere(self):
+        from maestro.app import app as app_module
+        for platform, sized in ((ft.PagePlatform.WINDOWS, True), (ft.PagePlatform.MACOS, True), (ft.PagePlatform.LINUX, True), (ft.PagePlatform.IOS, False),
+                                (ft.PagePlatform.ANDROID, False)):
+            page = SimpleNamespace(platform=platform, window=SimpleNamespace(width=None, height=None, min_width=None, min_height=None))
+            app_module.desktop_window(page)
+            self.assertEqual((page.window.width, page.window.height, page.window.min_width) if sized else page.window.width,
+                             (*app_module.DESKTOP_SIZE, app_module.DESKTOP_MIN[0]) if sized else None, platform)
+
+    def test_the_icon_is_a_big_rounded_square_with_a_transparent_corner(self):
+        from PIL import Image
+        icon = Image.open(self.root / "src" / "assets" / "icon.png")
+        self.assertEqual((icon.size, icon.mode), ((1024, 1024), "RGBA"))
+        self.assertEqual(icon.getpixel((0, 0))[3], 0)                                           # the corner is cut away
+        self.assertEqual(icon.getpixel((512, 512))[3], 255)
+        sys.path.insert(0, str(self.root / "src" / "scripts"))
+        import make_icon
+        self.assertEqual(make_icon.draw().tobytes(), icon.tobytes())                            # the file is what the script draws
+
+    def test_the_build_script_exports_the_models_then_builds_and_only_for_its_own_system(self):
+        sys.path.insert(0, str(self.root / "src" / "scripts"))
+        import build_desktop
+        steps = build_desktop.plan("windows")
+        self.assertTrue(steps[0][1].endswith("export_crepe_onnx.py"))
+        self.assertEqual(steps[1][:3], ["flet", "build", "windows"])
+        with mock.patch.object(build_desktop.sys, "platform", "linux"), self.assertRaises(SystemExit):
+            build_desktop.main(["windows", "--dry-run"])                                        # a Windows app is built on Windows
+        with mock.patch.object(build_desktop.sys, "platform", "linux"), mock.patch("builtins.print") as shown:
+            build_desktop.main(["linux", "--dry-run"])
+        self.assertIn("flet build linux", " ".join(" ".join(map(str, c.args)) for c in shown.call_args_list))
+
+    def test_the_packaging_files_cover_every_desktop_system(self):
+        import tomllib
+        config = tomllib.loads((self.root / "pyproject.toml").read_text())
+        macos = config["tool"]["flet"]["macos"]
+        self.assertTrue(macos["entitlement"]["com.apple.security.network.client"])             # to reach Ollama on this computer
+        self.assertTrue(macos["entitlement"]["com.apple.security.device.audio-input"])
+        self.assertIn("NSMicrophoneUsageDescription", macos["info"])
+        workflow = (self.root / ".github" / "workflows" / "desktop.yml").read_text()
+        for target in ("windows", "macos", "linux"):
+            self.assertIn(f"target: {target}", workflow)
+        self.assertIn("unittest discover", workflow)                                             # the tests run before a build
+        self.assertIn("src/assets/models/*.onnx", (self.root / ".gitignore").read_text())      # the exported networks are build products, not source
 
 
 class Theme(unittest.TestCase):

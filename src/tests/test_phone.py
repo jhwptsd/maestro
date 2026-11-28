@@ -73,6 +73,17 @@ class TheCoreStillWorks(unittest.TestCase):
         self.assertEqual(sorted(report.data["scores"]), ["expression", "intonation", "overall", "rhythm", "tone"])
         self.assertIn("bowing", report.data["unavailable"])                                # no video: said, not hidden
 
+    def test_the_installed_desktop_app_analyses_with_crepe_and_no_pytorch(self):
+        """What the packaged Windows / macOS app does: ONNX Runtime and the shipped network, no torch, torchcrepe or librosa."""
+        with phone_sandbox(("torch", "torchcrepe", "torchaudio", "librosa", "numba", "tensorflow", "cv2", "transformers")) as box:
+            self.assertEqual(capabilities.pitch_backend(), "crepe")
+            controller = Controller(self.d / "storage")
+            controller.set_video(self.d / "take.wav")
+            controller.set_score(self.d / "s.musicxml")
+            report = controller.analyze(lambda info: None)
+        self.assertEqual(box.tried("import"), [])
+        self.assertIn("intonation", report.data["scores"])
+
     def test_the_app_chooses_the_yin_tracker_here(self):
         with phone_sandbox():
             self.assertEqual(capabilities.pitch_backend(), "yin")
@@ -136,9 +147,9 @@ class SelfTest(unittest.TestCase):
         with phone_sandbox() as box:
             results = {r["name"]: r for r in selftest.run()}
         self.assertTrue(all(r["ok"] for r in results.values() if r["core"]))
-        for missing in ("Other audio and video formats (ffmpeg)", "CREPE pitch network (ONNX Runtime)", "Reading a photographed score (Audiveris)"):
+        for missing in ("Other audio and video formats (ffmpeg)", "CREPE pitch network", "Reading a photographed score (Audiveris)"):
             self.assertFalse(results[missing]["ok"], missing)
-        self.assertEqual(box.tried("import"), ["onnxruntime"])                              # only the one check that asks for it
+        self.assertEqual(box.tried("import"), ["onnxruntime", "torch"])                     # only the CREPE check asks (ONNX Runtime first, then PyTorch as the fallback)
 
 
 class Audit(unittest.TestCase):

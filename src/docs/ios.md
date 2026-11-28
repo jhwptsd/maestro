@@ -38,7 +38,7 @@ blocked and no program startable. It attempts nothing but the lookups for ffmpeg
 report also run inside it.
 
 **Features that cannot run on iOS as built:** any recording format but WAV and any video (ffmpeg), body movement (VioPose), reading a photographed or PDF score (Audiveris),
-the CREPE pitch network, pYIN and Basic Pitch, the CLAP tone model, Demucs, cutting a reference video (ffmpeg), and the writing model through Ollama. **Open question:** whether scipy
+the CREPE pitch network (it now needs only ONNX Runtime and numpy, but ONNX Runtime has no iOS wheel), pYIN and Basic Pitch, the CLAP tone model, Demucs, cutting a reference video (ffmpeg), and the writing model through Ollama. **Open question:** whether scipy
 installs (above); if not, the few scipy calls (`resample_poly`, `stft`/`istft`, filters in the denoiser) need numpy replacements.
 
 ## The writing model on the phone

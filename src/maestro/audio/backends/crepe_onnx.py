@@ -13,7 +13,7 @@ import threading
 
 import numpy as np
 
-from maestro.utils.paths import models_root
+from maestro.utils.paths import bundled_models, models_root
 
 BATCH = 512                                  # frames per network call (fixed shape)
 FRAME = 1024                                 # samples per CREPE frame
@@ -22,13 +22,25 @@ _lock = threading.Lock()
 
 
 def model_path(capacity):
+    """Where the exported model is (or will be exported to): the models folder."""
     return models_root() / "onnx" / f"crepe-{capacity}.onnx"
+
+
+def find_model(capacity):
+    """An existing exported model: in the models folder, else shipped with the installed app (src/assets/models), else None."""
+    for path in (model_path(capacity), bundled_models() / f"crepe-{capacity}.onnx"):
+        if path.is_file():
+            return path
+    return None
 
 
 def export(capacity, path=None):
     """Export torchcrepe's `capacity` model to ONNX (once; an existing file is kept) -> path."""
     import torch
     import torchcrepe
+    found = None if path else find_model(capacity)
+    if found:                                                    # exported already, or shipped with the app (which has no torch to export with)
+        return found
     path = path or model_path(capacity)
     if path.is_file():
         return path
@@ -57,20 +69,31 @@ def session(capacity, provider):
         return _sessions[key]
 
 
-def make_infer(capacity, provider):
-    """A drop-in for torchcrepe.core.infer that runs the network on `provider`: infer(frames (N, 1024), model, device,
-    embed=False) -> torch tensor (N, 360). Builds the session now so that a problem shows up before the audio is processed."""
-    import torch
+def make_run(capacity, provider):
+    """The network as a numpy function: run(frames (N, 1024) float32) -> probabilities (N, 360). No PyTorch is involved. Builds the session now so that a
+    problem shows up before the audio is processed."""
     sess = session(capacity, provider)
 
-    def infer(frames, model="full", device="cpu", embed=False):
-        x = frames.detach().cpu().numpy().astype(np.float32, copy=False)
+    def run(frames):
+        x = np.asarray(frames, dtype=np.float32)
         out = np.empty((len(x), 360), dtype=np.float32)
         for start in range(0, len(x), BATCH):
             chunk = x[start:start + BATCH]
             if len(chunk) < BATCH:                                # pad the last batch to the exported shape
                 chunk = np.concatenate([chunk, np.zeros((BATCH - len(chunk), FRAME), np.float32)])
             out[start:start + BATCH] = sess.run(None, {"frames": chunk})[0][:len(x) - start]
-        return torch.from_numpy(out)
+        return out
+
+    return run
+
+
+def make_infer(capacity, provider):
+    """A drop-in for torchcrepe.core.infer that runs the network on `provider`: infer(frames (N, 1024), model, device,
+    embed=False) -> torch tensor (N, 360). Builds the session now so that a problem shows up before the audio is processed."""
+    import torch
+    run = make_run(capacity, provider)
+
+    def infer(frames, model="full", device="cpu", embed=False):
+        return torch.from_numpy(run(frames.detach().cpu().numpy()))
 
     return infer

@@ -5,3 +5,4 @@ Scripts (run from the repository root; training scripts are in `src/training/`)
 - convert_viopose.py RESULT.npy OUT.json: converts a VioPose result.npy you produced yourself to Maestro's pose JSON (for `analyze(..., pose_file=...)`).
 - bench_pitch.py [FILE]: times every installed pitch backend (first call vs steady state, x real time) so you can compare CREPE, pYIN, YIN and Basic Pitch on your hardware.
 - tune_denoise.py: picks the audio-denoising defaults from synthetic noisy/clean pairs, rejecting any setting that dulls vibrato, bow noise or pitch (run with PYTHONPATH=src:src/tests).
+- build_desktop.py [windows|macos|linux]: export the CREPE network to src/assets/models, then `flet build` the desktop app (see the README). export_crepe_onnx.py: the export alone. make_icon.py: draws src/assets/icon.png. ios_audit.py: which features cannot run on iOS (see src/docs/ios.md).

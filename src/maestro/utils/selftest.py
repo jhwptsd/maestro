@@ -110,6 +110,16 @@ def _import(name, why):
     return check
 
 
+def _crepe():
+    from maestro.audio.pitch import estimate_pitch
+    t = np.arange(SR) / SR
+    track = estimate_pitch((0.4 * np.sin(2 * np.pi * 440 * t)).astype(np.float32), SR, backend="crepe", model="tiny")
+    f0 = track.f0[track.confidence > 0.5]
+    if not len(f0) or abs(1200 * np.log2(np.median(f0) / 440)) > 15:
+        raise AssertionError("A4 was not found")
+    return f"A4 found by CREPE ({track.runtime})"
+
+
 def _pose():
     from maestro.vision.viopose_setup import load_config
     if not load_config().get("dir"):
@@ -136,7 +146,7 @@ def _writer():
 # (name, function, core): `core` = the phone app needs it
 CHECKS = [("Platform", _platform, True), ("Numbers (numpy)", _numpy, True), ("Signal processing (scipy)", _scipy, True), ("Read a WAV recording", _wav, True),
           ("Pitch tracker (YIN)", _yin, True), ("Whole analysis of a piece", _analysis, True), ("Clean a scanned page (Pillow)", _scan, False),
-          ("Other audio and video formats (ffmpeg)", _ffmpeg, False), ("CREPE pitch network (ONNX Runtime)", _import("onnxruntime", "onnxruntime imports"), False),
+          ("Other audio and video formats (ffmpeg)", _ffmpeg, False), ("CREPE pitch network", _crepe, False),
           ("Body movement (VioPose)", _pose, False), ("Reading a photographed score (Audiveris)", _reader, False), ("Writing model", _writer, False)]
 
 
